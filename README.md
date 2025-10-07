@@ -1,5 +1,6 @@
-# AlphaJudge
-*AlphaJudge is a pipeline that evaluates AlphaFold2-predicted protein complexes by combining AI-derived confidence metrics (ipTM, pDockQ, PAE, etc.) with physics-based interface features (contacts, area, energy, electrostatics), producing a unified CSV report for model validation and benchmarking.*
+# AlphaJudge: because even AlphaFold deserves a fair trial.
+AlphaJudge is a pipeline that evaluates AlphaFold2-predicted protein complexes by combining AI-derived confidence metrics (ipTM, pDockQ, PAE, etc.) with physics-based interface features (contacts, area, energy, electrostatics), producing a unified CSV report for model validation and benchmarking.
+
 ![AlphaJudge icon](images/icon.png)
 
 [![license: MIT](https://img.shields.io/badge/license-MIT-informational.svg)](#-citation-and-license)
@@ -10,7 +11,7 @@ AlphaJudge evaluates **AlphaFold2-predicted complexes** and emits a tidy **CSV**
 
 ---
 
-## 🔍 what it does
+## What it does
 
 AlphaJudge parses AF2 multimer outputs and summarizes **per-model / per-interface** metrics:
 
@@ -26,7 +27,7 @@ Use cases: rank poses, benchmark AF2 confidences, or feed ML on PPI datasets.
 
 ---
 
-## 🧩 pipeline overview
+## Pipeline overview
 
 ```
 AlphaFold2 models  →  AlphaJudge  →  scored_interfaces.csv
@@ -38,7 +39,7 @@ AlphaFold2 models  →  AlphaJudge  →  scored_interfaces.csv
 
 ---
 
-## 🧰 installation
+## Installation
 
 ```bash
 git clone https://github.com/KosinskiLab/AlphaJudge.git
@@ -52,7 +53,7 @@ conda activate alphajudge
 
 ---
 
-## 🚀 usage
+## Usage
 
 ```bash
 alphajudge run \
@@ -70,7 +71,7 @@ alphajudge run \
 
 ---
 
-## 📊 example output
+## Example output
 
 | model_id | ipTM | mpDockQ | avg_intf_pae | int_area (Å²) | h_bonds |   sc | binding_energy (a.u.) | electrostatic_complementarity | PI_score |
 | :------- | ---: | ------: | -----------: | ------------: | ------: | ---: | ------------------------: | ----------------------------: | -------: |
@@ -79,31 +80,27 @@ alphajudge run \
 
 ---
 
-## 🧠 motivation
+## Motivation
 
 AF2 scores ≠ guaranteed biophysics. **AlphaJudge** adds interpretable, physics-aware checks and export-ready features for downstream modeling and ML.
 
 ---
 
-## 📚 citation and license
+## Citation and license
 
 Please cite:
 
-> Kosinski Lab, EMBL Hamburg. *AlphaJudge: an evaluation pipeline for AlphaFold-predicted complexes.* (2025).
+> Our future paper: *AlphaJudge: an evaluation pipeline for AlphaFold-predicted complexes.* (2025).
 > [https://github.com/KosinskiLab/AlphaJudge](https://github.com/KosinskiLab/AlphaJudge)
 
-License: **MIT**. AlphaFold, PyRosetta, and other tools remain under their respective licenses.
+License: AlphaFold, PyRosetta, and other tools remain under their respective licenses.
 
 ---
 
-## 💡 roadmap
+## Roadmap
 
 * ActifpTM, ipSAE, FoldSeek-Multimer integration
 * small MLP to combine features on PPI gold-standard datasets
 * optional HTML report with plots and per-interface summaries
-
----
-
-*“because even AlphaFold deserves a fair trial.”* ⚖️
 
 ---
