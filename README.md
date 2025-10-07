@@ -1,6 +1,6 @@
-# AlphaJudge 🧠⚖️
-
-*a cross-examiner for AlphaFold2 models*
+# AlphaJudge
+*AlphaJudge is a pipeline that evaluates AlphaFold2-predicted protein complexes by combining AI-derived confidence metrics (ipTM, pDockQ, PAE, etc.) with physics-based interface features (contacts, area, energy, electrostatics), producing a unified CSV report for model validation and benchmarking.*
+![AlphaJudge icon](images/icon.png)
 
 [![license: MIT](https://img.shields.io/badge/license-MIT-informational.svg)](#-citation-and-license)
 [![python](https://img.shields.io/badge/python-3.10+-blue.svg)]()
