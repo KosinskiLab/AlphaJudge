@@ -1,0 +1,12 @@
+name: alphajudge
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy>=1.26
+  - biopython>=1.83
+  - absl-py>=1.4
+  - pip
+  - pytest
+
+
