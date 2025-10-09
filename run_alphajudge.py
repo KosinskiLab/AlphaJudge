@@ -4,7 +4,7 @@ import json
 import csv
 import argparse
 import logging
-from typing import Any, Dict, List, Tuple, Set
+from typing import Any, Dict, List, Tuple, Set, Optional
 from functools import cached_property
 import enum
 import numpy as np
@@ -17,8 +17,8 @@ from Bio.PDB import (
     Structure,
     Model,
     Chain,
-    Residue,
 )
+from Bio.PDB.Residue import Residue  # type: ignore
 from Bio.PDB.SASA import ShrakeRupley  # For SASA computations
 from Bio.PDB.Atom import Atom
 
@@ -95,23 +95,30 @@ def parse_ranking_debug_json_all(directory: str) -> Dict[str, Any]:
     return data
 
 def get_ranking_metric_for_model(data: Dict[str, Any], model: str) -> Dict[str, Any]:
-    match (("iptm+ptm" in data, "iptm" in data, "plddts" in data, "ptm" in data)):
-        case (True, True, _, _):
-            if model not in data["iptm+ptm"] or model not in data["iptm"]:
-                raise ValueError(f"Model '{model}' not found in multimer metrics")
-            return {"model": model,
-                    "iptm+ptm": data["iptm+ptm"][model],
-                    "iptm": data["iptm"][model],
-                    "multimer": True}
-        case (_, _, True, True):
-            if model not in data["plddts"] or model not in data["ptm"]:
-                raise ValueError(f"Model '{model}' not found in monomer metrics")
-            return {"model": model,
-                    "plddts": data["plddts"][model],
-                    "ptm": data["ptm"][model],
-                    "multimer": False}
-        case _:
-            raise ValueError("Invalid ranking_debug.json: expected multimer or monomer keys not found")
+    """Return ranking metrics for a model."""
+    has_multimer = ("iptm+ptm" in data) and ("iptm" in data)
+    has_monomer = ("plddts" in data) and ("ptm" in data)
+
+    if has_multimer:
+        if model not in data["iptm+ptm"] or model not in data["iptm"]:
+            raise ValueError(f"Model '{model}' not found in multimer metrics")
+        return {
+            "model": model,
+            "iptm+ptm": data["iptm+ptm"][model],
+            "iptm": data["iptm"][model],
+            "multimer": True,
+        }
+    elif has_monomer:
+        if model not in data["plddts"] or model not in data["ptm"]:
+            raise ValueError(f"Model '{model}' not found in monomer metrics")
+        return {
+            "model": model,
+            "plddts": data["plddts"][model],
+            "ptm": data["ptm"][model],
+            "multimer": False,
+        }
+    else:
+        raise ValueError("Invalid ranking_debug.json: expected multimer or monomer keys not found")
 
 def load_pae_file(directory: str, model: str) -> Dict[str, Any]:
     pae_filename = f"pae_{model}.json"
@@ -295,13 +302,15 @@ class InterfaceAnalysis:
         chain2: List[Any],
         contact_thresh: float,
         pae_matrix: List[List[float]],
-        res_index_map: Dict[Tuple[str, Any], int]
+        res_index_map: Dict[Tuple[str, Any], int],
+        chain_indices_by_id: Optional[Dict[str, List[int]]] = None,
     ) -> None:
         self.chain1 = chain1
         self.chain2 = chain2
         self.contact_thresh = contact_thresh
         self._pae_matrix = pae_matrix
         self._res_index_map = res_index_map
+        self._chain_indices_by_id = chain_indices_by_id
 
         # Identify interacting residues and contact pairs once
         self.precomputed = self._get_interface_residues()
@@ -342,7 +351,9 @@ class InterfaceAnalysis:
     def score_complex(self) -> float:
         """= average_interface_plddt * log10(contact_pairs)."""
         cp = self.contact_pairs
-        return self.average_interface_plddt * math.log10(cp) if cp > 0 else 0.0
+        if cp <= 0 or math.isnan(self.average_interface_plddt):
+            return float('nan')
+        return self.average_interface_plddt * math.log10(cp)
 
     @property
     def num_intf_residues(self) -> int:
@@ -376,7 +387,7 @@ class InterfaceAnalysis:
     def pDockQ(self) -> float:
         n_contacts = self.contact_pairs
         if n_contacts <= 0:
-            return 0.0
+            return float('nan')
         x = self.average_interface_plddt * math.log10(n_contacts)
         return PDOCKQ_CONSTANTS.score(x)
 
@@ -399,33 +410,136 @@ class InterfaceAnalysis:
 
     def pDockQ2(self) -> Tuple[float, float]:
         ptm_values = self._ptm_values
-        mean_ptm = sum(ptm_values) / len(ptm_values) if ptm_values else 0.0
+        if not ptm_values or math.isnan(self.average_interface_plddt):
+            return float('nan'), 0.0
+        mean_ptm = sum(ptm_values) / len(ptm_values)
         x = self.average_interface_plddt * mean_ptm
         pDockQ2_val = PDOCKQ2_CONSTANTS.score(x)
         return pDockQ2_val, mean_ptm
 
-    def ipsae(self) -> float:
-        ptm_values = self._ptm_values
-        return sum(ptm_values) / len(ptm_values) if ptm_values else 0.0
+    # -------------------------------------------------------
+    # ipSAE (Residue-specific D0 with PAE cutoff)
+    # Adopted from https://github.com/DunbrackLab/IPSAE/blob/main/ipsae.py
+    # -------------------------------------------------------
+    def _pair_type(self) -> str:
+        """Return 'nucleic_acid' if either side contains NA residues, else 'protein'."""
+        nuc = {"DA", "DC", "DT", "DG", "A", "C", "U", "G"}
+        resnames = {r.get_resname().strip() for r in self.interface_residues_chain1.union(self.interface_residues_chain2)}
+        return "nucleic_acid" if (resnames & nuc) else "protein"
 
+    @staticmethod
+    def _calc_d0(n: int, pair_type: str) -> float:
+        """Yang & Skolnick d0 with minimum 1.0 (protein) or 2.0 (NA)."""
+        L = max(27.0, float(n))
+        base = 1.24 * (L - 15.0) ** (1.0 / 3.0) - 1.8
+        minv = 2.0 if pair_type == "nucleic_acid" else 1.0
+        return max(minv, base)
+
+    def _chain_indices(self, residues: List[Residue]) -> List[int]:
+        idxs = [self._res_index_map.get((r.get_parent().id, r.id)) for r in residues]
+        return [i for i in idxs if i is not None]
+
+    def ipsae_d0res_asym(self, pae_cutoff: float = 10.0) -> float:
+        """
+        A->B asymmetric ipSAE:
+        For each residue i in chain1, average ptm over j in chain2 with PAE<cutoff,
+        using residue-specific D0 = d0(n_valid_j, pair_type). Return max over i.
+        """
+        if self._pae_matrix is None:
+            return float('nan')
+        idxs1 = self._chain_indices(self.chain1)
+        idxs2 = self._chain_indices(self.chain2)
+        if not idxs1 or not idxs2:
+            return float('nan')
+
+        arr = np.asarray(self._pae_matrix)
+        pair_type = self._pair_type()
+        best = 0.0
+        found_any = False
+        for i in idxs1:
+            row = arr[i, idxs2]
+            valid = row < pae_cutoff
+            if not np.any(valid):
+                continue
+            n_valid = int(np.count_nonzero(valid))
+            d0_i = self._calc_d0(n_valid, pair_type)
+            ptm_vals = 1.0 / (1.0 + (row[valid] / d0_i) ** 2)
+            best = max(best, float(np.mean(ptm_vals)))
+            found_any = True
+        return best if found_any else float('nan')
+
+    def ipsae_d0res_max(self, pae_cutoff: float = 10.0) -> float:
+        """Max over directions: max( A->B, B->A ) without re-instantiation."""
+        if self._pae_matrix is None:
+            return float('nan')
+        arr = np.asarray(self._pae_matrix)
+        pair_type = self._pair_type()
+
+        def compute_asym(idxs_src: List[int], idxs_dst: List[int]) -> float:
+            best_local = 0.0
+            found = False
+            for i in idxs_src:
+                row = arr[i, idxs_dst]
+                valid = row < pae_cutoff
+                if not np.any(valid):
+                    continue
+                n_valid = int(np.count_nonzero(valid))
+                d0_i = self._calc_d0(n_valid, pair_type)
+                ptm_vals = 1.0 / (1.0 + (row[valid] / d0_i) ** 2)
+                best_local = max(best_local, float(np.mean(ptm_vals)))
+                found = True
+            return best_local if found else float('nan')
+
+        idxs1 = self._chain_indices(self.chain1)
+        idxs2 = self._chain_indices(self.chain2)
+        if not idxs1 or not idxs2:
+            return float('nan')
+
+        a_to_b = compute_asym(idxs1, idxs2)
+        b_to_a = compute_asym(idxs2, idxs1)
+
+        if math.isnan(a_to_b) and math.isnan(b_to_a):
+            return float('nan')
+        if math.isnan(a_to_b):
+            return b_to_a
+        if math.isnan(b_to_a):
+            return a_to_b
+        return max(a_to_b, b_to_a)
+
+    def ipsae(self, pae_cutoff: float = 10.0) -> float:
+        """
+        Returns asymmetric ipSAE (A->B)
+        with default PAE cutoff 10 Å.
+        """
+        return self.ipsae_d0res_asym(pae_cutoff)
+
+    # -------------------------------------------------------
+    # LIS (Local Interaction Score based on transform of PAEs)
+    # Kim, Hu, Comjean, Rodiger, Mohr, Perrimon. https://www.biorxiv.org/content/10.1101/2024.02.19.580970v1
+    # Adopted from https://github.com/DunbrackLab/IPSAE/blob/main/ipsae.py
+    # -------------------------------------------------------
     def lis(self) -> float:
         """
-        LIS: average of (12 - PAE)/12 over all i-j with PAE <=12
+        LIS: average of (12 - PAE)/12 over all i-j with PAE <= 12 (A->B direction).
         """
-        if not self._pae_matrix:
-            return 0.0
+        if self._pae_matrix is None:
+            return float('nan')
         cid1 = self.chain1[0].get_parent().id
         cid2 = self.chain2[0].get_parent().id
-        indices_chain1 = [i for ((c, _), i) in self._res_index_map.items() if c == cid1]
-        indices_chain2 = [i for ((c, _), i) in self._res_index_map.items() if c == cid2]
+        if self._chain_indices_by_id is not None:
+            indices_chain1 = self._chain_indices_by_id.get(cid1, [])
+            indices_chain2 = self._chain_indices_by_id.get(cid2, [])
+        else:
+            indices_chain1 = self._chain_indices(self.chain1)
+            indices_chain2 = self._chain_indices(self.chain2)
         if not indices_chain1 or not indices_chain2:
-            return 0.0
+            return float('nan')
 
-        arr = np.array(self._pae_matrix)
+        arr = np.asarray(self._pae_matrix)
         submatrix = arr[np.ix_(indices_chain1, indices_chain2)]
-        valid = submatrix[submatrix <= 12]
+        valid = submatrix[submatrix <= 12.0]
         if valid.size == 0:
-            return 0.0
+            return float('nan')
         scores = (12.0 - valid) / 12.0
         return float(np.mean(scores))
 
@@ -660,11 +774,15 @@ class ComplexAnalysis:
         model = next(self.structure.get_models())
         chains = list(model.get_chains())
         self.res_index_map: Dict[Tuple[str, Any], int] = {}
+        self.chain_indices_by_id: Dict[str, List[int]] = {}
         idx = 0
         for chn in chains:
+            indices_list: List[int] = []
             for res in chn:
                 self.res_index_map[(chn.id, res.id)] = idx
+                indices_list.append(idx)
                 idx += 1
+            self.chain_indices_by_id[chn.id] = indices_list
 
         self.pae_matrix = self._predicted_aligned_error
 
@@ -677,7 +795,8 @@ class ComplexAnalysis:
                     list(chains[j]),
                     self.contact_thresh,
                     self.pae_matrix,
-                    self.res_index_map
+                    self.res_index_map,
+                    self.chain_indices_by_id,
                 )
                 if iface.num_intf_residues > 0:
                     self.interfaces.append(iface)
@@ -716,24 +835,40 @@ class ComplexAnalysis:
 
     @cached_property
     def contact_pairs_global(self) -> int:
+        """Residue-level contacts using CB (or CA fallback) across different chains."""
         model = next(self.structure.get_models())
-        all_atoms = list(model.get_atoms())
-        ns = NeighborSearch(all_atoms)
+        chains = list(model.get_chains())
 
+        # Select one representative atom per residue (CB if present, else CA)
+        rep_atoms = []  # list of (atom, residue)
+        for chn in chains:
+            for res in chn:
+                try:
+                    atom = res["CB"] if "CB" in res else res["CA"]
+                except Exception:
+                    continue
+                rep_atoms.append((atom, res))
+
+        if not rep_atoms:
+            return 0
+
+        ns = NeighborSearch([a for (a, _) in rep_atoms])
         visited_pairs = set()
         count = 0
-        for atom1 in all_atoms:
+        for atom1, res1 in rep_atoms:
             neighbors = ns.search(atom1.coord, self.contact_thresh)
             for atom2 in neighbors:
-                if atom1 is atom2:
+                if atom2 is atom1:
                     continue
-                chain1 = atom1.get_parent().get_parent().id
-                chain2 = atom2.get_parent().get_parent().id
-                if chain1 == chain2:
+                res2 = atom2.get_parent()
+                ch1 = res1.get_parent().id
+                ch2 = res2.get_parent().id
+                if ch1 == ch2:
                     continue
-                pair = tuple(sorted([id(atom1), id(atom2)]))
-                if pair not in visited_pairs:
-                    visited_pairs.add(pair)
+                # Unique residue-residue pair key
+                key = tuple(sorted([(ch1, res1.id), (ch2, res2.id)]))
+                if key not in visited_pairs:
+                    visited_pairs.add(key)
                     count += 1
         return count
 
@@ -782,7 +917,7 @@ def process_all_models(
             if comp.num_chains > 1:
                 global_score = comp.mpDockQ
             else:
-                global_score = comp.interfaces[0].pDockQ if comp.interfaces else 0.0
+                global_score = comp.interfaces[0].pDockQ if comp.interfaces else float('nan')
 
             binding_energy = -1.3 * comp.contact_pairs_global  # placeholder or real
             model_used = model
@@ -847,7 +982,7 @@ def process_all_models(
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AlphaJudge: Interface scoring for AF outputs")
     parser.add_argument(
-        "--pathToDir",
+        "--path_to_dir",
         required=True,
         help="Path to the directory with predicted models and ranking_debug.json",
     )
@@ -878,7 +1013,7 @@ def main() -> None:
     mta = ModelsToAnalyse.BEST if args.models_to_analyse == "best" else ModelsToAnalyse.ALL
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
     process_all_models(
-        args.pathToDir,
+        args.path_to_dir,
         args.contact_thresh,
         args.pae_filter,
         mta,

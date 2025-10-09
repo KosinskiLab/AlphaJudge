@@ -184,7 +184,28 @@ def test_pDockQ2_and_ipsae(chains, res_index_map, pae_matrix, contact_thresh):
     x = iface.average_interface_plddt * expected_ptm  # 75 * expected_ptm
     expected_pDockQ2 = 1.31 / (1 + math.exp(-0.075 * (x - 84.733))) + 0.005
     assert pDockQ2_val == pytest.approx(expected_pDockQ2, abs=1e-5)
-    assert iface.ipsae() == pytest.approx(expected_ptm, abs=1e-5)
+    # ipSAE uses residue-specific D0 and a PAE cutoff; compute expected A->B value
+    def calc_d0(n_valid: int) -> float:
+        L = max(27.0, float(n_valid))
+        base = 1.24 * (L - 15.0) ** (1.0 / 3.0) - 1.8
+        return max(1.0, base)
+
+    cid1 = chain_A[0].get_parent().id
+    cid2 = chain_B[0].get_parent().id
+    idxs1 = [i for ((c, _), i) in res_index_map.items() if c == cid1]
+    idxs2 = [i for ((c, _), i) in res_index_map.items() if c == cid2]
+    arr = np.asarray(pae_matrix)
+    best = 0.0
+    for i in idxs1:
+        row = arr[i, idxs2]
+        valid = row < 10.0
+        if not np.any(valid):
+            continue
+        n_valid = int(np.count_nonzero(valid))
+        d0_i = calc_d0(n_valid)
+        ptm_vals = 1.0 / (1.0 + (row[valid] / d0_i) ** 2)
+        best = max(best, float(np.mean(ptm_vals)))
+    assert iface.ipsae() == pytest.approx(best, abs=1e-6)
 
 
 def test_lis(chains, res_index_map, pae_matrix, contact_thresh):
@@ -226,14 +247,32 @@ def test_zero_contacts_edge_cases(chains, res_index_map, pae_matrix):
     assert math.isnan(iface.average_interface_plddt)
     # Average interface PAE over empty set => NaN
     assert math.isnan(iface.average_interface_pae)
-    # pDockQ must be 0 with no contacts
-    assert iface.pDockQ == 0.0
+    # pDockQ is NaN with no contacts (standardize metrics to NaN when not computable)
+    assert math.isnan(iface.pDockQ)
     # pDockQ2 returns (nan, 0.0) when there are no pairs
     p2, mean_ptm = iface.pDockQ2()
     assert math.isnan(p2)
     assert mean_ptm == 0.0
-    # ipsae averages empty set => 0.0
-    assert iface.ipsae() == 0.0
+    def calc_d0(n_valid: int) -> float:
+        L = max(27.0, float(n_valid))
+        base = 1.24 * (L - 15.0) ** (1.0 / 3.0) - 1.8
+        return max(1.0, base)
+    cid1 = chain_A[0].get_parent().id
+    cid2 = chain_B[0].get_parent().id
+    idxs1 = [i for ((c, _), i) in res_index_map.items() if c == cid1]
+    idxs2 = [i for ((c, _), i) in res_index_map.items() if c == cid2]
+    arr = np.asarray(pae_matrix)
+    best = 0.0
+    for i in idxs1:
+        row = arr[i, idxs2]
+        valid = row < 10.0
+        if not np.any(valid):
+            continue
+        n_valid = int(np.count_nonzero(valid))
+        d0_i = calc_d0(n_valid)
+        ptm_vals = 1.0 / (1.0 + (row[valid] / d0_i) ** 2)
+        best = max(best, float(np.mean(ptm_vals)))
+    assert iface.ipsae() == pytest.approx(best, abs=1e-6)
 
 # --- Dummy Model/Structure for ComplexAnalysis ---
 class DummyModel:
