@@ -1,8 +1,8 @@
 import math
 import numpy as np
-from absl.testing import absltest, parameterized
+import pytest
 from typing import List
-from alphapulldown.analysis_pipeline.run_analysis import (
+from run_alphajudge import (
     InterfaceAnalysis,
     ComplexAnalysis,
     D0
@@ -77,8 +77,8 @@ class DummyResidue:
         if hasattr(self, "CA"):
             yield self.CA
 
-# --- Dummy Data Builders ---
-def create_dummy_chains():
+@pytest.fixture
+def chains():
     # Two chains, each with two residues:
     # A1 near B1; A2 far from B1 & B2.
     chain_A = [
@@ -91,7 +91,10 @@ def create_dummy_chains():
     ]
     return chain_A, chain_B
 
-def create_dummy_res_index_map(chain_A, chain_B):
+
+@pytest.fixture
+def res_index_map(chains):
+    chain_A, chain_B = chains
     index_map = {}
     index = 0
     for res in chain_A:
@@ -102,7 +105,9 @@ def create_dummy_res_index_map(chain_A, chain_B):
         index += 1
     return index_map
 
-def create_dummy_pae_matrix():
+
+@pytest.fixture
+def pae_matrix():
     # 4x4 matrix for 4 residues: A1=0, A2=1, B1=2, B2=3
     # A1-B1 is close => PAE=8 in (0,2) & (2,0).
     return [
@@ -112,78 +117,123 @@ def create_dummy_pae_matrix():
         [20, 25,   6,   0]
     ]
 
+
+@pytest.fixture
+def contact_thresh():
+    return 12.0
+
 # --- Test Suite for InterfaceAnalysis ---
-class InterfaceAnalysisTest(parameterized.TestCase):
+def test_interface_contact_pairs(chains, res_index_map, pae_matrix, contact_thresh):
+    chain_A, chain_B = chains
+    iface = InterfaceAnalysis(
+        chain_A, chain_B,
+        contact_thresh, pae_matrix,
+        res_index_map
+    )
+    # Only residue A1 and B1 are within 12 Å.
+    assert iface.contact_pairs == 1
 
-    def setUp(self):
-        super().setUp()
-        self.chain_A, self.chain_B = create_dummy_chains()
-        self.res_index_map = create_dummy_res_index_map(self.chain_A, self.chain_B)
-        self.pae_matrix = create_dummy_pae_matrix()
-        self.contact_thresh = 12.0
 
-    def test_interface_contact_pairs(self):
-        iface = InterfaceAnalysis(
-            self.chain_A, self.chain_B,
-            self.contact_thresh, self.pae_matrix,
-            self.res_index_map
-        )
-        # Only residue A1 and B1 are within 12 Å.
-        self.assertEqual(iface.contact_pairs, 1)
+def test_average_interface_plddt(chains, res_index_map, pae_matrix, contact_thresh):
+    chain_A, chain_B = chains
+    iface = InterfaceAnalysis(
+        chain_A, chain_B,
+        contact_thresh, pae_matrix,
+        res_index_map
+    )
+    # A1 (bfactor=80) and B1 (bfactor=70) => average=75
+    expected = 75.0
+    assert iface.average_interface_plddt == pytest.approx(expected, abs=1e-5)
 
-    def test_average_interface_plddt(self):
-        iface = InterfaceAnalysis(
-            self.chain_A, self.chain_B,
-            self.contact_thresh, self.pae_matrix,
-            self.res_index_map
-        )
-        # A1 (bfactor=80) and B1 (bfactor=70) => average=75
-        expected = 75.0
-        self.assertAlmostEqual(iface.average_interface_plddt, expected, places=5)
 
-    def test_average_interface_pae(self):
-        iface = InterfaceAnalysis(
-            self.chain_A, self.chain_B,
-            self.contact_thresh, self.pae_matrix,
-            self.res_index_map
-        )
-        # Single contact pair => (A1,B1)=8, (B1,A1)=8 => average=8
-        expected = 8.0
-        self.assertAlmostEqual(iface.average_interface_pae, expected, places=5)
+def test_average_interface_pae(chains, res_index_map, pae_matrix, contact_thresh):
+    chain_A, chain_B = chains
+    iface = InterfaceAnalysis(
+        chain_A, chain_B,
+        contact_thresh, pae_matrix,
+        res_index_map
+    )
+    # Single contact pair => (A1,B1)=8, (B1,A1)=8 => average=8
+    expected = 8.0
+    assert iface.average_interface_pae == pytest.approx(expected, abs=1e-5)
 
-    def test_pDockQ(self):
-        iface = InterfaceAnalysis(
-            self.chain_A, self.chain_B,
-            self.contact_thresh, self.pae_matrix,
-            self.res_index_map
-        )
-        # One contact => log10(1)=0 => pDockQ = 0.724/(1+exp(0.052*152.611)) + 0.018
-        expected = 0.724 / (1 + math.exp(0.052 * 152.611)) + 0.018
-        self.assertAlmostEqual(iface.pDockQ, expected, places=6)
 
-    def test_pDockQ2_and_ipsae(self):
-        iface = InterfaceAnalysis(
-            self.chain_A, self.chain_B,
-            self.contact_thresh, self.pae_matrix,
-            self.res_index_map
-        )
-        # PTM = 1 / [1 + (8/D0)^2]
-        expected_ptm = 1.0 / (1 + (8 / D0) ** 2)
-        pDockQ2_val, mean_ptm = iface.pDockQ2()
-        self.assertAlmostEqual(mean_ptm, expected_ptm, places=5)
-        x = iface.average_interface_plddt * expected_ptm  # 75 * expected_ptm
-        expected_pDockQ2 = 1.31 / (1 + math.exp(-0.075 * (x - 84.733))) + 0.005
-        self.assertAlmostEqual(pDockQ2_val, expected_pDockQ2, places=5)
-        self.assertAlmostEqual(iface.ipsae(), expected_ptm, places=5)
+def test_pDockQ(chains, res_index_map, pae_matrix, contact_thresh):
+    chain_A, chain_B = chains
+    iface = InterfaceAnalysis(
+        chain_A, chain_B,
+        contact_thresh, pae_matrix,
+        res_index_map
+    )
+    # One contact => log10(1)=0 => pDockQ = 0.724/(1+exp(0.052*152.611)) + 0.018
+    expected = 0.724 / (1 + math.exp(0.052 * 152.611)) + 0.018
+    assert iface.pDockQ == pytest.approx(expected, abs=1e-6)
 
-    def test_lis(self):
-        iface = InterfaceAnalysis(
-            self.chain_A, self.chain_B,
-            self.contact_thresh, self.pae_matrix,
-            self.res_index_map
-        )
-        # Only A1-B1 => PAE=8 => LIS=(12-8)/12=0.3333
-        self.assertAlmostEqual(iface.lis(), 0.33333, places=5)
+
+def test_pDockQ2_and_ipsae(chains, res_index_map, pae_matrix, contact_thresh):
+    chain_A, chain_B = chains
+    iface = InterfaceAnalysis(
+        chain_A, chain_B,
+        contact_thresh, pae_matrix,
+        res_index_map
+    )
+    # PTM = 1 / [1 + (8/D0)^2]
+    expected_ptm = 1.0 / (1 + (8 / D0) ** 2)
+    pDockQ2_val, mean_ptm = iface.pDockQ2()
+    assert mean_ptm == pytest.approx(expected_ptm, abs=1e-5)
+    x = iface.average_interface_plddt * expected_ptm  # 75 * expected_ptm
+    expected_pDockQ2 = 1.31 / (1 + math.exp(-0.075 * (x - 84.733))) + 0.005
+    assert pDockQ2_val == pytest.approx(expected_pDockQ2, abs=1e-5)
+    assert iface.ipsae() == pytest.approx(expected_ptm, abs=1e-5)
+
+
+def test_lis(chains, res_index_map, pae_matrix, contact_thresh):
+    chain_A, chain_B = chains
+    iface = InterfaceAnalysis(
+        chain_A, chain_B,
+        contact_thresh, pae_matrix,
+        res_index_map
+    )
+    # Only A1-B1 => PAE=8 => LIS=(12-8)/12=0.3333
+    assert iface.lis() == pytest.approx(0.33333, abs=1e-5)
+
+
+def test_interface_composition_fractions(chains, res_index_map, pae_matrix, contact_thresh):
+    chain_A, chain_B = chains
+    iface = InterfaceAnalysis(
+        chain_A, chain_B,
+        contact_thresh, pae_matrix,
+        res_index_map
+    )
+    # Interface residues: A1=ALA (hydrophobic), B1=LYS (charged)
+    assert iface.num_intf_residues == 2
+    assert iface.hydrophobic == pytest.approx(0.5, abs=1e-9)
+    assert iface.charged == pytest.approx(0.5, abs=1e-9)
+    assert iface.polar == pytest.approx(0.0, abs=1e-9)
+
+
+def test_zero_contacts_edge_cases(chains, res_index_map, pae_matrix):
+    chain_A, chain_B = chains
+    # Make threshold too small so A1-B1 is not a contact
+    no_contact_thresh = 0.5
+    iface = InterfaceAnalysis(
+        chain_A, chain_B,
+        no_contact_thresh, pae_matrix,
+        res_index_map
+    )
+    assert iface.contact_pairs == 0
+    # Average interface pLDDT over empty interface => NaN
+    assert math.isnan(iface.average_interface_plddt)
+    # Average interface PAE over empty set => NaN
+    assert math.isnan(iface.average_interface_pae)
+    # pDockQ must be 0 with no contacts
+    assert iface.pDockQ == 0.0
+    # pDockQ2 returns (nan, 0.0) when there are no pairs
+    p2, mean_ptm = iface.pDockQ2()
+    assert math.isnan(p2)
+    assert mean_ptm == 0.0
+    # ipsae averages empty set => 0.0
+    assert iface.ipsae() == 0.0
 
 # --- Dummy Model/Structure for ComplexAnalysis ---
 class DummyModel:
@@ -218,69 +268,68 @@ class DummyStructure:
         return residues
 
 # --- Test Suite for ComplexAnalysis ---
-class ComplexAnalysisTest(absltest.TestCase):
-    def setUp(self):
-        super().setUp()
-        self.chain_A, self.chain_B = create_dummy_chains()
-        self.dummy_model = DummyModel([self.chain_A, self.chain_B])
-        self.dummy_structure = DummyStructure(self.dummy_model)
-        self.res_index_map = create_dummy_res_index_map(self.chain_A, self.chain_B)
-        self.pae_matrix = create_dummy_pae_matrix()
+@pytest.fixture
+def dummy_structure(chains):
+    chain_A, chain_B = chains
+    return DummyStructure(DummyModel([chain_A, chain_B]))
 
-        # Create a dummy ranking metric
-        self.ranking_metric = {
-            "multimer": True,
-            "iptm+ptm": 0.09161740784114437,
-            "iptm": 0.08377959013960515
-        }
 
-        # Create a dummy ComplexAnalysis instance by subclassing to bypass file I/O
-        class DummyComplexAnalysis(ComplexAnalysis):
-            def __init__(self, structure_file, pae_file, ranking_metric, contact_thresh):
-                # Bypass real file parsing; inject dummy data.
-                self.chain_A, self.chain_B = create_dummy_chains()
-                self.res_index_map = create_dummy_res_index_map(self.chain_A, self.chain_B)
-                self.pae_matrix = create_dummy_pae_matrix()
-                self.ranking_metric = ranking_metric
-                self.contact_thresh = contact_thresh
-                self.structure = DummyStructure(DummyModel([self.chain_A, self.chain_B]))
-                # Create the interface analyses
-                self.interfaces = []
-                model = next(self.structure.get_models())
-                chains = list(model.get_chains())
-                for i in range(len(chains)):
-                    for j in range(i + 1, len(chains)):
-                        iface = InterfaceAnalysis(chains[i],
-                                                 chains[j],
-                                                 self.contact_thresh,
-                                                 self.pae_matrix,
-                                                 self.res_index_map)
-                        if iface.num_intf_residues > 0:
-                            self.interfaces.append(iface)
+@pytest.fixture
+def ranking_metric_multimer():
+    return {
+        "multimer": True,
+        "iptm+ptm": 0.09161740784114437,
+        "iptm": 0.08377959013960515,
+    }
 
-            @property
-            def num_chains(self):
-                model = next(self.structure.get_models())
-                return len(list(model.get_chains()))
 
-        self.comp = DummyComplexAnalysis("dummy.pdb", "dummy.pae", self.ranking_metric, 12.0)
-        # Inject the same dummy structure references so everything matches
-        self.comp.structure = self.dummy_structure
-        self.comp.pae_matrix = self.pae_matrix
-        self.comp.res_index_map = self.res_index_map
+@pytest.fixture
+def dummy_comp(chains, res_index_map, pae_matrix, dummy_structure, ranking_metric_multimer):
+    # Create a dummy ComplexAnalysis instance by subclassing to bypass file I/O
+    class DummyComplexAnalysis(ComplexAnalysis):
+        def __init__(self, structure_file, pae_file, ranking_metric, contact_thresh):
+            # Bypass real file parsing; inject dummy data.
+            self.chain_A, self.chain_B = chains
+            self.res_index_map = res_index_map
+            self.pae_matrix = pae_matrix
+            self.ranking_metric = ranking_metric
+            self.contact_thresh = contact_thresh
+            self.structure = dummy_structure
+            # Create the interface analyses
+            self.interfaces = []
+            model = next(self.structure.get_models())
+            _chains = list(model.get_chains())
+            for i in range(len(_chains)):
+                for j in range(i + 1, len(_chains)):
+                    iface = InterfaceAnalysis(
+                        _chains[i],
+                        _chains[j],
+                        self.contact_thresh,
+                        self.pae_matrix,
+                        self.res_index_map,
+                    )
+                    if iface.num_intf_residues > 0:
+                        self.interfaces.append(iface)
 
-    def test_interface_creation(self):
-        # We expect exactly one interface: A1 with B1
-        self.assertEqual(len(self.comp.interfaces), 1)
-        iface = self.comp.interfaces[0]
-        self.assertAlmostEqual(iface.average_interface_plddt, 75.0)
-        self.assertAlmostEqual(iface.average_interface_pae, 8.0)
+        @property
+        def num_chains(self):
+            model = next(self.structure.get_models())
+            return len(list(model.get_chains()))
 
-    def test_global_metrics(self):
-        # Should have a nonzero global contact count
-        self.assertGreater(self.comp.contact_pairs_global, 0)
-        # And mpDockQ should be a float
-        self.assertIsInstance(self.comp.mpDockQ, float)
+    comp = DummyComplexAnalysis("dummy.pdb", "dummy.pae", ranking_metric_multimer, 12.0)
+    return comp
 
-if __name__ == '__main__':
-    absltest.main()
+
+def test_interface_creation(dummy_comp):
+    # We expect exactly one interface: A1 with B1
+    assert len(dummy_comp.interfaces) == 1
+    iface = dummy_comp.interfaces[0]
+    assert iface.average_interface_plddt == pytest.approx(75.0, abs=1e-5)
+    assert iface.average_interface_pae == pytest.approx(8.0, abs=1e-5)
+
+
+def test_global_metrics(dummy_comp):
+    # Should have a nonzero global contact count
+    assert dummy_comp.contact_pairs_global > 0
+    # For a dimer (2 chains), mpDockQ is not defined => NaN
+    assert math.isnan(dummy_comp.mpDockQ)

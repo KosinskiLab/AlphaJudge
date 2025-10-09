@@ -1,15 +1,14 @@
-import os
-import glob
+from pathlib import Path
 import math
 import json
 import csv
+import argparse
+import logging
 from typing import Any, Dict, List, Tuple, Set
 from functools import cached_property
 import enum
 import numpy as np
 from dataclasses import dataclass
-
-from absl import app, flags, logging
 
 from Bio.PDB import (
     PDBParser,
@@ -70,38 +69,27 @@ class ModelsToAnalyse(enum.Enum):
     BEST = 0
     ALL = 1
 
-FLAGS = flags.FLAGS
-flags.DEFINE_string('pathToDir', None,
-                    'Path to the directory containing predicted model files and ranking_debug.json')
-flags.DEFINE_float('contact_thresh', 8.0,
-                   'Distance threshold for counting contacts (Å). Two residues '
-                   'are interacting if their C-Beta are within this distance. Default is 8 Å.')
-flags.DEFINE_float('pae_filter', 100.0,
-                   'Maximum acceptable average interface PAE; interfaces above this are skipped.')
-flags.DEFINE_enum_class(
-    "models_to_analyse",
-    ModelsToAnalyse.BEST,
-    ModelsToAnalyse,
-    "If `all`, all models are used. If `best`, only the most confident model (ranked_0) is used.",
-)
+DEFAULT_CONTACT_THRESH = 8.0
+DEFAULT_PAE_FILTER = 100.0
 
 ##################################################
 # Simple reading / parsing helpers
 ##################################################
 
-def extract_job_name() -> str:
-    """Use the basename of the pathToDir directory as the job name."""
-    return os.path.basename(os.path.normpath(FLAGS.pathToDir))
+def extract_job_name(path_to_dir: str) -> str:
+    """Use the basename of the directory as the job name."""
+    return Path(path_to_dir).resolve().name
 
 def read_json(filepath: str) -> Any:
-    with open(filepath) as f:
+    p = Path(filepath)
+    with p.open() as f:
         data = json.load(f)
-    logging.info("Loaded JSON file: %s", filepath)
+    logging.info("Loaded JSON file: %s", str(p))
     return data
 
 def parse_ranking_debug_json_all(directory: str) -> Dict[str, Any]:
-    path = os.path.join(directory, "ranking_debug.json")
-    data = read_json(path)
+    path = Path(directory) / "ranking_debug.json"
+    data = read_json(str(path))
     if "order" not in data or not isinstance(data["order"], list):
         raise ValueError("Invalid ranking_debug.json: missing or invalid 'order' key")
     return data
@@ -127,18 +115,19 @@ def get_ranking_metric_for_model(data: Dict[str, Any], model: str) -> Dict[str, 
 
 def load_pae_file(directory: str, model: str) -> Dict[str, Any]:
     pae_filename = f"pae_{model}.json"
-    path = os.path.join(directory, pae_filename)
-    if not os.path.exists(path):
+    path = Path(directory) / pae_filename
+    if not path.exists():
         raise FileNotFoundError(f"PAE file '{pae_filename}' not found in directory '{directory}'.")
-    return read_json(path)
+    return read_json(str(path))
 
 def find_structure_file(directory: str, model: str) -> str:
-    cif_files = glob.glob(os.path.join(directory, f"*{model}*.cif"))
-    if cif_files:
-        return cif_files[0]
-    pdb_files = glob.glob(os.path.join(directory, f"*{model}*.pdb"))
-    if pdb_files:
-        return pdb_files[0]
+    d = Path(directory)
+    cif_matches = list(d.glob(f"*{model}*.cif"))
+    if cif_matches:
+        return str(cif_matches[0])
+    pdb_matches = list(d.glob(f"*{model}*.pdb"))
+    if pdb_matches:
+        return str(pdb_matches[0])
     raise ValueError(f"No structure file (CIF or PDB) found for model '{model}' in directory.")
 
 ##################################################
@@ -632,12 +621,14 @@ class ComplexAnalysis:
         structure_file: str,
         pae_file: str,
         ranking_metric: Dict[str, Any],
-        contact_thresh: float
+        contact_thresh: float,
+        pae_filter: float
     ) -> None:
         self.structure_file = structure_file
         self.contact_thresh = contact_thresh
+        self.pae_filter = pae_filter
 
-        ext = os.path.splitext(structure_file)[1].lower()
+        ext = Path(structure_file).suffix.lower()
         if ext == ".cif":
             parser = MMCIFParser(QUIET=True)
         else:
@@ -712,7 +703,7 @@ class ComplexAnalysis:
             iface.average_interface_pae
             for iface in self.interfaces
             if not math.isnan(iface.average_interface_pae)
-               and iface.average_interface_pae <= FLAGS.pae_filter
+               and iface.average_interface_pae <= self.pae_filter
         ]
         return sum(valid_pae) / len(valid_pae) if valid_pae else float('nan')
 
@@ -764,12 +755,17 @@ class ComplexAnalysis:
 # Processing all models
 ##################################################
 
-def process_all_models(directory: str, contact_thresh: float) -> None:
-    job_name = extract_job_name()
+def process_all_models(
+    directory: str,
+    contact_thresh: float,
+    pae_filter: float,
+    models_to_analyse: ModelsToAnalyse,
+) -> None:
+    job_name = extract_job_name(directory)
     ranking_data = parse_ranking_debug_json_all(directory)
     ranked_order: List[str] = ranking_data["order"]
 
-    if FLAGS.models_to_analyse == ModelsToAnalyse.BEST:
+    if models_to_analyse == ModelsToAnalyse.BEST:
         models = [ranked_order[0]]
     else:
         models = ranked_order
@@ -779,8 +775,8 @@ def process_all_models(directory: str, contact_thresh: float) -> None:
         try:
             r_metric = get_ranking_metric_for_model(ranking_data, model)
             struct_file = find_structure_file(directory, model)
-            pae_file = os.path.join(directory, f"pae_{model}.json")
-            comp = ComplexAnalysis(struct_file, pae_file, r_metric, contact_thresh)
+            pae_file = str(Path(directory) / f"pae_{model}.json")
+            comp = ComplexAnalysis(struct_file, pae_file, r_metric, contact_thresh, pae_filter)
 
             # If single chain, fallback to pDockQ from the first interface; else mpDockQ
             if comp.num_chains > 1:
@@ -795,7 +791,7 @@ def process_all_models(directory: str, contact_thresh: float) -> None:
                 for iface in comp.interfaces:
                     if iface.num_intf_residues == 0:
                         continue
-                    if iface.average_interface_pae > FLAGS.pae_filter:
+                    if iface.average_interface_pae > pae_filter:
                         continue
 
                     pDockQ2_val, _ = iface.pDockQ2()
@@ -838,19 +834,55 @@ def process_all_models(directory: str, contact_thresh: float) -> None:
         logging.warning("No interfaces passed the filter; writing an empty output.")
         output_data = []
 
-    output_file = os.path.join(directory, "interfaces.csv")
-    with open(output_file, "w", newline='') as f:
+    output_file = Path(directory) / "interfaces.csv"
+    with output_file.open("w", newline='') as f:
         if output_data:
             writer = csv.DictWriter(f, fieldnames=output_data[0].keys())
             writer.writeheader()
             writer.writerows(output_data)
         else:
             f.write("")
-    logging.info("Unified interface scores written to %s", output_file)
+    logging.info("Unified interface scores written to %s", str(output_file))
 
-def main(argv) -> None:
-    del argv
-    process_all_models(FLAGS.pathToDir, FLAGS.contact_thresh)
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="AlphaJudge: Interface scoring for AF outputs")
+    parser.add_argument(
+        "--pathToDir",
+        required=True,
+        help="Path to the directory with predicted models and ranking_debug.json",
+    )
+    parser.add_argument(
+        "--contact_thresh",
+        type=float,
+        default=DEFAULT_CONTACT_THRESH,
+        help="Distance threshold (Å) for defining contacts (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--pae_filter",
+        type=float,
+        default=DEFAULT_PAE_FILTER,
+        help="Max acceptable average interface PAE; interfaces above are skipped (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--models_to_analyse",
+        choices=["best", "all"],
+        default="best",
+        help="If 'all', analyze all models; if 'best', only the top-ranked model",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    mta = ModelsToAnalyse.BEST if args.models_to_analyse == "best" else ModelsToAnalyse.ALL
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
+    process_all_models(
+        args.pathToDir,
+        args.contact_thresh,
+        args.pae_filter,
+        mta,
+    )
 
 if __name__ == '__main__':
-    app.run(main)
+    main()
