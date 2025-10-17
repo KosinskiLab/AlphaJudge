@@ -1,0 +1,4 @@
+test_scores/**/*.pdb filter=lfs diff=lfs merge=lfs -text
+test_scores/**/*.cif filter=lfs diff=lfs merge=lfs -text
+test_scores/**/ranking_debug.json filter=lfs diff=lfs merge=lfs -text
+test_scores/**/pae_model_*.json filter=lfs diff=lfs merge=lfs -text
