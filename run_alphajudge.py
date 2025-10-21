@@ -1,4 +1,4 @@
-from pathlib import Path
+=from pathlib import Path
 import math
 import json
 import csv
@@ -21,6 +21,26 @@ from Bio.PDB import (
 from Bio.PDB.Residue import Residue  # type: ignore
 from Bio.PDB.SASA import ShrakeRupley  # For SASA computations
 from Bio.PDB.Atom import Atom
+
+# =========================
+# unified metrics container
+# =========================
+
+@dataclass(frozen=True)
+class ConfidenceMetrics:
+    # residue × residue PAE
+    pae_matrix: List[List[float]]
+    max_pae: float
+
+    # scalar metrics (may be None if not provided by files)
+    iptm: Optional[float]
+    ptm: Optional[float]
+    iptm_ptm: Optional[float]          # “ranking_score”/“iptm+ptm”
+    confidence_score: Optional[float]   # parsed if available; else computed fallback
+
+    # per-residue pLDDT (same ordering as residue index map)
+    plddt_residue: List[float]
+
 
 ##################################################
 # DockQ constants & data structures
@@ -72,9 +92,22 @@ class ModelsToAnalyse(enum.Enum):
 DEFAULT_CONTACT_THRESH = 8.0
 DEFAULT_PAE_FILTER = 100.0
 
-##################################################
-# Simple reading / parsing helpers
-##################################################
+# =========================
+# simple utils and helpers
+# =========================
+
+def _read_json_silent(p: Path) -> Any | None:
+    try:
+        with p.open() as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+def _safe_float(x) -> Optional[float]:
+    try:
+        return float(x)
+    except Exception:
+        return None
 
 def extract_job_name(path_to_dir: str) -> str:
     """Use the basename of the directory as the job name."""
@@ -87,28 +120,68 @@ def read_json(filepath: str) -> Any:
     logging.info("Loaded JSON file: %s", str(p))
     return data
 
-def parse_ranking_debug_json_all(directory: str) -> Dict[str, Any]:
+def read_csv(filepath: str) -> Dict[str, Any]:
+    """Parse AF3 ranking_scores.csv into an order of folder names.
+
+    Input CSV has columns: seed, sample, ranking_score. We sort by
+    descending ranking_score and produce folder names of the form:
+    seed-{seed}_sample-{sample}
+    """
+    p = Path(filepath)
+    with p.open(newline='') as f:
+        reader = csv.DictReader(f)
+        rows = [row for row in reader if row]
+    if not rows:
+        logging.warning(f"CSV {p} is empty.")
+        return {"order": []}
+
+    def parse_float(val: Any) -> float:
+        try:
+            return float(val)
+        except Exception:
+            return float("nan")
+
+    rows_sorted = sorted(rows, key=lambda r: parse_float(r.get("ranking_score")), reverse=True)
+    order = [f"seed-{r['seed']}_sample-{r['sample']}" for r in rows_sorted if 'seed' in r and 'sample' in r]
+    logging.info("Loaded CSV file: %s", str(p))
+    return {"order": order}
+
+def parse_ranking_debug_json_af2(directory: str) -> Dict[str, Any]:
     path = Path(directory) / "ranking_debug.json"
     data = read_json(str(path))
     if "order" not in data or not isinstance(data["order"], list):
         raise ValueError("Invalid ranking_debug.json: missing or invalid 'order' key")
-    return data
+    data_tagged = dict(data)
+    data_tagged["source"] = "af2"
+    return data_tagged
+
+def parse_ranking_scores_csv_af3(directory: str) -> Dict[str, Any]:
+    path = Path(directory) / "ranking_scores.csv"
+    data = read_csv(str(path))
+    if "order" not in data or not isinstance(data["order"], list):
+        raise ValueError("Invalid ranking_scores.csv: missing or invalid 'order' key")
+    data_tagged = dict(data)
+    data_tagged["source"] = "af3"
+    return data_tagged
 
 def get_ranking_metric_for_model(data: Dict[str, Any], model: str) -> Dict[str, Any]:
     """Return ranking metrics for a model."""
+    source = data.get("source")
     has_multimer = ("iptm+ptm" in data) and ("iptm" in data)
     has_monomer = ("plddts" in data) and ("ptm" in data)
 
-    if has_multimer:
+    if source == "af2" and has_multimer:
         if model not in data["iptm+ptm"] or model not in data["iptm"]:
             raise ValueError(f"Model '{model}' not found in multimer metrics")
+        # ptm may be absent in af2 multimer ranking_debug; keep None if missing
         return {
             "model": model,
             "iptm+ptm": data["iptm+ptm"][model],
             "iptm": data["iptm"][model],
+            "ptm": data.get("ptm", {}).get(model, None),
             "multimer": True,
         }
-    elif has_monomer:
+    elif source == "af2" and has_monomer:
         if model not in data["plddts"] or model not in data["ptm"]:
             raise ValueError(f"Model '{model}' not found in monomer metrics")
         return {
@@ -117,17 +190,43 @@ def get_ranking_metric_for_model(data: Dict[str, Any], model: str) -> Dict[str, 
             "ptm": data["ptm"][model],
             "multimer": False,
         }
+    elif source == "af3":
+        # AF3 CSV doesn't carry per-model metric dicts; we only have ordering.
+        return {"model": model, "multimer": False}
     else:
-        raise ValueError("Invalid ranking_debug.json: expected multimer or monomer keys not found")
+        raise ValueError("Unknown structure of the directory; expected 'af2' or 'af3' like structure")
 
-def load_pae_file(directory: str, model: str) -> Dict[str, Any]:
-    pae_filename = f"pae_{model}.json"
-    path = Path(directory) / pae_filename
-    if not path.exists():
-        raise FileNotFoundError(f"PAE file '{pae_filename}' not found in directory '{directory}'.")
-    return read_json(str(path))
+def find_pae_file(directory: str, model: str) -> str:
+    """Resolve path to PAE/confidence JSON for a given model identifier.
+
+    - AF3: directory/model/confidences.json, else summary_confidences.json
+    - AF2: 'pae_{model}.json' in the directory
+    """
+    model_dir = Path(directory) / model
+    if model_dir.is_dir():
+        conf_full = model_dir / "confidences.json"
+        if conf_full.exists():
+            return str(conf_full)
+        af3_summary = model_dir / "summary_confidences.json"
+        if af3_summary.exists():
+            return str(af3_summary)
+    # AF2 fallback
+    path = Path(directory) / f"pae_{model}.json"
+    if path.exists():
+        return str(path)
+    raise FileNotFoundError(f"Could not find PAE/confidence file for model '{model}'. Checked confidences.json/summary_confidences.json and {path}")
 
 def find_structure_file(directory: str, model: str) -> str:
+    """Resolve structure file for a model.
+
+    - AF3: directory/model/model.cif
+    - Fallback: glob by model token
+    """
+    model_dir = Path(directory) / model
+    direct_cif = model_dir / "model.cif"
+    if direct_cif.exists():
+        return str(direct_cif)
+
     d = Path(directory)
     cif_matches = list(d.glob(f"*{model}*.cif"))
     if cif_matches:
@@ -137,9 +236,167 @@ def find_structure_file(directory: str, model: str) -> str:
         return str(pdb_matches[0])
     raise ValueError(f"No structure file (CIF or PDB) found for model '{model}' in directory.")
 
-##################################################
-# Precomputation helpers
-##################################################
+# ============================================
+# residue maps and per-residue pLDDT extraction
+# ============================================
+
+def _build_residue_maps(structure) -> tuple[Dict[Tuple[str, Any], int], Dict[str, List[int]], List[Chain]]:
+    model = next(structure.get_models())
+    chains = list(model.get_chains())
+    res_index_map: Dict[Tuple[str, Any], int] = {}
+    chain_indices_by_id: Dict[str, List[int]] = {}
+    idx = 0
+    for ch in chains:
+        idxs: List[int] = []
+        for res in ch:
+            res_index_map[(ch.id, res.id)] = idx
+            idxs.append(idx)
+            idx += 1
+        chain_indices_by_id[ch.id] = idxs
+    return res_index_map, chain_indices_by_id, chains
+
+def _plddt_from_structure(
+    chains: List[Chain],
+    res_index_map: Dict[Tuple[str, Any], int],
+) -> List[float]:
+    n_res = len(res_index_map)
+    plddt = [float('nan')] * n_res
+    for ch in chains:
+        for res in ch:
+            idx = res_index_map.get((ch.id, res.id))
+            if idx is None:
+                continue
+            try:
+                plddt[idx] = float(res["CA"].get_bfactor())
+                continue
+            except Exception:
+                pass
+            vals = [float(a.get_bfactor()) for a in res.get_atoms()
+                    if a.element and a.element.upper() != "H"]
+            plddt[idx] = float(np.mean(vals)) if vals else float('nan')
+    return plddt
+
+# =========================
+# AF2 / AF3 confidence I/O
+# =========================
+
+def parse_confidences_from_af2(
+    *,
+    pae_payload: Any,                      # content of pae_{model}.json
+    ranking_debug_metric: Dict[str, Any],  # get_ranking_metric_for_model(...) result
+    chains: List[Chain],
+    res_index_map: Dict[Tuple[str, Any], int],
+    chain_indices_by_id: Dict[str, List[int]],
+) -> ConfidenceMetrics:
+    """AF2 scheme: scalars in ranking_debug.json; PAE in pae_{model}.json."""
+    if not (isinstance(pae_payload, list) and pae_payload and isinstance(pae_payload[0], dict) and
+            "predicted_aligned_error" in pae_payload[0]):
+        raise ValueError("AF2 PAE payload malformed")
+
+    pae = np.array(pae_payload[0]["predicted_aligned_error"], dtype=float)
+    max_pae = float(np.nanmax(pae)) if pae.size else float('nan')
+
+    iptm = _safe_float(ranking_debug_metric.get("iptm"))
+    ptm  = _safe_float(ranking_debug_metric.get("ptm"))  # may be None for multimer ranking
+    iptm_ptm = _safe_float(ranking_debug_metric.get("iptm+ptm"))
+
+    # confidence_score for AF2 = iptm + ptm (requested); if ptm missing, fall back to iptm_ptm
+    if iptm is not None and ptm is not None:
+        conf_score = iptm + ptm
+    else:
+        conf_score = iptm_ptm
+
+    plddt_res = _plddt_from_structure(chains, res_index_map)
+    return ConfidenceMetrics(
+        pae_matrix=pae.tolist(),
+        max_pae=max_pae,
+        iptm=iptm,
+        ptm=ptm,
+        iptm_ptm=iptm_ptm,
+        confidence_score=conf_score,
+        plddt_residue=plddt_res,
+    )
+
+def parse_confidences_from_af3(
+    *,
+    summary_payload: Dict[str, Any],   # summary_confidences.json (scalars)
+    matrix_payload: Dict[str, Any],    # confidences.json (big PAE matrix)
+    chains: List[Chain],
+    res_index_map: Dict[Tuple[str, Any], int],
+    chain_indices_by_id: Dict[str, List[int]],
+) -> ConfidenceMetrics:
+    """AF3 scheme: scalars in summary_confidences.json; matrix in confidences.json."""
+    iptm       = _safe_float(summary_payload.get("iptm"))
+    ptm        = _safe_float(summary_payload.get("ptm"))
+    iptm_ptm   = _safe_float(summary_payload.get("ranking_score")) or _safe_float(summary_payload.get("iptm+ptm"))
+    conf_score = _safe_float(summary_payload.get("confidence_score"))
+    if conf_score is None and iptm is not None and ptm is not None:
+        conf_score = 0.8 * iptm + 0.2 * ptm
+
+    total_res = sum(len(chain_indices_by_id[c.id]) for c in chains)
+    pae = np.full((total_res, total_res), 100.0, dtype=float)
+
+    if "predicted_aligned_error" in matrix_payload:
+        m = np.array(matrix_payload["predicted_aligned_error"], dtype=float)
+        if m.size:
+            pae[:, :] = m
+        max_pae = float(matrix_payload.get("max_predicted_aligned_error", np.nan))
+        if not np.isfinite(max_pae):
+            max_pae = float(np.nanmax(m)) if m.size else float('nan')
+
+    elif "pae" in matrix_payload and "token_chain_ids" in matrix_payload:
+        tokens = np.array(matrix_payload["pae"], dtype=float)
+        t_ids  = matrix_payload["token_chain_ids"]
+        max_pae = float(np.nanmax(tokens)) if tokens.size else float('nan')
+
+        seen = []
+        for c in t_ids:
+            if c not in seen:
+                seen.append(c)
+        group_to_idx = {g: i for i, g in enumerate(seen)}
+
+        for i, chi in enumerate(chains):
+            t_i = [k for k, c in enumerate(t_ids) if group_to_idx.get(c, -1) == i]
+            r_i = chain_indices_by_id.get(chi.id, [])
+            for j, chj in enumerate(chains):
+                t_j = [k for k, c in enumerate(t_ids) if group_to_idx.get(c, -1) == j]
+                r_j = chain_indices_by_id.get(chj.id, [])
+                if t_i and t_j and r_i and r_j:
+                    block = tokens[np.ix_(t_i, t_j)]
+                    val = float(np.nanmin(block)) if block.size else 100.0
+                    pae[np.ix_(r_i, r_j)] = val
+
+    elif "chain_pair_pae_min" in matrix_payload:
+        chain_min = np.array(matrix_payload["chain_pair_pae_min"], dtype=float)
+        max_pae = float(np.nanmax(chain_min)) if chain_min.size else float('nan')
+        for i, chi in enumerate(chains):
+            r_i = chain_indices_by_id.get(chi.id, [])
+            for j, chj in enumerate(chains):
+                r_j = chain_indices_by_id.get(chj.id, [])
+                val = None
+                try:
+                    val = float(chain_min[i][j])
+                except Exception:
+                    pass
+                if r_i and r_j:
+                    pae[np.ix_(r_i, r_j)] = val if val is not None else 100.0
+    else:
+        raise ValueError("AF3 confidences.json schema not recognized")
+
+    plddt_res = _plddt_from_structure(chains, res_index_map)
+    return ConfidenceMetrics(
+        pae_matrix=pae.tolist(),
+        max_pae=max_pae,
+        iptm=iptm,
+        ptm=ptm,
+        iptm_ptm=iptm_ptm,
+        confidence_score=conf_score,
+        plddt_residue=plddt_res,
+    )
+
+# =========================
+# precomputation helpers
+# =========================
 
 def compute_interface_avg_plddt(
     precomputed: Tuple[Set[Any], Set[Any], Set[Tuple[Any, Any]]]
@@ -178,25 +435,10 @@ def compute_interface_avg_pae(
     return sum(pae_values) / len(pae_values) if pae_values else float('nan')
 
 ##################################################
-# Simple shape complementarity from Lawrence & Colman (1993)
-# Approximation (toy).
+# simple shape complementarity (toy LC93)
 ##################################################
 
 def approximate_sc_lc93(surfaceA, surfaceB, w=0.5):
-    """
-    Partial re-implementation of shape complementarity from:
-      Lawrence, M. C. & Colman, P. M. (1993).
-      Shape complementarity at protein/protein interfaces.
-      J. Mol. Biol. 234, 946–950.
-
-    We compute for each surface point xA in A:
-       S_{A->B}(xA) = (nA . -nB') * exp[-w*(dist^2)]
-    where xB' is the nearest surface point in B, nB' is that point's normal.
-    Then we take the median over xA, do the same for B->A, average them => Sc.
-
-    We skip the 1.5 Å "peripheral band" step for brevity and rely on
-    approximate "buried-surface" identification.
-    """
     if not surfaceA or not surfaceB:
         return 0.0
 
@@ -232,15 +474,6 @@ def approximate_sc_lc93(surfaceA, surfaceB, w=0.5):
     return 0.5 * (medA + medB)
 
 def gather_buried_surface_points(chain_residues, other_chain_residues, distance_cutoff=5.0, dot_density=15):
-    """
-    Approximate "buried portion" of a chain's molecular surface
-    by:
-      1) generating surface points & normals via ShrakeRupley
-      2) marking any points within 'distance_cutoff' of the other chain => "buried"
-
-    We skip the formal "exclude a 1.5 A band" from the LC93 approach for brevity.
-    Returns a list of (xyz, normal).
-    """
     sr = ShrakeRupley(probe_radius=1.4, n_points=dot_density)
     struct = Structure.Structure("tempA")
     model = Model.Model(0)
@@ -259,7 +492,6 @@ def gather_buried_surface_points(chain_residues, other_chain_residues, distance_
             for (x, y, z, nx, ny, nz) in dots:
                 surface_points.append((np.array([x, y, z]), np.array([nx, ny, nz])))
 
-    # Gather heavy atoms from the other chain
     other_atoms = []
     for rr in other_chain_residues:
         for atm in rr.get_atoms():
@@ -417,19 +649,14 @@ class InterfaceAnalysis:
         pDockQ2_val = PDOCKQ2_CONSTANTS.score(x)
         return pDockQ2_val, mean_ptm
 
-    # -------------------------------------------------------
-    # ipSAE (Residue-specific D0 with PAE cutoff)
-    # Adopted from https://github.com/DunbrackLab/IPSAE/blob/main/ipsae.py
-    # -------------------------------------------------------
+    # ipSAE
     def _pair_type(self) -> str:
-        """Return 'nucleic_acid' if either side contains NA residues, else 'protein'."""
         nuc = {"DA", "DC", "DT", "DG", "A", "C", "U", "G"}
         resnames = {r.get_resname().strip() for r in self.interface_residues_chain1.union(self.interface_residues_chain2)}
         return "nucleic_acid" if (resnames & nuc) else "protein"
 
     @staticmethod
     def _calc_d0(n: int, pair_type: str) -> float:
-        """Yang & Skolnick d0 with minimum 1.0 (protein) or 2.0 (NA)."""
         L = max(27.0, float(n))
         base = 1.24 * (L - 15.0) ** (1.0 / 3.0) - 1.8
         minv = 2.0 if pair_type == "nucleic_acid" else 1.0
@@ -440,11 +667,6 @@ class InterfaceAnalysis:
         return [i for i in idxs if i is not None]
 
     def ipsae_d0res_asym(self, pae_cutoff: float = 10.0) -> float:
-        """
-        A->B asymmetric ipSAE:
-        For each residue i in chain1, average ptm over j in chain2 with PAE<cutoff,
-        using residue-specific D0 = d0(n_valid_j, pair_type). Return max over i.
-        """
         if self._pae_matrix is None:
             return float('nan')
         idxs1 = self._chain_indices(self.chain1)
@@ -469,7 +691,6 @@ class InterfaceAnalysis:
         return best if found_any else float('nan')
 
     def ipsae_d0res_max(self, pae_cutoff: float = 10.0) -> float:
-        """Max over directions: max( A->B, B->A ) without re-instantiation."""
         if self._pae_matrix is None:
             return float('nan')
         arr = np.asarray(self._pae_matrix)
@@ -507,21 +728,10 @@ class InterfaceAnalysis:
         return max(a_to_b, b_to_a)
 
     def ipsae(self, pae_cutoff: float = 10.0) -> float:
-        """
-        Returns asymmetric ipSAE (A->B)
-        with default PAE cutoff 10 Å.
-        """
         return self.ipsae_d0res_asym(pae_cutoff)
 
-    # -------------------------------------------------------
-    # LIS (Local Interaction Score based on transform of PAEs)
-    # Kim, Hu, Comjean, Rodiger, Mohr, Perrimon. https://www.biorxiv.org/content/10.1101/2024.02.19.580970v1
-    # Adopted from https://github.com/DunbrackLab/IPSAE/blob/main/ipsae.py
-    # -------------------------------------------------------
+    # LIS
     def lis(self) -> float:
-        """
-        LIS: average of (12 - PAE)/12 over all i-j with PAE <= 12 (A->B direction).
-        """
         if self._pae_matrix is None:
             return float('nan')
         cid1 = self.chain1[0].get_parent().id
@@ -543,15 +753,9 @@ class InterfaceAnalysis:
         scores = (12.0 - valid) / 12.0
         return float(np.mean(scores))
 
-    # -------------------------------------------------------
-    # Hydrogen bonds (hb)
-    # -------------------------------------------------------
+    # hydrogen bonds
     @cached_property
     def hb(self) -> int:
-        """
-        Naive hydrogen-bond count: any chain1 N/O atom within 3.5 Å
-        of chain2 N/O atom (ignores angles, etc.).
-        """
         chain1_atoms = []
         for residue in self.chain1:
             for atom in residue.get_atoms():
@@ -585,15 +789,9 @@ class InterfaceAnalysis:
 
         return hbond_count
 
-    # -------------------------------------------------------
-    # Salt bridges (sb)
-    # -------------------------------------------------------
+    # salt bridges
     @cached_property
     def sb(self) -> int:
-        """
-        Naive salt-bridge count: side-chain atoms of ARG/LYS within 4.0 Å
-        of side-chain atoms of ASP/GLU. Ignores orientation.
-        """
         pos_res = {"ARG", "LYS"}
         neg_res = {"ASP", "GLU"}
 
@@ -636,15 +834,9 @@ class InterfaceAnalysis:
 
         return sb_count
 
-    # -------------------------------------------------------
-    # Shape complementarity
-    # -------------------------------------------------------
+    # shape complementarity
     @cached_property
     def sc(self) -> float:
-        """
-        Approximate shape complementarity following
-        Lawrence & Colman (1993) (CCP4 sc code).
-        """
         surfaceA = gather_buried_surface_points(
             self.interface_residues_chain1, self.interface_residues_chain2,
             distance_cutoff=5.0, dot_density=15
@@ -655,15 +847,9 @@ class InterfaceAnalysis:
         )
         return approximate_sc_lc93(surfaceA, surfaceB, w=0.5)
 
-    # -------------------------------------------------------
-    # Interface area & solvation energy
-    # -------------------------------------------------------
+    # interface area & solvation energy
     @cached_property
     def int_area(self) -> float:
-        """
-        Interface area:
-          (SASA(chain1) + SASA(chain2)) - SASA(chain1+chain2)
-        """
         sasa_c1 = self._compute_sasa_for_chain(self.chain1)
         sasa_c2 = self._compute_sasa_for_chain(self.chain2)
         sasa_complex = self._compute_sasa_for_complex(self.chain1, self.chain2)
@@ -671,16 +857,10 @@ class InterfaceAnalysis:
 
     @cached_property
     def int_solv_en(self) -> float:
-        """
-        Rough solvation energy = -gamma * (buried_area).
-        gamma ~ 0.0072 (kcal/mol/Å^2).
-        """
         gamma = 0.0072
         return -gamma * self.int_area
 
-    # -----------
-    # SASA Helpers
-    # -----------
+    # SASA helpers
     def _compute_sasa_for_chain(self, chain_res_list: List[Residue]) -> float:
         sr = ShrakeRupley()
         tmp_struct = Structure.Structure("chain_s")
@@ -721,78 +901,40 @@ class InterfaceAnalysis:
         return total_sasa
 
 ##################################################
-# ComplexAnalysis
+# ComplexAnalysis (file-agnostic)
 ##################################################
 
 class ComplexAnalysis:
-    """
-    Represents a predicted complex.
-    Loads structure, ranking, PAE data; creates per-interface analyses;
-    computes global metrics (mpDockQ, etc.).
-    """
     def __init__(
         self,
-        structure_file: str,
-        pae_file: str,
-        ranking_metric: Dict[str, Any],
+        structure,                  # Bio.PDB structure object (already parsed)
+        metrics: ConfidenceMetrics, # unified metrics (already parsed)
         contact_thresh: float,
-        pae_filter: float
+        pae_filter: float,
     ) -> None:
-        self.structure_file = structure_file
+        self.structure = structure
         self.contact_thresh = contact_thresh
         self.pae_filter = pae_filter
 
-        ext = Path(structure_file).suffix.lower()
-        if ext == ".cif":
-            parser = MMCIFParser(QUIET=True)
-        else:
-            parser = PDBParser(QUIET=True)
-        self.structure = parser.get_structure("complex", structure_file)
+        # local maps (analysis-only)
+        self.res_index_map, self.chain_indices_by_id, self._chains = _build_residue_maps(self.structure)
 
-        self.ranking_metric = ranking_metric
-        self.pae_data = read_json(pae_file)
-        try:
-            self.max_predicted_aligned_error = self.pae_data[0]["max_predicted_aligned_error"]
-        except Exception as e:
-            logging.error("Error extracting max_predicted_aligned_error: %s", e)
-            self.max_predicted_aligned_error = float('nan')
+        # confidences
+        self.pae_matrix = metrics.pae_matrix
+        self.max_predicted_aligned_error = metrics.max_pae
+        self._iptm = metrics.iptm
+        self._ptm = metrics.ptm
+        self._iptm_ptm = metrics.iptm_ptm
+        self._confidence_score = metrics.confidence_score
+        self._plddt_residue = metrics.plddt_residue
 
-        try:
-            self._predicted_aligned_error = self.pae_data[0]["predicted_aligned_error"]
-        except Exception as e:
-            logging.error("Error extracting predicted_aligned_error: %s", e)
-            self._predicted_aligned_error = None
-
-        if ranking_metric.get("multimer"):
-            self._iptm_ptm = ranking_metric["iptm+ptm"]
-            self._iptm = ranking_metric["iptm"]
-        else:
-            self._iptm_ptm = None
-            self._iptm = None
-
-        # Build the residue index map & create interfaces
-        model = next(self.structure.get_models())
-        chains = list(model.get_chains())
-        self.res_index_map: Dict[Tuple[str, Any], int] = {}
-        self.chain_indices_by_id: Dict[str, List[int]] = {}
-        idx = 0
-        for chn in chains:
-            indices_list: List[int] = []
-            for res in chn:
-                self.res_index_map[(chn.id, res.id)] = idx
-                indices_list.append(idx)
-                idx += 1
-            self.chain_indices_by_id[chn.id] = indices_list
-
-        self.pae_matrix = self._predicted_aligned_error
-
-        # Create interface analyses
-        self.interfaces = []
-        for i in range(len(chains)):
-            for j in range(i + 1, len(chains)):
+        # interfaces
+        self.interfaces: List[InterfaceAnalysis] = []
+        for i in range(len(self._chains)):
+            for j in range(i + 1, len(self._chains)):
                 iface = InterfaceAnalysis(
-                    list(chains[i]),
-                    list(chains[j]),
+                    list(self._chains[i]),
+                    list(self._chains[j]),
                     self.contact_thresh,
                     self.pae_matrix,
                     self.res_index_map,
@@ -803,52 +945,55 @@ class ComplexAnalysis:
 
     @property
     def num_chains(self) -> int:
-        model = next(self.structure.get_models())
-        return len(list(model.get_chains()))
+        return len(self._chains)
 
     @property
     def iptm_ptm(self) -> float:
-        return self._iptm_ptm if self._iptm_ptm is not None else float('nan')
+        return float(self._iptm_ptm) if self._iptm_ptm is not None else float('nan')
 
     @property
     def iptm(self) -> float:
-        return self._iptm if self._iptm is not None else float('nan')
+        return float(self._iptm) if self._iptm is not None else float('nan')
+
+    @property
+    def ptm(self) -> float:
+        return float(self._ptm) if self._ptm is not None else float('nan')
+
+    @property
+    def confidence_score(self) -> float:
+        return float(self._confidence_score) if self._confidence_score is not None else float('nan')
+
+    @property
+    def plddt_residue(self) -> List[float]:
+        return self._plddt_residue
 
     @property
     def average_interface_pae(self) -> float:
         if not self.interfaces:
             return float('nan')
-        valid_pae = [
-            iface.average_interface_pae
-            for iface in self.interfaces
-            if not math.isnan(iface.average_interface_pae)
-               and iface.average_interface_pae <= self.pae_filter
+        vals = [
+            i.average_interface_pae
+            for i in self.interfaces
+            if not math.isnan(i.average_interface_pae) and i.average_interface_pae <= self.pae_filter
         ]
-        return sum(valid_pae) / len(valid_pae) if valid_pae else float('nan')
+        return sum(vals) / len(vals) if vals else float('nan')
 
     @cached_property
     def average_interface_plddt(self) -> float:
         if not self.interfaces:
             return float('nan')
-        vals = [iface.average_interface_plddt for iface in self.interfaces]
+        vals = [i.average_interface_plddt for i in self.interfaces]
         return sum(vals) / len(vals)
 
     @cached_property
     def contact_pairs_global(self) -> int:
-        """Residue-level contacts using CB (or CA fallback) across different chains."""
-        model = next(self.structure.get_models())
-        chains = list(model.get_chains())
-
-        # Select one representative atom per residue (CB if present, else CA)
-        rep_atoms = []  # list of (atom, residue)
-        for chn in chains:
-            for res in chn:
+        rep_atoms = []
+        for ch in self._chains:
+            for res in ch:
                 try:
-                    atom = res["CB"] if "CB" in res else res["CA"]
+                    rep_atoms.append((res["CB"] if "CB" in res else res["CA"], res))
                 except Exception:
                     continue
-                rep_atoms.append((atom, res))
-
         if not rep_atoms:
             return 0
 
@@ -856,16 +1001,13 @@ class ComplexAnalysis:
         visited_pairs = set()
         count = 0
         for atom1, res1 in rep_atoms:
-            neighbors = ns.search(atom1.coord, self.contact_thresh)
-            for atom2 in neighbors:
+            for atom2 in ns.search(atom1.coord, self.contact_thresh):
                 if atom2 is atom1:
                     continue
                 res2 = atom2.get_parent()
-                ch1 = res1.get_parent().id
-                ch2 = res2.get_parent().id
+                ch1, ch2 = res1.get_parent().id, res2.get_parent().id
                 if ch1 == ch2:
                     continue
-                # Unique residue-residue pair key
                 key = tuple(sorted([(ch1, res1.id), (ch2, res2.id)]))
                 if key not in visited_pairs:
                     visited_pairs.add(key)
@@ -874,20 +1016,14 @@ class ComplexAnalysis:
 
     @cached_property
     def compute_complex_score(self) -> float:
-        """= average_interface_plddt * log10(contact_pairs_global + 1)."""
         return self.average_interface_plddt * math.log10(self.contact_pairs_global + 1)
 
     @cached_property
     def mpDockQ(self) -> float:
-        """
-        mpDockQ: only meaningful if num_chains > 2
-        """
-        if self.num_chains <= 2:
-            return float('nan')
-        return MPDOCKQ_CONSTANTS.score(self.compute_complex_score)
+        return MPDOCKQ_CONSTANTS.score(self.compute_complex_score) if self.num_chains > 2 else float('nan')
 
 ##################################################
-# Processing all models
+# Processing all models (single-pass I/O, two schemes)
 ##################################################
 
 def process_all_models(
@@ -897,21 +1033,74 @@ def process_all_models(
     models_to_analyse: ModelsToAnalyse,
 ) -> None:
     job_name = extract_job_name(directory)
-    ranking_data = parse_ranking_debug_json_all(directory)
-    ranked_order: List[str] = ranking_data["order"]
-
-    if models_to_analyse == ModelsToAnalyse.BEST:
-        models = [ranked_order[0]]
+    # If there is ranking_debug.json, this is output from AlphaFold2.
+    if (Path(directory) / "ranking_debug.json").exists():
+        logging.info("Found ranking_debug.json, this is output from AlphaFold2.")
+        ranking_data = parse_ranking_debug_json_af2(directory)
+        ranked_order: List[str] = ranking_data["order"]
+    elif (Path(directory) / "ranking_scores.csv").exists():
+        logging.info("Found ranking_scores.csv, this is output from AlphaFold3.")
+        ranking_data = parse_ranking_scores_csv_af3(directory)
+        ranked_order: List[str] = ranking_data["order"]
     else:
-        models = ranked_order
+        raise ValueError("No ranking_debug.json or ranking_scores.csv found in directory.")
+
+    models = [ranked_order[0]] if models_to_analyse == ModelsToAnalyse.BEST else ranked_order
 
     output_data = []
     for model in models:
         try:
             r_metric = get_ranking_metric_for_model(ranking_data, model)
-            struct_file = find_structure_file(directory, model)
-            pae_file = str(Path(directory) / f"pae_{model}.json")
-            comp = ComplexAnalysis(struct_file, pae_file, r_metric, contact_thresh, pae_filter)
+
+            # parse structure once
+            struct_path = find_structure_file(directory, model)
+            parser = MMCIFParser(QUIET=True) if Path(struct_path).suffix.lower() == ".cif" else PDBParser(QUIET=True)
+            structure = parser.get_structure("complex", struct_path)
+
+            # residue maps (for pLDDT extraction)
+            res_index_map, chain_indices_by_id, chains = _build_residue_maps(structure)
+
+            # route by scheme
+            if ranking_data.get("source") == "af2":
+                pae_path = Path(directory) / f"pae_{model}.json"
+                pae_payload = read_json(str(pae_path))
+                metrics = parse_confidences_from_af2(
+                    pae_payload=pae_payload,
+                    ranking_debug_metric=r_metric,
+                    chains=chains,
+                    res_index_map=res_index_map,
+                    chain_indices_by_id=chain_indices_by_id,
+                )
+            else:  # af3
+                model_dir = Path(directory) / model
+                conf_matrix_path = model_dir / "confidences.json"
+                summary_path     = model_dir / "summary_confidences.json"
+
+                # load payloads (support case where single file may carry both fields)
+                matrix_payload = read_json(str(conf_matrix_path)) if conf_matrix_path.exists() else {}
+                summary_payload = read_json(str(summary_path)) if summary_path.exists() else {}
+
+                if not isinstance(summary_payload, dict) or not summary_payload:
+                    raise ValueError(f"Missing AF3 summary_confidences.json for {model}")
+                if not isinstance(matrix_payload, dict) or not matrix_payload:
+                    # some AF3 drops everything into confidences.json; try reusing summary_payload
+                    matrix_payload = summary_payload
+
+                metrics = parse_confidences_from_af3(
+                    summary_payload=summary_payload,
+                    matrix_payload=matrix_payload,
+                    chains=chains,
+                    res_index_map=res_index_map,
+                    chain_indices_by_id=chain_indices_by_id,
+                )
+
+            # analysis layer (no file I/O)
+            comp = ComplexAnalysis(
+                structure=structure,
+                metrics=metrics,
+                contact_thresh=contact_thresh,
+                pae_filter=pae_filter,
+            )
 
             # If single chain, fallback to pDockQ from the first interface; else mpDockQ
             if comp.num_chains > 1:
@@ -919,9 +1108,7 @@ def process_all_models(
             else:
                 global_score = comp.interfaces[0].pDockQ if comp.interfaces else float('nan')
 
-            binding_energy = -1.3 * comp.contact_pairs_global  # placeholder or real
             model_used = model
-
             if comp.interfaces:
                 for iface in comp.interfaces:
                     if iface.num_intf_residues == 0:
@@ -940,6 +1127,8 @@ def process_all_models(
                         "interface": iface_label,
                         "iptm_ptm": comp.iptm_ptm,
                         "iptm": comp.iptm,
+                        "ptm": comp.ptm,
+                        "confidence_score": comp.confidence_score,
                         "pDockQ/mpDockQ": global_score,
                         "average_interface_pae": iface.average_interface_pae,
                         "interface_average_plddt": iface.average_interface_plddt,
@@ -980,11 +1169,11 @@ def process_all_models(
     logging.info("Unified interface scores written to %s", str(output_file))
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AlphaJudge: Interface scoring for AF outputs")
+    parser = argparse.ArgumentParser(description="AlphaJudge: interface scoring for AF2/AF3 outputs")
     parser.add_argument(
         "--path_to_dir",
         required=True,
-        help="Path to the directory with predicted models and ranking_debug.json",
+        help="Path to the directory with models predicted by AlphaFold2 or AlphaFold3",
     )
     parser.add_argument(
         "--contact_thresh",
@@ -1005,7 +1194,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="If 'all', analyze all models; if 'best', only the top-ranked model",
     )
     return parser
-
 
 def main() -> None:
     parser = build_arg_parser()
