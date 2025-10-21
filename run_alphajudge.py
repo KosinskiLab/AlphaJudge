@@ -1,4 +1,4 @@
-=from pathlib import Path
+from pathlib import Path
 import math
 import json
 import csv
@@ -173,7 +173,7 @@ def get_ranking_metric_for_model(data: Dict[str, Any], model: str) -> Dict[str, 
     if source == "af2" and has_multimer:
         if model not in data["iptm+ptm"] or model not in data["iptm"]:
             raise ValueError(f"Model '{model}' not found in multimer metrics")
-        # ptm may be absent in af2 multimer ranking_debug; keep None if missing
+        # iptm may be absent in af2 multimer ranking_debug; keep None if missing
         return {
             "model": model,
             "iptm+ptm": data["iptm+ptm"][model],
@@ -296,15 +296,30 @@ def parse_confidences_from_af2(
     pae = np.array(pae_payload[0]["predicted_aligned_error"], dtype=float)
     max_pae = float(np.nanmax(pae)) if pae.size else float('nan')
 
-    iptm = _safe_float(ranking_debug_metric.get("iptm"))
-    ptm  = _safe_float(ranking_debug_metric.get("ptm"))  # may be None for multimer ranking
-    iptm_ptm = _safe_float(ranking_debug_metric.get("iptm+ptm"))
+    is_multimer = bool(ranking_debug_metric.get("multimer", False))
 
-    # confidence_score for AF2 = iptm + ptm (requested); if ptm missing, fall back to iptm_ptm
-    if iptm is not None and ptm is not None:
-        conf_score = iptm + ptm
-    else:
+    if is_multimer:
+        conf = _safe_float(ranking_debug_metric.get("iptm+ptm"))
+        iptm = _safe_float(ranking_debug_metric.get("iptm"))
+        # If confidence and iptm are present, derive ptm = (conf - 0.8*iptm)/0.2
+        if conf is not None and iptm is not None:
+            ptm = (conf - 0.8 * iptm) / 0.2
+        else:
+            ptm = _safe_float(ranking_debug_metric.get("ptm"))
+        # Prefer provided conf; else compute from available iptm/ptm
+        if conf is not None:
+            iptm_ptm = conf
+        elif iptm is not None and ptm is not None:
+            iptm_ptm = 0.8 * iptm + 0.2 * ptm
+        else:
+            iptm_ptm = None
         conf_score = iptm_ptm
+    else:
+        # Monomer: no iptm; ptm provided directly
+        iptm = 0.0
+        ptm = _safe_float(ranking_debug_metric.get("ptm"))
+        iptm_ptm = ptm
+        conf_score = ptm
 
     plddt_res = _plddt_from_structure(chains, res_index_map)
     return ConfidenceMetrics(
@@ -330,6 +345,9 @@ def parse_confidences_from_af3(
     ptm        = _safe_float(summary_payload.get("ptm"))
     iptm_ptm   = _safe_float(summary_payload.get("ranking_score")) or _safe_float(summary_payload.get("iptm+ptm"))
     conf_score = _safe_float(summary_payload.get("confidence_score"))
+    # Derive missing values using AF3 convention: conf ~ 0.8*iptm + 0.2*ptm
+    if iptm_ptm is not None and iptm is not None and (ptm is None):
+        ptm = (iptm_ptm - 0.8 * iptm) / 0.2
     if conf_score is None and iptm is not None and ptm is not None:
         conf_score = 0.8 * iptm + 0.2 * ptm
 
