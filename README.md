@@ -44,15 +44,20 @@ Option A: conda/mamba env (recommended)
 git clone https://github.com/KosinskiLab/AlphaJudge.git
 cd AlphaJudge
 mamba env create -f environment.yaml
-conda activate alphajudge
+mamba activate alphajudge
 ```
 
 Option B: pip install in existing environment
 
 ```bash
-pip install -e .
+pip install .
 ```
 
+Option C: pip editable install in existing environment
+
+```bash
+pip install -e .
+```
 Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`.
 
 ---
@@ -149,10 +154,10 @@ Tests exercise both AF2 and AF3 parsers and validate the CSV fields against bund
 
 Please cite:
 
-> AlphaJudge: an evaluation pipeline for AlphaFold-predicted complexes. (2025).
+> AlphaJudge: we will come up with a better name. (xxxx).
 > `https://github.com/KosinskiLab/AlphaJudge`
 
-License: MIT for this repository. AlphaFold/AF3, PyRosetta, and other tools remain under their own licenses.
+License: MIT for this repository. AlphaFold2/AlphaFold3, and other tools remain under their own licenses.
 
 ---
 
