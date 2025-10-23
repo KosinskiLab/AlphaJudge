@@ -1,0 +1,8 @@
+[project]
+name = "alphajudge"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["biopython", "numpy"]
+
+[project.scripts]
+alphajudge = "alphajudge.cli:main"
