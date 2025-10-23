@@ -1,5 +1,6 @@
 # AlphaJudge: I am the score!
-AlphaJudge is a pipeline that evaluates AlphaFold2-predicted protein complexes by combining AI-derived confidence metrics (ipTM, pDockQ, PAE, etc.) with physics-based interface features (contacts, area, energy, electrostatics), producing a unified CSV report for model validation and benchmarking.
+
+AlphaJudge evaluates AlphaFold-predicted protein complexes by merging AI-derived confidences (ipTM, pTM, iptm+ptm/confidence_score, pLDDT, PAE) with fast, self-contained interface biophysics (contacts, H-bonds, salt bridges, buried area, solvation proxy, shape complementarity) into a tidy CSV for downstream analysis.
 
 ![AlphaJudge icon](images/icon.png)
 
@@ -7,39 +8,37 @@ AlphaJudge is a pipeline that evaluates AlphaFold2-predicted protein complexes b
 [![python](https://img.shields.io/badge/python-3.10+-blue.svg)]()
 [![platform](https://img.shields.io/badge/platform-Linux%20%7C%20HPC-lightgrey.svg)]()
 
-AlphaJudge evaluates **AlphaFold2-predicted complexes** and emits a tidy **CSV** that fuses **AI-derived confidence** (ipTM, pDockQ, PAE, pLDDT) with **physics/geometry** (area, contacts, H-bonds, salt bridges, electrostatics, etc.). It’s a fast sanity check for interface plausibility and a convenient feature generator for ML.
-
 ---
 
 ## What it does
 
-AlphaJudge parses AF2 multimer outputs and summarizes **per-model / per-interface** metrics:
+AlphaJudge parses AF2 and AF3 outputs and summarizes per-model / per-interface metrics:
 
-| category                  | metrics (examples)                                                                  | notes                |
-| ------------------------- | ----------------------------------------------------------------------------------- | -------------------- |
-| **AlphaFold internal**    | ipTM, pTM, pDockQ/mpDockQ, avg interface PAE, avg interface pLDDT                   | from AF2 confidences |
-| **physical & geometric**  | buried area, contact pairs, H-bonds, salt bridges, hydrophobic/polar/charged counts | CCP4-style reimpls   |
-| **energetic (opt-in)**    | binding energy (PyRosetta), interface solvation, electrostatic complementarity      | extra deps           |
-| **external / ML add-ons** | PI-score, VoroIF-GNN, ConSurf, ActifpTM, ipSAE, Pesto                               | optional             |
-| **experimental / future** | FoldSeek-Multimer, conservation-weighted contacts, distogram-derived contacts       | planned              |
+| category | metrics (examples) | notes |
+| --- | --- | --- |
+| **AlphaFold internal** | ipTM, pTM, iptm+ptm/confidence_score, avg interface PAE, avg interface pLDDT | unified for AF2/AF3 |
+| **physical & geometric** | buried area, contact pairs, H-bonds, salt bridges, interface composition | self-contained |
+| **derived scores** | pDockQ, pDockQ2, mpDockQ, ipSAE, LIS, interface score | implemented here |
 
-Use cases: rank poses, benchmark AF2 confidences, or feed ML on PPI datasets.
+Use cases: rank poses, sanity-check AF confidences, or export features for ML.
 
 ---
 
 ## Pipeline overview
 
 ```
-AlphaFold2 models  →  AlphaJudge  →  scored_interfaces.csv
+AlphaFold models (AF2 or AF3)  →  AlphaJudge  →  interfaces.csv
 ```
 
-**under the hood**
-
-1. parse AF PDB/JSON/PKL • 2) detect interfaces • 3) compute descriptors • 4) export a tidy table
+- Detects AF2 vs AF3 automatically from the run directory
+- Loads structure and confidences, computes interface descriptors
+- Writes `interfaces.csv` into the same directory
 
 ---
 
 ## Installation
+
+Option A: conda/mamba env (recommended)
 
 ```bash
 git clone https://github.com/KosinskiLab/AlphaJudge.git
@@ -48,41 +47,101 @@ mamba env create -f environment.yaml
 conda activate alphajudge
 ```
 
-**requirements:** Python ≥3.10, biopython, numpy, pandas, freesasa
-**optional:** PyRosetta, VoroIF-GNN, Pesto
-
----
-
-## Usage
+Option B: pip install in existing environment
 
 ```bash
-alphajudge run \
-  --models /path/to/alphafold_outputs \
-  --output scores.csv
+pip install -e .
 ```
 
-**useful flags**
+Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`.
 
+---
+
+## CLI usage
+
+The package exposes an `alphajudge` entry point.
+
+```bash
+alphajudge --path_to_dir /path/to/alphafold_run \
+           --contact_thresh 8.0 \
+           --pae_filter 100.0 \
+           --models_to_analyse best
 ```
---include-pyrosetta         # add binding energy
---include-voroif             # add VoroIF-GNN
---contact-threshold 5.0      # interface cutoff (Å)
+
+- **--path_to_dir**: Run directory containing AF2 or AF3 outputs
+- **--contact_thresh**: Contact cutoff in Å (default: 8.0)
+- **--pae_filter**: Skip interfaces with avg interface PAE above this (default: 100.0)
+- **--models_to_analyse**: `best` or `all` (default: best)
+
+Output: writes `interfaces.csv` next to the input directory.
+
+Examples
+
+```bash
+# AF2 example (directory contains ranking_debug.json, pae_*.json, and model files)
+alphajudge --path_to_dir test_data/af2/pos_dimers/Q13148+Q92900
+
+# AF3 example (directory contains ranking_scores.csv, per-model summary/confidence files, and model files)
+alphajudge --path_to_dir test_data/af3/pos_dimers/Q13148+Q92900 --models_to_analyse all
 ```
 
 ---
 
-## Example output
+## Programmatic use
 
-| model_id | ipTM | mpDockQ | avg_intf_pae | int_area (Å²) | h_bonds |   sc | binding_energy (a.u.) | electrostatic_complementarity | PI_score |
-| :------- | ---: | ------: | -----------: | ------------: | ------: | ---: | ------------------------: | ----------------------------: | -------: |
-| A+B      | 0.86 |    0.72 |         2.10 |          1830 |       9 | 0.71 |                    -12345 |                          0.43 |     0.85 |
-| A+C      | 0.64 |    0.39 |         5.42 |           780 |       3 | 0.48 |                     -2345 |                          0.12 |     0.41 |
+Minimal example:
+
+```python
+from pathlib import Path
+from alphajudge.parsers import pick_parser
+from alphajudge.runner import process
+
+run_dir = Path("test_data/af2/pos_dimers/Q13148+Q92900")
+parser = pick_parser(run_dir)
+print("Detected parser:", parser.name)  # "af2" or "af3"
+process(str(run_dir), contact_thresh=8.0, pae_filter=100.0, models_to_analyse="best")
+print("Wrote:", run_dir / "interfaces.csv")
+```
+
+Key outputs per interface include: `average_interface_pae`, `interface_average_plddt`, `interface_contact_pairs`, `interface_area`, `interface_hb`, `interface_sb`, `interface_sc`, `interface_solv_en`, `interface_ipSAE`, `interface_LIS`, `interface_pDockQ2`, and per-run `pDockQ/mpDockQ`.
 
 ---
 
-## Motivation
+## Expected input layout
 
-AF2 scores ≠ guaranteed biophysics. **AlphaJudge** adds interpretable, physics-aware checks and export-ready features for downstream modeling and ML.
+AlphaJudge expects standard AlphaFold run outputs.
+
+- AF2: directory with `ranking_debug.json`, `pae_<model>.json`, and model structure files (`model.cif` or `*.pdb/*.cif`)
+- AF3: directory with `ranking_scores.csv`, per-model `summary_confidences.json` and `confidences.json` (or top-level `ranked_0_summary_confidences.json`), and structure files
+
+The tool searches for `model.cif` inside each model subdirectory first; otherwise it tries to match `*<model>*.cif` or `*<model>*.pdb` at the run root.
+
+---
+
+## Output schema (CSV)
+
+AlphaJudge writes `interfaces.csv` with one row per interface (and includes the selected model). Core fields include:
+
+- **jobs**: run directory name
+- **model_used**: selected model identifier
+- **interface**: chain-pair label (e.g., `A_B`)
+- **iptm_ptm, iptm, ptm, confidence_score**: unified AF confidences
+- **pDockQ/mpDockQ**: global dockQ-like score (mpDockQ if multimer; pDockQ if dimer)
+- **average_interface_pae, interface_average_plddt, interface_num_intf_residues**
+- **interface_contact_pairs, interface_score, interface_pDockQ2, interface_ipSAE, interface_LIS**
+- **interface_hb, interface_sb, interface_sc, interface_area, interface_solv_en**
+
+Exact header is asserted in tests to be consistent across AF2 and AF3 runs.
+
+---
+
+## Testing
+
+```bash
+pytest -q
+```
+
+Tests exercise both AF2 and AF3 parsers and validate the CSV fields against bundled fixtures in `test_data/`.
 
 ---
 
@@ -90,17 +149,15 @@ AF2 scores ≠ guaranteed biophysics. **AlphaJudge** adds interpretable, physics
 
 Please cite:
 
-> Our future paper: *AlphaJudge: an evaluation pipeline for AlphaFold-predicted complexes.* (2025).
-> [https://github.com/KosinskiLab/AlphaJudge](https://github.com/KosinskiLab/AlphaJudge)
+> AlphaJudge: an evaluation pipeline for AlphaFold-predicted complexes. (2025).
+> `https://github.com/KosinskiLab/AlphaJudge`
 
-License: AlphaFold, PyRosetta, and other tools remain under their respective licenses.
+License: MIT for this repository. AlphaFold/AF3, PyRosetta, and other tools remain under their own licenses.
 
 ---
 
 ## Roadmap
 
-* ActifpTM, ipSAE, FoldSeek-Multimer integration
-* small MLP to combine features on PPI gold-standard datasets
-* optional HTML report with plots and per-interface summaries
-
----
+- Additional metrics: ActifpTM, FoldSeek-Multimer integration
+- Optional HTML report with plots and per-interface summaries
+- Lightweight learned combiner for PPI benchmarking

@@ -205,3 +205,32 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Git-lfs
+/test_scores/**
+
+# Generated outputs in test_data
+test_data/**/interfaces.csv
+
+# Ignore all test_data by default, then include only what's required for tests
+test_data/**
+!test_data/
+!test_data/af2/
+!test_data/af2/pos_dimers/
+!test_data/af2/pos_dimers/Q13148+Q92900/
+!test_data/af2/pos_dimers/Q13148+Q92900/ranking_debug.json
+!test_data/af2/pos_dimers/Q13148+Q92900/pae_model_*.json
+!test_data/af2/pos_dimers/Q13148+Q92900/ranked_0.cif
+!test_data/af2/pos_dimers/Q13148+Q92900/ranked_0.pdb
+!test_data/af2/pos_dimers/Q13148+Q92900/unrelaxed_model_*.pdb
+
+!test_data/af3/
+!test_data/af3/pos_dimers/
+!test_data/af3/pos_dimers/Q13148+Q92900/
+!test_data/af3/pos_dimers/Q13148+Q92900/ranking_scores.csv
+!test_data/af3/pos_dimers/Q13148+Q92900/ranked_0_summary_confidences.json
+!test_data/af3/pos_dimers/Q13148+Q92900/ranked_0_model.cif
+!test_data/af3/pos_dimers/Q13148+Q92900/seed-*/
+!test_data/af3/pos_dimers/Q13148+Q92900/seed-*/confidences.json
+!test_data/af3/pos_dimers/Q13148+Q92900/seed-*/summary_confidences.json
+!test_data/af3/pos_dimers/Q13148+Q92900/seed-*/model.cif
