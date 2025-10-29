@@ -84,4 +84,4 @@ jobs:
           file: ./docker/Dockerfile
           target: runtime
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/alphajudge:${{ github.event.release.tag_name }}
+          tags: ${{ secrets.DOCKER_USERNAME }}/alphajudge:${{ (github.event_name == 'release' && github.event.action == 'published') && github.event.release.tag_name || 'latest' }}
