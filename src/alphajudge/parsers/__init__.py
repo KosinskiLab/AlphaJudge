@@ -71,6 +71,11 @@ class BaseParser(ABC):
                 out[i] = float(np.mean(vals)) if vals else float('nan')
         return out
 
+    @staticmethod
+    def _safe_float(x):
+        try: return float(x)
+        except Exception: return None
+
 
 class ParserManager:
     def __init__(self):

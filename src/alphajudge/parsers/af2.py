@@ -51,7 +51,3 @@ class AF2Parser(BaseParser):
             )
         return Run(order=order, source="af2", load_model=load_model)
 
-    @staticmethod
-    def _safe_float(x):
-        try: return float(x)
-        except Exception: return None

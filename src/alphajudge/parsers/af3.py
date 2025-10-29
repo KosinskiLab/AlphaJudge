@@ -100,7 +100,3 @@ class AF3Parser(BaseParser):
 
         return pae.tolist(), float(max_pae)
 
-    @staticmethod
-    def _safe_float(x):
-        try: return float(x)
-        except Exception: return None
