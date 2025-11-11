@@ -1,10 +1,10 @@
 from __future__ import annotations
 from pathlib import Path
-import csv, logging, math
+import csv, logging
 from .parsers import pick_parser
 from .core import Complex
 
-def process(directory: str, contact_thresh: float, pae_filter: float, models_to_analyse: str) -> None:
+def process(directory: str, contact_thresh: float, pae_filter: float, models_to_analyse: str) -> Path | None:
     d = Path(directory)
     parser = pick_parser(d)
     run = parser.parse_run(d)
@@ -50,9 +50,9 @@ def process(directory: str, contact_thresh: float, pae_filter: float, models_to_
                     "interface_area": iface.int_area,
                     "interface_solv_en": iface.int_solv_en,
                 })
-            logging.info("processed model: %s via %s", m, parser.name)
+            logging.info(f"processed model: {m} via {parser.name}")
         except Exception as e:
-            logging.error("error processing model %s: %s", m, e)
+            logging.error(f"error processing model {m}: {e}")
 
     out = d / "interfaces.csv"
     with out.open("w", newline="") as f:
@@ -60,4 +60,105 @@ def process(directory: str, contact_thresh: float, pae_filter: float, models_to_
             w = csv.DictWriter(f, fieldnames=rows[0].keys()); w.writeheader(); w.writerows(rows)
         else:
             f.write("")
-    logging.info("wrote %s", str(out))
+    logging.info(f"wrote {out}")
+    return out
+
+def _discover_run_dirs(root: Path) -> list[Path]:
+    """Walk a directory tree and collect directories that look like supported runs."""
+    results: list[Path] = []
+    for d in [p for p in root.rglob("*") if p.is_dir()] + ([root] if root.is_dir() else []):
+        try:
+            # pick_parser raises if not supported; we do not need the result here
+            pick_parser(d)
+            results.append(d)
+        except Exception:
+            continue
+    uniq = sorted(set(p.resolve() for p in results), key=lambda p: (len(p.parts), str(p)))
+    return [Path(p) for p in uniq]
+
+def process_many(
+    paths: list[str],
+    contact_thresh: float,
+    pae_filter: float,
+    models_to_analyse: str,
+    recursive: bool = False,
+    summary_csv: str | None = None,
+) -> Path | None:
+    """
+    Process one or more directories. Optionally recurse into nested directories
+    to find supported runs. If summary_csv is provided, aggregate all per-run
+    interface rows into a single CSV at that path and return it.
+    """
+    if not paths:
+        logging.warning("no input paths provided")
+        return None
+
+    # Resolve set of run directories to process
+    run_dirs: list[Path] = []
+    for p in paths:
+        rp = Path(p).resolve()
+        if not rp.exists():
+            logging.warning(f"path does not exist: {rp}")
+            continue
+        if recursive and rp.is_dir():
+            run_dirs.extend(_discover_run_dirs(rp))
+        else:
+            # Try direct path as a run directory
+            try:
+                pick_parser(rp)
+                run_dirs.append(rp)
+            except Exception:
+                # If not a direct run dir and recursive not requested, skip
+                logging.warning(f"no supported run detected at {rp} (use --recursive to search within)")
+                continue
+
+    # Deduplicate
+    seen = set()
+    unique_run_dirs: list[Path] = []
+    for d in run_dirs:
+        r = d.resolve()
+        if r not in seen:
+            seen.add(r); unique_run_dirs.append(d)
+
+    if not unique_run_dirs:
+        logging.warning("no runnable directories found")
+        return None
+
+    # Process each run and collect rows for summary if requested
+    aggregated_rows: list[dict] = []
+    for d in unique_run_dirs:
+        try:
+            out_path = process(str(d), contact_thresh, pae_filter, models_to_analyse)
+            if summary_csv:
+                # Read rows back to aggregate
+                try:
+                    with Path(out_path).open() as f:
+                        reader = csv.DictReader(f)
+                        aggregated_rows.extend(list(reader))
+                except Exception as e:
+                    logging.error(f"failed reading {out_path} for aggregation: {e}")
+        except Exception as e:
+            logging.error(f"failed processing {d}: {e}")
+
+    if summary_csv:
+        if not aggregated_rows:
+            logging.info("no rows to write to summary; skipping creation")
+            return None
+        # Compute union of all keys to accommodate AF2/AF3 variations
+        fieldnames: list[str] = []
+        seen_fields = set()
+        for row in aggregated_rows:
+            for k in row.keys():
+                if k not in seen_fields:
+                    seen_fields.add(k); fieldnames.append(k)
+        summary_path = Path(summary_csv).resolve()
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        with summary_path.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for row in aggregated_rows:
+                w.writerow({k: row.get(k, "") for k in fieldnames})
+        logging.info(f"wrote summary {summary_path} ({len(aggregated_rows)} rows from {len(unique_run_dirs)} runs)")
+        return summary_path
+
+    return None

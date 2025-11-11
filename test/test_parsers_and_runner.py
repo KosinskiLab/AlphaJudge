@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from alphajudge.parsers import pick_parser
-from alphajudge.runner import process
+from alphajudge.runner import process, process_many
 
 
 @pytest.fixture(scope="module")
@@ -144,4 +144,46 @@ def test_headers_consistent_between_af2_af3(af2_dir: Path, af3_dir: Path):
         assert col in h2
         assert col in h3
 
+
+def test_process_many_aggregates_rows(af2_dir: Path, af3_dir: Path, tmp_path: Path):
+    # Aggregate two explicit run directories
+    summary = tmp_path / "summary.csv"
+    got = process_many(
+        [str(af2_dir), str(af3_dir)],
+        contact_thresh=8.0,
+        pae_filter=100.0,
+        models_to_analyse="best",
+        recursive=False,
+        summary_csv=str(summary),
+    )
+    assert got is not None and summary.exists() and summary.stat().st_size > 0
+    rows = read_csv_rows(summary)
+    assert rows, "summary.csv must contain at least one row"
+    header = list(rows[0].keys())
+    for col in ("iptm_ptm", "iptm", "ptm", "confidence_score", "jobs", "model_used"):
+        assert col in header
+    # The summary row count should equal the sum of the individual per-run rows
+    af2_rows = read_csv_rows(af2_dir / "interfaces.csv")
+    af3_rows = read_csv_rows(af3_dir / "interfaces.csv")
+    assert len(rows) == len(af2_rows) + len(af3_rows)
+
+
+def test_process_many_recursive_discovers_runs(af2_dir: Path, af3_dir: Path, tmp_path: Path):
+    # Recurse from the parent folders; should find at least the two known runs
+    summary = tmp_path / "recursive_summary.csv"
+    got = process_many(
+        [str(af2_dir.parent), str(af3_dir.parent)],
+        contact_thresh=8.0,
+        pae_filter=100.0,
+        models_to_analyse="best",
+        recursive=True,
+        summary_csv=str(summary),
+    )
+    assert got is not None and summary.exists() and summary.stat().st_size > 0
+    rows = read_csv_rows(summary)
+    assert rows, "recursive summary must contain rows"
+    # At minimum, recursive should include the rows from both explicit runs
+    af2_rows = read_csv_rows(af2_dir / "interfaces.csv")
+    af3_rows = read_csv_rows(af3_dir / "interfaces.csv")
+    assert len(rows) >= len(af2_rows) + len(af3_rows)
 
