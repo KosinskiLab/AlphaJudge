@@ -67,27 +67,42 @@ Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`.
 The package exposes an `alphajudge` entry point.
 
 ```bash
-alphajudge --path_to_dir /path/to/alphafold_run \
-           --contact_thresh 8.0 \
-           --pae_filter 100.0 \
-           --models_to_analyse best
+# Basic synopsis
+alphajudge PATH [PATH ...] \
+  --models_to_analyse {best,all} \
+  --contact_thresh 8.0 \
+  --pae_filter 100.0 \
+  [-r|--recursive] \
+  [-o|--summary SUMMARY.csv]
 ```
 
-- **--path_to_dir**: Run directory containing AF2 or AF3 outputs
+- **PATH**: One or more run directories or roots to search
 - **--contact_thresh**: Contact cutoff in Å (default: 8.0)
 - **--pae_filter**: Skip interfaces with avg interface PAE above this (default: 100.0)
 - **--models_to_analyse**: `best` or `all` (default: best)
+- **-r / --recursive**: Recursively discover runs under each PATH
+- **-o / --summary**: Write an aggregated CSV across all processed runs
 
-Output: writes `interfaces.csv` next to the input directory.
+Outputs:
+- Always writes `interfaces.csv` inside each processed run directory.
+- If `--summary` is provided, also writes a union-header CSV at the given path containing rows from all runs.
 
 Examples
 
 ```bash
-# AF2 example (directory contains ranking_debug.json, pae_*.json, and model files)
-alphajudge --path_to_dir test_data/af2/pos_dimers/Q13148+Q92900
+# Single AF2 run (directory contains ranking_debug.json, pae_*.json, and model files)
+alphajudge test_data/af2/pos_dimers/Q13148+Q92900
 
-# AF3 example (directory contains ranking_scores.csv, per-model summary/confidence files, and model files)
-alphajudge --path_to_dir test_data/af3/pos_dimers/Q13148+Q92900 --models_to_analyse all
+# Single AF3 run (directory contains ranking_scores.csv, per-model summary/confidence files, and model files)
+alphajudge test_data/af3/pos_dimers/Q13148+Q92900 --models_to_analyse all
+
+# Aggregate multiple runs into one summary
+alphajudge test_data/af2/pos_dimers/Q13148+Q92900 \
+           test_data/af3/pos_dimers/Q13148+Q92900 \
+           -o interfaces_summary.csv
+
+# Recursively discover runs under roots and write a combined summary
+alphajudge test_data/af2/pos_dimers test_data/af3/pos_dimers -r -o interfaces_summary.csv
 ```
 
 ---
@@ -99,13 +114,23 @@ Minimal example:
 ```python
 from pathlib import Path
 from alphajudge.parsers import pick_parser
-from alphajudge.runner import process
+from alphajudge.runner import process, process_many
 
 run_dir = Path("test_data/af2/pos_dimers/Q13148+Q92900")
 parser = pick_parser(run_dir)
 print("Detected parser:", parser.name)  # "af2" or "af3"
 process(str(run_dir), contact_thresh=8.0, pae_filter=100.0, models_to_analyse="best")
 print("Wrote:", run_dir / "interfaces.csv")
+
+# Multiple runs + optional recursion and summary
+process_many(
+    [str(run_dir), "test_data/af3/pos_dimers/Q13148+Q92900"],
+    contact_thresh=8.0,
+    pae_filter=100.0,
+    models_to_analyse="best",
+    recursive=False,
+    summary_csv="interfaces_summary.csv",
+)
 ```
 
 Key outputs per interface include: `average_interface_pae`, `interface_average_plddt`, `interface_contact_pairs`, `interface_area`, `interface_hb`, `interface_sb`, `interface_sc`, `interface_solv_en`, `interface_ipSAE`, `interface_LIS`, `interface_pDockQ2`, and per-run `pDockQ/mpDockQ`.
