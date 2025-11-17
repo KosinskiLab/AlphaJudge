@@ -293,34 +293,129 @@ class Interface:
         return (sum(1 for r in residues if r.get_resname() in names) / len(residues)) if residues else 0.0
 
     def _sasa_chain(self, residues) -> float:
+        """
+        Return solvent-accessible surface area for a set of residues.
+
+        Biopython's ShrakeRupley used to store results in residue.xtra["EXP_RSASA"],
+        but newer versions expose them via the .sasa attribute instead.  To remain
+        compatible with both behaviours we:
+
+        * run ShrakeRupley on a throwaway structure built from the residues
+        * first try to read r.sasa
+        * fall back to r.xtra["EXP_RSASA"] if present
+        """
         sr = ShrakeRupley()
         s = Structure.Structure("S"); m = Model.Model(0); s.add(m); c = Chain.Chain("X"); m.add(c)
-        for r in residues: c.add(r.copy())
-        sr.compute(s, level="R")
-        return sum(r.xtra.get("EXP_RSASA", 0.0) for r in c)
+        for r in residues:
+            c.add(r.copy())
+        try:
+            sr.compute(s, level="R")
+        except Exception:
+            # If SASA computation fails, treat as zero area
+            return 0.0
+
+        total = 0.0
+        for r in c:
+            if hasattr(r, "sasa"):
+                total += float(getattr(r, "sasa", 0.0))
+            else:
+                total += float(r.xtra.get("EXP_RSASA", 0.0))
+        return total
 
     def _sasa_complex(self, r1, r2) -> float:
+        """
+        Return solvent-accessible surface area for a two-chain complex.
+
+        As in _sasa_chain, support both legacy xtra["EXP_RSASA"] and modern
+        .sasa attributes from Biopython's ShrakeRupley implementation.
+        """
         sr = ShrakeRupley()
         s = Structure.Structure("C"); m = Model.Model(0); s.add(m)
         cA = Chain.Chain("A"); cB = Chain.Chain("B"); m.add(cA); m.add(cB)
-        for r in r1: cA.add(r.copy())
-        for r in r2: cB.add(r.copy())
-        sr.compute(s, level="R")
-        return sum(r.xtra.get("EXP_RSASA", 0.0) for c in (cA, cB) for r in c)
+        for r in r1:
+            cA.add(r.copy())
+        for r in r2:
+            cB.add(r.copy())
+
+        try:
+            sr.compute(s, level="R")
+        except Exception:
+            return 0.0
+
+        total = 0.0
+        for c in (cA, cB):
+            for r in c:
+                if hasattr(r, "sasa"):
+                    total += float(getattr(r, "sasa", 0.0))
+                else:
+                    total += float(r.xtra.get("EXP_RSASA", 0.0))
+        return total
 
     def _buried_surface(self, chain_res, other_res, dist=5.0, dots=15):
+        """
+        Approximate the set of buried surface points on `chain_res` that lie
+        within `dist` Å of any atom in `other_res`.
+
+        Older Biopython versions exposed ShrakeRupley points and normals via
+        atom.xtra['EXP_DOTS']; newer versions do not.  We therefore:
+
+        1. Try to use EXP_DOTS if present (legacy behaviour).
+        2. Otherwise, fall back to generating dots directly from the internal
+           ShrakeRupley unit sphere, without modelling intra-chain occlusion.
+        """
         sr = ShrakeRupley(probe_radius=1.4, n_points=dots)
+
+        # --- Legacy path: EXP_DOTS available in atom.xtra (old Biopython) ---
         s = Structure.Structure("Z"); m = Model.Model(0); s.add(m); cz = Chain.Chain("Z"); m.add(cz)
-        for r in chain_res: cz.add(r.copy())
-        sr.compute(s, level="A")
-        pts = [(np.array([x,y,z]), np.array([nx,ny,nz]))
-               for r in cz for a in r for (x,y,z,nx,ny,nz) in a.xtra.get("EXP_DOTS", [])]
+        for r in chain_res:
+            cz.add(r.copy())
+        try:
+            sr.compute(s, level="A")
+        except Exception:
+            # Ignore and fall through to modern code path
+            pass
+
+        pts = []
+        for r in cz:
+            for a in r:
+                data = getattr(a, "xtra", {}).get("EXP_DOTS", [])
+                for (x, y, z, nx, ny, nz) in data:
+                    pts.append((np.array([x, y, z]), np.array([nx, ny, nz])))
+
         others = [a for rr in other_res for a in rr.get_atoms() if a.element.upper() != "H"]
-        if not pts or not others: return []
-        coords = np.array([a.coord for a in others]); d2 = dist**2
+        if pts and others:
+            coords = np.array([a.coord for a in others]); d2 = dist**2
+            buried = []
+            for xyz, n in pts:
+                if np.any(np.sum((coords - xyz)**2, axis=1) <= d2):
+                    buried.append((xyz, n))
+            return buried
+
+        # --- Modern path: no EXP_DOTS; construct candidate dots from ShrakeRupley sphere ---
+        atoms = [a for r in chain_res for a in r.get_atoms() if a.element.upper() != "H"]
+        if not atoms or not others:
+            return []
+
+        atom_coords = np.array([a.coord for a in atoms])
+        other_coords = np.array([a.coord for a in others])
+        d2 = dist**2
+        sphere = np.array(sr._sphere, copy=False)
+
         buried = []
-        for xyz, n in pts:
-            if np.any(np.sum((coords - xyz)**2, axis=1) <= d2): buried.append((xyz, n))
+        for atom, center in zip(atoms, atom_coords):
+            # Approximate surface points on this atom
+            radius = sr.radii_dict[atom.element] + sr.probe_radius
+            points = sphere * radius + center  # (dots, 3)
+            normals = sphere  # unit normals for each point
+
+            # Compute squared distances from each point to all atoms in other_res
+            diff = points[:, None, :] - other_coords[None, :, :]
+            dist2 = np.sum(diff * diff, axis=2)  # (dots, n_other)
+            mask = np.any(dist2 <= d2, axis=1)
+
+            for xyz, n in zip(points[mask], normals[mask]):
+                buried.append((xyz.astype(float), n.astype(float)))
+
         return buried
 
     def _approx_sc(self, A, B, w=0.5) -> float:
