@@ -6,6 +6,23 @@ import math, numpy as np
 from Bio.PDB import NeighborSearch, Structure, Model, Chain
 from Bio.PDB.SASA import ShrakeRupley
 
+# ---- residue type constants ----
+NA_RES: Set[str] = {
+    "A", "C", "G", "U",
+    "DA", "DC", "DG", "DT", "DU",
+    "RA", "RC", "RG", "RU",
+}
+
+POLAR_RES: Set[str] = {"SER", "THR", "ASN", "GLN", "TYR", "CYS"}
+HYDROPHOBIC_RES: Set[str] = {"ALA", "VAL", "LEU", "ILE", "MET", "PHE", "TRP"}
+CHARGED_RES: Set[str] = {"ARG", "LYS", "ASP", "GLU", "HIS"}
+
+# ---- Shrake-Rupley helpers ----
+_SR_TEMPLATE = ShrakeRupley(probe_radius=1.4, n_points=15)
+_SPHERE_15 = np.array(_SR_TEMPLATE._sphere, copy=False)
+_RADII_DICT_15 = dict(_SR_TEMPLATE.radii_dict)
+_SR_PROBE_RADIUS = float(_SR_TEMPLATE.probe_radius)
+
 # ---- confidence (unified) ----
 @dataclass(frozen=True)
 class Confidence:
@@ -22,14 +39,21 @@ def _sigmoid(x: float, L: float, x0: float, k: float, b: float) -> float:
     return L / (1 + math.exp(-k * (x - x0))) + b
 
 @dataclass(frozen=True)
-class _DockQ:
-    L: float; X0: float; K: float; B: float
+class DockQParams:
+    """Parameters for the DockQ-style logistic scoring function."""
+
+    L: float
+    X0: float
+    K: float
+    B: float
+
     def score(self, x: float) -> float:
         return _sigmoid(x, self.L, self.X0, self.K, self.B)
 
-PDOCKQ  = _DockQ(0.724, 152.611, 0.052, 0.018)
-PDOCKQ2 = _DockQ(1.31,   84.733,  0.075, 0.005)
-MPDOCKQ = _DockQ(0.728, 309.375,  0.098, 0.262)
+
+PDOCKQ  = DockQParams(0.724, 152.611, 0.052, 0.018)
+PDOCKQ2 = DockQParams(1.31,   84.733,  0.075, 0.005)
+MPDOCKQ = DockQParams(0.728, 309.375,  0.098, 0.262)
 D0 = 10.0
 
 # ---- complex and interfaces ----
@@ -49,7 +73,7 @@ class Complex:
                     self.interfaces.append(iface)
 
     # ---------- maps & residue utilities ----------
-    def _build_maps(self):
+    def _build_maps(self) -> tuple[Dict[Tuple[str, Any], int], Dict[str, List[int]], List[Chain]]:
         model = next(self.structure.get_models())
         chains = list(model.get_chains())
         res_index_map, chain_indices_by_id, idx = {}, {}, 0
@@ -115,6 +139,17 @@ class Interface:
         self._rim = self.c._res_index_map
         self._cid = self.c._chain_indices_by_id
 
+        # Pre-compute chain IDs and their residue index arrays for fast LIS/ipSAE.
+        self._cid1_id = self.chain1[0].get_parent().id
+        self._cid2_id = self.chain2[0].get_parent().id
+        self._idx1 = np.asarray(self._cid.get(self._cid1_id, []), dtype=int)
+        self._idx2 = np.asarray(self._cid.get(self._cid2_id, []), dtype=int)
+
+        # Flag whether either chain contains nucleic acids (used in ipSAE).
+        self._has_na = any(
+            r.get_resname().strip() in NA_RES for r in (self.chain1 + self.chain2)
+        )
+
         self._res1, self._res2, self._pairs = self._get_pairs()
         self._avg_plddt = self._avg_plddt_union()
         self._avg_pae = self._avg_pae_over_pairs()
@@ -138,10 +173,12 @@ class Interface:
 
     @cached_property
     def pDockQ(self) -> float:
+        """Predicted DockQ score for this interface, using plDDT and contact pairs."""
         if self.contact_pairs <= 0 or math.isnan(self._avg_plddt): return float('nan')
         return PDOCKQ.score(self._avg_plddt * math.log10(self.contact_pairs))
 
     def pDockQ2(self) -> tuple[float, float]:
+        """Alternative DockQ-style score using pairwise PAE-derived ipTM values."""
         vals = self._ptm_values()
         if not vals or math.isnan(self._avg_plddt): return float('nan'), 0.0
         mean_ptm = float(np.mean(vals))
@@ -161,10 +198,8 @@ class Interface:
             LIS_score = (LIS[A][B] + LIS[B][A]) / 2
         """
 
-        def _lis_dir(src_id: str, dst_id: str) -> float:
-            idx_src = self._cid.get(src_id, [])
-            idx_dst = self._cid.get(dst_id, [])
-            if not idx_src or not idx_dst:
+        def _lis_dir(idx_src: np.ndarray, idx_dst: np.ndarray) -> float:
+            if idx_src.size == 0 or idx_dst.size == 0:
                 return float('nan')
             sub = self._pae[np.ix_(idx_src, idx_dst)]
             valid = sub[sub <= 12.0]
@@ -172,11 +207,8 @@ class Interface:
                 return float('nan')
             return float(np.mean((12.0 - valid) / 12.0))
 
-        cid1 = self.chain1[0].get_parent().id
-        cid2 = self.chain2[0].get_parent().id
-
-        a = _lis_dir(cid1, cid2)
-        b = _lis_dir(cid2, cid1)
+        a = _lis_dir(self._idx1, self._idx2)
+        b = _lis_dir(self._idx2, self._idx1)
 
         if math.isnan(a) and math.isnan(b):
             return float('nan')
@@ -188,25 +220,40 @@ class Interface:
 
     # composition
     @property
-    def polar(self) -> float:        return self._frac({"SER","THR","ASN","GLN","TYR","CYS"})
+    def polar(self) -> float:
+        """Fraction of polar residues at the interface."""
+        return self._frac(POLAR_RES)
+
     @property
-    def hydrophobic(self) -> float:  return self._frac({"ALA","VAL","LEU","ILE","MET","PHE","TRP"})
+    def hydrophobic(self) -> float:
+        """Fraction of hydrophobic residues at the interface."""
+        return self._frac(HYDROPHOBIC_RES)
+
     @property
-    def charged(self) -> float:      return self._frac({"ARG","LYS","ASP","GLU","HIS"})
+    def charged(self) -> float:
+        """Fraction of charged residues at the interface."""
+        return self._frac(CHARGED_RES)
 
     # quick “complex” score
     @cached_property
     def score_complex(self) -> float:
+        """Raw plDDT × log10(contact_pairs) score used as a simple complex metric."""
         if self.contact_pairs <= 0 or math.isnan(self._avg_plddt): return float('nan')
         return self._avg_plddt * math.log10(self.contact_pairs)
 
     # HB / SB / SC / areas (self-contained helpers)
     @cached_property
+    def _ns_all_atoms(self) -> NeighborSearch:
+        """NeighborSearch over all atoms in both chains (reused by hb/sb)."""
+        atoms = [a for r in (self.chain1 + self.chain2) for a in r]
+        return NeighborSearch(atoms)
+
+    @cached_property
     def hb(self) -> int:
         atoms1 = [a for r in self.chain1 for a in r if a.id.upper().startswith(("N","O"))]
         atoms2 = [a for r in self.chain2 for a in r if a.id.upper().startswith(("N","O"))]
         if not atoms1 or not atoms2: return 0
-        ns = NeighborSearch(atoms1 + atoms2); cutoff = 3.5
+        ns = self._ns_all_atoms; cutoff = 3.5
         seen, cnt = set(), 0
         for a1 in atoms1:
             for a2 in ns.search(a1.coord, cutoff):
@@ -222,7 +269,7 @@ class Interface:
         a1 = [a for r in self.chain1 if r.get_resname() in pos|neg for a in r if a.id not in ("N","CA","C","O")]
         a2 = [a for r in self.chain2 if r.get_resname() in pos|neg for a in r if a.id not in ("N","CA","C","O")]
         if not a1 or not a2: return 0
-        ns = NeighborSearch(a1 + a2); cutoff = 4.0
+        ns = self._ns_all_atoms; cutoff = 4.0
         seen, cnt = set(), 0
         for x in a1:
             n1 = x.get_parent().get_resname()
@@ -237,6 +284,7 @@ class Interface:
 
     @cached_property
     def sc(self) -> float:
+        """Shape complementarity score based on buried surface points (Lawrence & Colman-style)."""
         sA = self._buried_surface(self.chain1, self.chain2, 5.0, 15)
         sB = self._buried_surface(self.chain2, self.chain1, 5.0, 15)
         if not sA or not sB: return 0.0
@@ -244,10 +292,12 @@ class Interface:
 
     @cached_property
     def int_area(self) -> float:
+        """Buried solvent-accessible surface area at the interface (Å^2)."""
         return self._sasa_chain(self.chain1) + self._sasa_chain(self.chain2) - self._sasa_complex(self.chain1, self.chain2)
 
     @cached_property
     def int_solv_en(self) -> float:
+        """Crude solvation free-energy term proportional to buried area (negative is stabilising)."""
         return -0.0072 * self.int_area
 
     # ---------- private helpers below ----------
@@ -264,12 +314,13 @@ class Interface:
 
     def _avg_plddt_union(self) -> float:
         res_set = self._res1 | self._res2
-        vals = []
-        for r in res_set:
-            try: a = r["CB"]
-            except KeyError: a = r["CA"]
-            vals.append(a.get_bfactor())
-        return sum(vals)/len(vals) if vals else float('nan')
+        if not res_set:
+            return float('nan')
+        vals = [
+            (r["CB"] if "CB" in r else r["CA"]).get_bfactor()
+            for r in res_set
+        ]
+        return float(sum(vals) / len(vals))
 
     def _avg_pae_over_pairs(self) -> float:
         vals = []
@@ -278,8 +329,10 @@ class Interface:
             k2 = (r2.get_parent().id, r2.id); j = self._rim.get(k2)
             if i is None or j is None: continue
             try:
-                vals.append(float(self._pae[i, j])); vals.append(float(self._pae[j, i]))
-            except Exception: pass
+                vals.append(float(self._pae[i, j]))
+                vals.append(float(self._pae[j, i]))
+            except (IndexError, TypeError, ValueError):
+                continue
         return sum(vals)/len(vals) if vals else float('nan')
 
     def _ptm_values(self) -> List[float]:
@@ -291,7 +344,8 @@ class Interface:
             try:
                 pae = float(self._pae[i, j])
                 out.append(1.0 / (1.0 + (pae / D0) ** 2))
-            except Exception: pass
+            except (IndexError, TypeError, ValueError):
+                continue
         return out
 
     def _ipsae_asym(self, cutoff: float) -> float:
@@ -311,33 +365,16 @@ class Interface:
         ipsae_d0res_max for protein-only systems.
         """
 
-        NA_RES = {
-            "A", "C", "G", "U",
-            "DA", "DC", "DG", "DT", "DU",
-            "RA", "RC", "RG", "RU",
-        }
-
-        def _has_nucleic(residues) -> bool:
-            for r in residues:
-                if r.get_resname().strip() in NA_RES:
-                    return True
-            return False
-
-        def calc(src, dst) -> float:
-            src_idx = [self._rim.get((r.get_parent().id, r.id)) for r in src]
-            dst_idx = [self._rim.get((r.get_parent().id, r.id)) for r in dst]
-            src_idx = [i for i in src_idx if i is not None]
-            dst_idx = [j for j in dst_idx if j is not None]
-            if not src_idx or not dst_idx:
+        def calc(idx_src: np.ndarray, idx_dst: np.ndarray) -> float:
+            if idx_src.size == 0 or idx_dst.size == 0:
                 return float('nan')
 
-            # Any nucleic acids in this chain pair?
-            uses_na = _has_nucleic(src) or _has_nucleic(dst)
-            min_d0 = 2.0 if uses_na else 1.0
+            # Any nucleic acids in this interface?
+            min_d0 = 2.0 if self._has_na else 1.0
 
             best, found = 0.0, False
-            for i in src_idx:
-                row = self._pae[i, dst_idx]
+            for i in idx_src:
+                row = self._pae[i, idx_dst]
                 valid = row < cutoff
                 if not np.any(valid):
                     continue
@@ -347,7 +384,9 @@ class Interface:
                 ptm = 1.0 / (1.0 + (row[valid] / d0) ** 2)
                 best, found = max(best, float(np.mean(ptm))), True
             return best if found else float('nan')
-        a = calc(self.chain1, self.chain2); b = calc(self.chain2, self.chain1)
+
+        a = calc(self._idx1, self._idx2)
+        b = calc(self._idx2, self._idx1)
         if math.isnan(a) and math.isnan(b): return float('nan')
         if math.isnan(a): return b
         if math.isnan(b): return a
@@ -375,8 +414,8 @@ class Interface:
             c.add(r.copy())
         try:
             sr.compute(s, level="R")
-        except Exception:
-            # If SASA computation fails, treat as zero area
+        except ValueError:
+            # If SASA computation fails (e.g. no atoms), treat as zero area
             return 0.0
 
         total = 0.0
@@ -404,7 +443,7 @@ class Interface:
 
         try:
             sr.compute(s, level="R")
-        except Exception:
+        except ValueError:
             return 0.0
 
         total = 0.0
@@ -436,7 +475,7 @@ class Interface:
             cz.add(r.copy())
         try:
             sr.compute(s, level="A")
-        except Exception:
+        except ValueError:
             # Ignore and fall through to modern code path
             pass
 
@@ -464,12 +503,22 @@ class Interface:
         atom_coords = np.array([a.coord for a in atoms])
         other_coords = np.array([a.coord for a in others])
         d2 = dist**2
-        sphere = np.array(sr._sphere, copy=False)
+
+        # Reuse precomputed Shrake-Rupley sphere/radii when compatible; fall
+        # back to the instance-specific values otherwise.
+        if dots == 15:
+            sphere = _SPHERE_15
+            radii_dict = _RADII_DICT_15
+            probe_radius = _SR_PROBE_RADIUS
+        else:
+            sphere = np.array(sr._sphere, copy=False)
+            radii_dict = sr.radii_dict
+            probe_radius = float(sr.probe_radius)
 
         buried = []
         for atom, center in zip(atoms, atom_coords):
             # Approximate surface points on this atom
-            radius = sr.radii_dict[atom.element] + sr.probe_radius
+            radius = radii_dict[atom.element] + probe_radius
             points = sphere * radius + center  # (dots, 3)
             normals = sphere  # unit normals for each point
 

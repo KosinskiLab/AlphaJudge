@@ -1,8 +1,10 @@
 from __future__ import annotations
 import csv
 import json
-from pathlib import Path
 import math
+import shutil
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -12,12 +14,44 @@ from alphajudge.runner import process, process_many
 
 @pytest.fixture(scope="module")
 def af2_dir() -> Path:
+    """Single AF2 positive dimer used for detailed score checks."""
     return Path("test_data/af2/pos_dimers/Q13148+Q92900")
 
 
 @pytest.fixture(scope="module")
 def af3_dir() -> Path:
+    """Single AF3 positive dimer used for detailed score checks."""
     return Path("test_data/af3/pos_dimers/Q13148+Q92900")
+
+
+@pytest.fixture(scope="module")
+def af2_pos_sample() -> list[Path]:
+    """Small AF2 positive-dimer sample to keep tests fast."""
+    return [
+        Path("test_data/af2/pos_dimers/Q13148+Q92900"),
+        Path("test_data/af2/pos_dimers/Q9BUL8+Q13033"),
+    ]
+
+
+@pytest.fixture(scope="module")
+def af2_neg_sample() -> list[Path]:
+    """Single AF2 negative dimer for regression checks."""
+    return [Path("test_data/af2/neg_dimers/Q14974+Q13033")]
+
+
+@pytest.fixture(scope="module")
+def af3_pos_sample() -> list[Path]:
+    """Small AF3 positive-dimer sample to keep tests fast."""
+    return [
+        Path("test_data/af3/pos_dimers/Q13148+Q92900"),
+        Path("test_data/af3/pos_dimers/Q9BUL8+Q13033"),
+    ]
+
+
+@pytest.fixture(scope="module")
+def af3_neg_sample() -> list[Path]:
+    """Single AF3 negative dimer for regression checks."""
+    return [Path("test_data/af3/neg_dimers/Q14974+Q13033")]
 
 
 def read_csv_rows(path: Path):
@@ -159,11 +193,23 @@ def test_headers_consistent_between_af2_af3(af2_dir: Path, af3_dir: Path):
         assert col in h3
 
 
-def test_process_many_aggregates_rows(af2_dir: Path, af3_dir: Path, tmp_path: Path):
-    # Aggregate two explicit run directories
+def test_process_many_aggregates_rows(
+    af2_pos_sample: list[Path],
+    af2_neg_sample: list[Path],
+    af3_pos_sample: list[Path],
+    af3_neg_sample: list[Path],
+    tmp_path: Path,
+):
+    # Aggregate a small, fixed set of AF2/AF3 positive and negative dimers
     summary = tmp_path / "summary.csv"
+    paths = [
+        *(str(p) for p in af2_pos_sample),
+        *(str(p) for p in af2_neg_sample),
+        *(str(p) for p in af3_pos_sample),
+        *(str(p) for p in af3_neg_sample),
+    ]
     got = process_many(
-        [str(af2_dir), str(af3_dir)],
+        paths,
         contact_thresh=8.0,
         pae_filter=100.0,
         models_to_analyse="best",
@@ -177,16 +223,40 @@ def test_process_many_aggregates_rows(af2_dir: Path, af3_dir: Path, tmp_path: Pa
     for col in ("iptm_ptm", "iptm", "ptm", "confidence_score", "jobs", "model_used"):
         assert col in header
     # The summary row count should equal the sum of the individual per-run rows
-    af2_rows = read_csv_rows(af2_dir / "interfaces.csv")
-    af3_rows = read_csv_rows(af3_dir / "interfaces.csv")
-    assert len(rows) == len(af2_rows) + len(af3_rows)
+    expected_rows = 0
+    for p in af2_pos_sample + af2_neg_sample + af3_pos_sample + af3_neg_sample:
+        expected_rows += len(read_csv_rows(p / "interfaces.csv"))
+    assert len(rows) == expected_rows
 
 
-def test_process_many_recursive_discovers_runs(af2_dir: Path, af3_dir: Path, tmp_path: Path):
-    # Recurse from the parent folders; should find at least the two known runs
+def test_process_many_recursive_discovers_runs(
+    af2_pos_sample: list[Path],
+    af3_pos_sample: list[Path],
+    tmp_path: Path,
+):
+    """
+    Recurse from small synthetic AF2/AF3 roots; should find at least the known runs.
+
+    To keep pytest fast, we copy just a couple of positive dimers into a temporary
+    directory tree and let process_many discover them recursively.
+    """
+    # Build minimal AF2/AF3 directory trees under tmp_path
+    af2_root = tmp_path / "af2" / "pos_dimers"
+    af3_root = tmp_path / "af3" / "pos_dimers"
+    af2_root.mkdir(parents=True, exist_ok=True)
+    af3_root.mkdir(parents=True, exist_ok=True)
+
+    for src in af2_pos_sample:
+        dst = af2_root / src.name
+        shutil.copytree(src, dst)
+
+    for src in af3_pos_sample:
+        dst = af3_root / src.name
+        shutil.copytree(src, dst)
+
     summary = tmp_path / "recursive_summary.csv"
     got = process_many(
-        [str(af2_dir.parent), str(af3_dir.parent)],
+        [str(af2_root.parent), str(af3_root.parent)],
         contact_thresh=8.0,
         pae_filter=100.0,
         models_to_analyse="best",
@@ -196,8 +266,10 @@ def test_process_many_recursive_discovers_runs(af2_dir: Path, af3_dir: Path, tmp
     assert got is not None and summary.exists() and summary.stat().st_size > 0
     rows = read_csv_rows(summary)
     assert rows, "recursive summary must contain rows"
-    # At minimum, recursive should include the rows from both explicit runs
-    af2_rows = read_csv_rows(af2_dir / "interfaces.csv")
-    af3_rows = read_csv_rows(af3_dir / "interfaces.csv")
-    assert len(rows) >= len(af2_rows) + len(af3_rows)
+
+    # At minimum, recursive should include the rows from both explicit sample runs
+    expected_rows = 0
+    for src in af2_pos_sample + af3_pos_sample:
+        expected_rows += len(read_csv_rows((tmp_path / src.parent.parent.name / src.parent.name / src.name) / "interfaces.csv"))
+    assert len(rows) >= expected_rows
 

@@ -215,6 +215,8 @@ test_data/**/interfaces.csv
 # Ignore all test_data by default, then include only what's required for tests
 test_data/**
 !test_data/
+
+# AF2 positive dimers used in tests
 !test_data/af2/
 !test_data/af2/pos_dimers/
 !test_data/af2/pos_dimers/Q13148+Q92900/
@@ -224,6 +226,15 @@ test_data/**
 !test_data/af2/pos_dimers/Q13148+Q92900/ranked_0.pdb
 !test_data/af2/pos_dimers/Q13148+Q92900/unrelaxed_model_*.pdb
 
+!test_data/af2/pos_dimers/Q9BUL8+Q13033/
+!test_data/af2/pos_dimers/Q9BUL8+Q13033/**
+
+# AF2 negative dimer sample
+!test_data/af2/neg_dimers/
+!test_data/af2/neg_dimers/Q14974+Q13033/
+!test_data/af2/neg_dimers/Q14974+Q13033/**
+
+# AF3 positive dimers used in tests
 !test_data/af3/
 !test_data/af3/pos_dimers/
 !test_data/af3/pos_dimers/Q13148+Q92900/
@@ -234,3 +245,11 @@ test_data/**
 !test_data/af3/pos_dimers/Q13148+Q92900/seed-*/confidences.json
 !test_data/af3/pos_dimers/Q13148+Q92900/seed-*/summary_confidences.json
 !test_data/af3/pos_dimers/Q13148+Q92900/seed-*/model.cif
+
+!test_data/af3/pos_dimers/Q9BUL8+Q13033/
+!test_data/af3/pos_dimers/Q9BUL8+Q13033/**
+
+# AF3 negative dimer sample
+!test_data/af3/neg_dimers/
+!test_data/af3/neg_dimers/Q14974+Q13033/
+!test_data/af3/neg_dimers/Q14974+Q13033/**
