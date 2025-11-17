@@ -151,13 +151,40 @@ class Interface:
         return self._ipsae_asym(pae_cutoff)
 
     def lis(self) -> float:
-        cid1 = self.chain1[0].get_parent().id; cid2 = self.chain2[0].get_parent().id
-        idx1 = self._cid.get(cid1, []); idx2 = self._cid.get(cid2, [])
-        if not idx1 or not idx2: return float('nan')
-        sub = self._pae[np.ix_(idx1, idx2)]
-        valid = sub[sub <= 12.0]
-        if valid.size == 0: return float('nan')
-        return float(np.mean((12.0 - valid) / 12.0))
+        """
+        Symmetrised LIS score between the two chains.
+
+        Directional LIS for (A,B) is the mean of (12 - PAE) / 12 over all
+        residue pairs (i in A, j in B) with PAE(i,j) <= 12 Å.  ipsae.py reports
+        the symmetric variant:
+
+            LIS_score = (LIS[A][B] + LIS[B][A]) / 2
+        """
+
+        def _lis_dir(src_id: str, dst_id: str) -> float:
+            idx_src = self._cid.get(src_id, [])
+            idx_dst = self._cid.get(dst_id, [])
+            if not idx_src or not idx_dst:
+                return float('nan')
+            sub = self._pae[np.ix_(idx_src, idx_dst)]
+            valid = sub[sub <= 12.0]
+            if valid.size == 0:
+                return float('nan')
+            return float(np.mean((12.0 - valid) / 12.0))
+
+        cid1 = self.chain1[0].get_parent().id
+        cid2 = self.chain2[0].get_parent().id
+
+        a = _lis_dir(cid1, cid2)
+        b = _lis_dir(cid2, cid1)
+
+        if math.isnan(a) and math.isnan(b):
+            return float('nan')
+        if math.isnan(a):
+            return b
+        if math.isnan(b):
+            return a
+        return float(0.5 * (a + b))
 
     # composition
     @property
@@ -268,18 +295,56 @@ class Interface:
         return out
 
     def _ipsae_asym(self, cutoff: float) -> float:
+        """
+        Asymmetric ipSAE score, matching ipsae_d0res_asym from ipsae.py.
+
+        For each direction (src -> dst) we:
+        - for every residue i in src, collect all j in dst with PAE(i,j) < cutoff
+        - let n = number of such pairs (i,j); this is n0res_byres[i]
+        - compute a residue-specific d0(i) with a minimum of:
+            * 1.0 Å for pure protein–protein interfaces
+            * 2.0 Å if either chain contains nucleic acids
+        - compute ptm(i) = mean_j 1 / (1 + (PAE(i,j) / d0(i))**2)
+        - take the max over residues i in src.
+
+        The public ipsae() then returns max over the two directions, matching
+        ipsae_d0res_max for protein-only systems.
+        """
+
+        NA_RES = {
+            "A", "C", "G", "U",
+            "DA", "DC", "DG", "DT", "DU",
+            "RA", "RC", "RG", "RU",
+        }
+
+        def _has_nucleic(residues) -> bool:
+            for r in residues:
+                if r.get_resname().strip() in NA_RES:
+                    return True
+            return False
+
         def calc(src, dst) -> float:
             src_idx = [self._rim.get((r.get_parent().id, r.id)) for r in src]
             dst_idx = [self._rim.get((r.get_parent().id, r.id)) for r in dst]
-            src_idx = [i for i in src_idx if i is not None]; dst_idx = [j for j in dst_idx if j is not None]
-            if not src_idx or not dst_idx: return float('nan')
+            src_idx = [i for i in src_idx if i is not None]
+            dst_idx = [j for j in dst_idx if j is not None]
+            if not src_idx or not dst_idx:
+                return float('nan')
+
+            # Any nucleic acids in this chain pair?
+            uses_na = _has_nucleic(src) or _has_nucleic(dst)
+            min_d0 = 2.0 if uses_na else 1.0
+
             best, found = 0.0, False
             for i in src_idx:
-                row = self._pae[i, dst_idx]; valid = row < cutoff
-                if not np.any(valid): continue
-                n = int(np.count_nonzero(valid)); L = max(27.0, float(n))
-                d0 = max(1.0, 1.24 * (L - 15.0) ** (1.0/3.0) - 1.8)
-                ptm = 1.0 / (1.0 + (row[valid]/d0) ** 2)
+                row = self._pae[i, dst_idx]
+                valid = row < cutoff
+                if not np.any(valid):
+                    continue
+                n = int(np.count_nonzero(valid))
+                L = max(27.0, float(n))
+                d0 = max(min_d0, 1.24 * (L - 15.0) ** (1.0 / 3.0) - 1.8)
+                ptm = 1.0 / (1.0 + (row[valid] / d0) ** 2)
                 best, found = max(best, float(np.mean(ptm))), True
             return best if found else float('nan')
         a = calc(self.chain1, self.chain2); b = calc(self.chain2, self.chain1)
