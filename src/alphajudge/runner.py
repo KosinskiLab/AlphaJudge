@@ -1,8 +1,42 @@
 from __future__ import annotations
 from pathlib import Path
 import csv, logging
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+
 from .parsers import pick_parser
 from .core import Complex
+
+
+def _save_pae_heatmap(pae_matrix, out_file: Path, figsize: tuple[int, int] = (10, 10)) -> None:
+    """
+    Save a PAE heatmap PNG for a given residue×residue PAE matrix.
+    """
+    try:
+        mtx = np.array(pae_matrix, dtype=float)
+        if mtx.size == 0:
+            logging.warning(f"empty PAE matrix; skipping heatmap for {out_file}")
+            return
+
+        fig, ax = plt.subplots(figsize=figsize)
+        im = ax.imshow(mtx, cmap="Greens_r", vmin=0, vmax=30)
+        ax.set_xlabel("Scored residue", fontsize=12)
+        ax.set_ylabel("Aligned residue", fontsize=12)
+        ax.set_title("Predicted Aligned Error (PAE)", fontsize=14, fontweight="bold")
+
+        cbar = fig.colorbar(im, ax=ax)
+        cbar.set_label("Expected position error (Å)", rotation=270, labelpad=20)
+
+        fig.tight_layout()
+        fig.savefig(out_file, dpi=300)
+        plt.close(fig)
+        logging.info(f"wrote {out_file}")
+    except Exception as e:
+        logging.error(f"Could not create PAE heatmap {out_file}: {e}")
+
 
 def process(directory: str, contact_thresh: float, pae_filter: float, models_to_analyse: str) -> Path | None:
     d = Path(directory)
@@ -50,6 +84,11 @@ def process(directory: str, contact_thresh: float, pae_filter: float, models_to_
                     "interface_area": iface.int_area,
                     "interface_solv_en": iface.int_solv_en,
                 })
+
+            # Save PAE heatmap PNG next to interfaces.csv as pae_<model_name>.png
+            pae_png = d / f"pae_{m}.png"
+            _save_pae_heatmap(confidence.pae_matrix, pae_png)
+
             logging.info(f"processed model: {m} via {parser.name}")
         except Exception as e:
             logging.error(f"error processing model {m}: {e}")

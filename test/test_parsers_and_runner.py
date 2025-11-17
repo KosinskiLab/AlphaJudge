@@ -50,6 +50,13 @@ def test_af2_runner_outputs_have_expected_scores(af2_dir: Path, models_to_analys
     assert parser.name == "af2"
     process(str(af2_dir), 8.0, 100.0, models_to_analyse)
 
+    # PAE heatmaps should be saved as pae_<model_name>.png next to interfaces.csv
+    run = parser.parse_run(af2_dir)
+    models = [run.order[0]] if models_to_analyse == "best" else run.order
+    for m in models:
+        png = af2_dir / f"pae_{m}.png"
+        assert png.exists() and png.stat().st_size > 0
+
     out = af2_dir / "interfaces.csv"
     assert out.exists() and out.stat().st_size > 0
     rows = read_csv_rows(out)
@@ -85,6 +92,13 @@ def test_af3_runner_outputs_have_expected_scores(af3_dir: Path, models_to_analys
     parser = pick_parser(af3_dir)
     assert parser.name == "af3"
     process(str(af3_dir), 8.0, 100.0, models_to_analyse)
+
+    # PAE heatmaps should be saved as pae_<model_name>.png next to interfaces.csv
+    run = parser.parse_run(af3_dir)
+    models = [run.order[0]] if models_to_analyse == "best" else run.order
+    for m in models:
+        png = af3_dir / f"pae_{m}.png"
+        assert png.exists() and png.stat().st_size > 0
 
     out = af3_dir / "interfaces.csv"
     assert out.exists() and out.stat().st_size > 0
