@@ -219,6 +219,22 @@ def process_many(
             for k in row.keys():
                 if k not in seen_fields:
                     seen_fields.add(k); fieldnames.append(k)
+
+        # Rank summary rows by iptm (highest first) when available.
+        # Rows with missing/invalid iptm are placed at the bottom.
+        def _iptm_sort_key(row: dict) -> float:
+            v = row.get("iptm")
+            if v is None or v == "":
+                return float("-inf")
+            try:
+                val = float(v)
+            except Exception:
+                return float("-inf")
+            # Treat NaN as the smallest value so it sorts last
+            return val if val == val else float("-inf")
+
+        aggregated_rows = sorted(aggregated_rows, key=_iptm_sort_key, reverse=True)
+
         summary_path = Path(summary_csv).resolve()
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         with summary_path.open("w", newline="") as f:
