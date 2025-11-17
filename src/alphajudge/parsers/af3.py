@@ -67,22 +67,32 @@ class AF3Parser(BaseParser):
                 max_pae = float(np.nanmax(m)) if m.size else float('nan')
 
         elif "pae" in matrix and "token_chain_ids" in matrix:
+            # Prefer to use the full token×token PAE matrix directly when it
+            # matches the residue×residue layout, to retain per-residue detail.
             tokens = np.array(matrix["pae"], dtype=float)
-            ids = matrix["token_chain_ids"]
             max_pae = float(np.nanmax(tokens)) if tokens.size else float('nan')
-            # map token groups → chain indices
-            seen: List[Any] = []
-            for c in ids:
-                if c not in seen: seen.append(c)
-            group = {v: i for i, v in enumerate(seen)}
-            for i, chi in enumerate(chains):
-                ti = [k for k, c in enumerate(ids) if group.get(c, -1) == i]; ri = cid.get(chi.id, [])
-                for j, chj in enumerate(chains):
-                    tj = [k for k, c in enumerate(ids) if group.get(c, -1) == j]; rj = cid.get(chj.id, [])
-                    if ti and tj and ri and rj:
-                        block = tokens[np.ix_(ti, tj)]
-                        val = float(np.nanmin(block)) if block.size else 100.0
-                        pae[np.ix_(ri, rj)] = val
+
+            if tokens.shape == pae.shape:
+                # 1:1 correspondence between tokens and residues; assume that
+                # token order matches the global residue order used for cid.
+                pae[:, :] = tokens
+            else:
+                # Fallback to coarse chain-pair mapping using token_chain_ids.
+                ids = matrix["token_chain_ids"]
+                # map token groups → chain indices
+                seen: List[Any] = []
+                for c in ids:
+                    if c not in seen:
+                        seen.append(c)
+                group = {v: i for i, v in enumerate(seen)}
+                for i, chi in enumerate(chains):
+                    ti = [k for k, c in enumerate(ids) if group.get(c, -1) == i]; ri = cid.get(chi.id, [])
+                    for j, chj in enumerate(chains):
+                        tj = [k for k, c in enumerate(ids) if group.get(c, -1) == j]; rj = cid.get(chj.id, [])
+                        if ti and tj and ri and rj:
+                            block = tokens[np.ix_(ti, tj)]
+                            val = float(np.nanmin(block)) if block.size else 100.0
+                            pae[np.ix_(ri, rj)] = val
 
         elif "chain_pair_pae_min" in matrix:
             cp = np.array(matrix["chain_pair_pae_min"], dtype=float)

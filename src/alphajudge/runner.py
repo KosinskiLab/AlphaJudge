@@ -11,9 +11,17 @@ from .parsers import pick_parser
 from .core import Complex
 
 
-def _save_pae_heatmap(pae_matrix, out_file: Path, figsize: tuple[int, int] = (10, 10)) -> None:
+def _save_pae_heatmap(
+    pae_matrix,
+    out_file: Path,
+    chain_boundaries: list[float] | None = None,
+    figsize: tuple[int, int] = (10, 10),
+) -> None:
     """
     Save a PAE heatmap PNG for a given residue×residue PAE matrix.
+
+    Optionally draw vertical and horizontal separator lines at positions
+    provided in `chain_boundaries` (typically between different chains).
     """
     try:
         mtx = np.array(pae_matrix, dtype=float)
@@ -26,6 +34,12 @@ def _save_pae_heatmap(pae_matrix, out_file: Path, figsize: tuple[int, int] = (10
         ax.set_xlabel("Scored residue", fontsize=12)
         ax.set_ylabel("Aligned residue", fontsize=12)
         ax.set_title("Predicted Aligned Error (PAE)", fontsize=14, fontweight="bold")
+
+        # Draw chain separator lines if provided
+        if chain_boundaries:
+            for b in chain_boundaries:
+                ax.axhline(b, color="black", linewidth=0.5)
+                ax.axvline(b, color="black", linewidth=0.5)
 
         cbar = fig.colorbar(im, ax=ax)
         cbar.set_label("Expected position error (Å)", rotation=270, labelpad=20)
@@ -85,9 +99,24 @@ def process(directory: str, contact_thresh: float, pae_filter: float, models_to_
                     "interface_solv_en": iface.int_solv_en,
                 })
 
+            # Compute chain boundaries (in residue index space) for drawing
+            # separator lines on the PAE heatmap. Complex._chain_indices_by_id
+            # stores contiguous index ranges per chain.
+            chain_boundaries: list[float] = []
+            try:
+                idx_lists = [idxs for idxs in comp._chain_indices_by_id.values() if idxs]  # type: ignore[attr-defined]
+                if idx_lists:
+                    # boundaries at the edges between chains: last index of each chain + 0.5
+                    sorted_bounds = sorted(max(idxs) + 0.5 for idxs in idx_lists)
+                    # exclude the very last boundary at the matrix edge; we only
+                    # want separators *between* chains
+                    chain_boundaries = sorted_bounds[:-1] if len(sorted_bounds) > 1 else []
+            except Exception:
+                chain_boundaries = []
+
             # Save PAE heatmap PNG next to interfaces.csv as pae_<model_name>.png
             pae_png = d / f"pae_{m}.png"
-            _save_pae_heatmap(confidence.pae_matrix, pae_png)
+            _save_pae_heatmap(confidence.pae_matrix, pae_png, chain_boundaries=chain_boundaries)
 
             logging.info(f"processed model: {m} via {parser.name}")
         except Exception as e:
