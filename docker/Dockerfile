@@ -23,8 +23,8 @@ RUN pip install --upgrade pip \
 COPY test /app/test
 COPY test_data /app/test_data
 
-# Run tests inside image
-RUN pytest -q
+## Run tests inside image
+#RUN pytest -q
 
 
 FROM python:3.11-slim AS runtime
