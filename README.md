@@ -4,7 +4,7 @@ AlphaJudge evaluates AlphaFold-predicted protein complexes by merging AI-derived
 
 ![AlphaJudge icon](images/icon.png)
 
-[![license: MIT](https://img.shields.io/badge/license-MIT-informational.svg)](#-citation-and-license)
+[![license: MIT](https://img.shields.io/badge/license-MIT-informational.svg)](#citation-and-license)
 [![python](https://img.shields.io/badge/python-3.10+-blue.svg)]()
 [![platform](https://img.shields.io/badge/platform-Linux%20%7C%20HPC-lightgrey.svg)]()
 
@@ -58,7 +58,7 @@ Option C: pip editable install in existing environment
 ```bash
 pip install -e .
 ```
-Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`.
+Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`, `matplotlib` (installed automatically with `pip install .`).
 
 ---
 
@@ -85,6 +85,7 @@ alphajudge PATH [PATH ...] \
 
 Outputs:
 - Always writes `interfaces.csv` inside each processed run directory.
+- For each processed model, also writes a PAE heatmap PNG `pae_<model>.png` next to `interfaces.csv`.
 - If `--summary` is provided, also writes a union-header CSV at the given path containing rows from all runs.
 
 Examples
@@ -175,6 +176,20 @@ Tests exercise both AF2 and AF3 parsers and validate the CSV fields against bund
 
 ---
 
+## Docker
+
+A minimal multi-stage Dockerfile is provided under `docker/`:
+
+```bash
+# Build image (runs tests in the build stage)
+docker build -t alphajudge -f docker/Dockerfile .
+
+# Inspect CLI inside the runtime image
+docker run --rm alphajudge alphajudge --help
+```
+
+---
+
 ## Citation and license
 
 Please cite:
@@ -185,9 +200,3 @@ Please cite:
 License: MIT for this repository. AlphaFold2/AlphaFold3, and other tools remain under their own licenses.
 
 ---
-
-## Roadmap
-
-- Additional metrics: ActifpTM, FoldSeek-Multimer integration
-- Optional HTML report with plots and per-interface summaries
-- Lightweight learned combiner for PPI benchmarking
