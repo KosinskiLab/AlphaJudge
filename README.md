@@ -38,7 +38,7 @@ AlphaFold models (AF2 or AF3)  →  AlphaJudge  →  interfaces.csv
 
 ## Installation
 
-Option A: conda/mamba env (recommended)
+Create conda/mamba env
 
 ```bash
 git clone https://github.com/KosinskiLab/AlphaJudge.git
@@ -47,13 +47,13 @@ mamba env create -f environment.yaml
 mamba activate alphajudge
 ```
 
-Option B: pip install in existing environment
+Then, pip install in the existing environment
 
 ```bash
 pip install .
 ```
 
-Option C: pip editable install in existing environment
+or pip editable install in existing environment
 
 ```bash
 pip install -e .
