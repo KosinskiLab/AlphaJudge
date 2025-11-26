@@ -65,6 +65,12 @@ class Complex:
         self.pae_filter = pae_filter
         self._res_index_map, self._chain_indices_by_id, self._chains = self._build_maps()
 
+        self._sasa_cache: Dict[str, float] = {}
+        self._sasa_complex_cache: Dict[Tuple[str, str], float] = {}
+        self._buried_surface_cache: Dict[Tuple[str, str, float, int], list[tuple[np.ndarray, np.ndarray]]] = {}
+        self._contact_ns_cache: Dict[Tuple[str, str], Tuple[list, list, np.ndarray, np.ndarray]] = {}
+        self._all_atom_ns_cache: Dict[Tuple[str, str], Tuple[list, NeighborSearch]] = {}
+
         self.interfaces: List[Interface] = []
         for i in range(len(self._chains)):
             for j in range(i+1, len(self._chains)):
@@ -245,41 +251,54 @@ class Interface:
     @cached_property
     def _ns_all_atoms(self) -> NeighborSearch:
         """NeighborSearch over all atoms in both chains (reused by hb/sb)."""
-        atoms = [a for r in (self.chain1 + self.chain2) for a in r]
-        return NeighborSearch(atoms)
+        key = tuple(sorted((self._cid1_id, self._cid2_id)))
+        cached = self.c._all_atom_ns_cache.get(key)
+        if cached is None:
+            atoms = [a for r in (self.chain1 + self.chain2) for a in r]
+            cached = (atoms, NeighborSearch(atoms))
+            self.c._all_atom_ns_cache[key] = cached
+        return cached[1]
 
     @cached_property
     def hb(self) -> int:
         atoms1 = [a for r in self.chain1 for a in r if a.id.upper().startswith(("N","O"))]
         atoms2 = [a for r in self.chain2 for a in r if a.id.upper().startswith(("N","O"))]
         if not atoms1 or not atoms2: return 0
+        ids1 = {id(a) for a in atoms1}
+        ids2 = {id(a) for a in atoms2}
         ns = self._ns_all_atoms; cutoff = 3.5
         seen, cnt = set(), 0
-        for a1 in atoms1:
-            for a2 in ns.search(a1.coord, cutoff):
-                if a2 in atoms2 and a2 is not a1:
-                    key = tuple(sorted([id(a1), id(a2)]))
-                    if key not in seen:
-                        seen.add(key); cnt += 1
+        for a1, a2 in ns.search_all(cutoff):
+            i1, i2 = id(a1), id(a2)
+            if (i1 in ids1 and i2 in ids2) or (i1 in ids2 and i2 in ids1):
+                key = tuple(sorted((i1, i2)))
+                if key not in seen:
+                    seen.add(key); cnt += 1
         return cnt
 
     @cached_property
     def sb(self) -> int:
         pos, neg = {"ARG","LYS"}, {"ASP","GLU"}
-        a1 = [a for r in self.chain1 if r.get_resname() in pos|neg for a in r if a.id not in ("N","CA","C","O")]
-        a2 = [a for r in self.chain2 if r.get_resname() in pos|neg for a in r if a.id not in ("N","CA","C","O")]
+        relevant = pos | neg
+        a1 = [a for r in self.chain1 if r.get_resname() in relevant for a in r if a.id not in ("N","CA","C","O")]
+        a2 = [a for r in self.chain2 if r.get_resname() in relevant for a in r if a.id not in ("N","CA","C","O")]
         if not a1 or not a2: return 0
         ns = self._ns_all_atoms; cutoff = 4.0
+        ids1 = {id(a): 1 if a.get_parent().get_resname() in pos else -1 for a in a1}
+        ids2 = {id(a): 1 if a.get_parent().get_resname() in pos else -1 for a in a2}
         seen, cnt = set(), 0
-        for x in a1:
-            n1 = x.get_parent().get_resname()
-            for y in ns.search(x.coord, cutoff):
-                if y in a2 and y is not x:
-                    n2 = y.get_parent().get_resname()
-                    if (n1 in pos and n2 in neg) or (n1 in neg and n2 in pos):
-                        key = tuple(sorted([id(x), id(y)]))
-                        if key not in seen:
-                            seen.add(key); cnt += 1
+        for x, y in ns.search_all(cutoff):
+            ix, iy = id(x), id(y)
+            if ix in ids1 and iy in ids2:
+                if ids1[ix] + ids2[iy] == 0:
+                    key = tuple(sorted((ix, iy)))
+                    if key not in seen:
+                        seen.add(key); cnt += 1
+            elif ix in ids2 and iy in ids1:
+                if ids2[ix] + ids1[iy] == 0:
+                    key = tuple(sorted((ix, iy)))
+                    if key not in seen:
+                        seen.add(key); cnt += 1
         return cnt
 
     @cached_property
@@ -303,14 +322,29 @@ class Interface:
     # ---------- private helpers below ----------
     def _get_pairs(self):
         res_pairs: Set[Tuple[Any, Any]] = set()
-        a1 = [r["CB"] if "CB" in r else r["CA"] for r in self.chain1]
-        a2 = [r["CB"] if "CB" in r else r["CA"] for r in self.chain2]
-        ns = NeighborSearch(a1 + a2)
-        for x in a1:
-            for y in ns.search(x.coord, self.c.contact_thresh):
-                if y in a2: res_pairs.add((x.get_parent(), y.get_parent()))
+        a1, a2, coords1, coords2 = self._contact_atom_data()
+        if not len(a1) or not len(a2):
+            return set(), set(), res_pairs
+        diff = coords1[:, None, :] - coords2[None, :, :]
+        dist2 = np.sum(diff * diff, axis=2)
+        mask = dist2 <= self.c.contact_thresh ** 2
+        idx_i, idx_j = np.where(mask)
+        for i, j in zip(idx_i.tolist(), idx_j.tolist()):
+            res_pairs.add((a1[i].get_parent(), a2[j].get_parent()))
         r1 = {p[0] for p in res_pairs}; r2 = {p[1] for p in res_pairs}
         return r1, r2, res_pairs
+
+    def _contact_atom_data(self) -> Tuple[list, list, np.ndarray, np.ndarray]:
+        key = (self._cid1_id, self._cid2_id)
+        cached = self.c._contact_ns_cache.get(key)
+        if cached is None:
+            a1 = [r["CB"] if "CB" in r else r["CA"] for r in self.chain1]
+            a2 = [r["CB"] if "CB" in r else r["CA"] for r in self.chain2]
+            coords1 = np.array([a.coord for a in a1], dtype=float) if a1 else np.empty((0, 3))
+            coords2 = np.array([a.coord for a in a2], dtype=float) if a2 else np.empty((0, 3))
+            cached = (a1, a2, coords1, coords2)
+            self.c._contact_ns_cache[key] = cached
+        return cached
 
     def _avg_plddt_union(self) -> float:
         res_set = self._res1 | self._res2
@@ -397,6 +431,17 @@ class Interface:
         return (sum(1 for r in residues if r.get_resname() in names) / len(residues)) if residues else 0.0
 
     def _sasa_chain(self, residues) -> float:
+        chain_id = residues[0].get_parent().id if residues else None
+        if chain_id:
+            cached = self.c._sasa_cache.get(chain_id)
+            if cached is not None:
+                return cached
+        total = self._compute_sasa_chain(residues)
+        if chain_id:
+            self.c._sasa_cache[chain_id] = total
+        return total
+
+    def _compute_sasa_chain(self, residues) -> float:
         """
         Return solvent-accessible surface area for a set of residues.
 
@@ -427,6 +472,15 @@ class Interface:
         return total
 
     def _sasa_complex(self, r1, r2) -> float:
+        key = tuple(sorted((self._cid1_id, self._cid2_id)))
+        cached = self.c._sasa_complex_cache.get(key)
+        if cached is not None:
+            return cached
+        total = self._compute_sasa_complex(r1, r2)
+        self.c._sasa_complex_cache[key] = total
+        return total
+
+    def _compute_sasa_complex(self, r1, r2) -> float:
         """
         Return solvent-accessible surface area for a two-chain complex.
 
@@ -456,6 +510,19 @@ class Interface:
         return total
 
     def _buried_surface(self, chain_res, other_res, dist=5.0, dots=15):
+        chain_id = chain_res[0].get_parent().id if chain_res else None
+        other_id = other_res[0].get_parent().id if other_res else None
+        cache_key = (chain_id, other_id, float(dist), int(dots))
+        if chain_id and other_id:
+            cached = self.c._buried_surface_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        result = self._compute_buried_surface(chain_res, other_res, dist, dots)
+        if chain_id and other_id:
+            self.c._buried_surface_cache[cache_key] = result
+        return result
+
+    def _compute_buried_surface(self, chain_res, other_res, dist=5.0, dots=15):
         """
         Approximate the set of buried surface points on `chain_res` that lie
         within `dist` Å of any atom in `other_res`.
@@ -516,31 +583,36 @@ class Interface:
             probe_radius = float(sr.probe_radius)
 
         buried = []
-        for atom, center in zip(atoms, atom_coords):
-            # Approximate surface points on this atom
-            radius = radii_dict[atom.element] + probe_radius
-            points = sphere * radius + center  # (dots, 3)
-            normals = sphere  # unit normals for each point
-
-            # Compute squared distances from each point to all atoms in other_res
+        atom_radii = np.array([radii_dict[atom.element] + probe_radius for atom in atoms])
+        for radius, center in zip(atom_radii, atom_coords):
+            points = sphere * radius + center
             diff = points[:, None, :] - other_coords[None, :, :]
-            dist2 = np.sum(diff * diff, axis=2)  # (dots, n_other)
+            dist2 = np.sum(diff * diff, axis=2)
             mask = np.any(dist2 <= d2, axis=1)
-
-            for xyz, n in zip(points[mask], normals[mask]):
-                buried.append((xyz.astype(float), n.astype(float)))
+            if np.any(mask):
+                for xyz, n in zip(points[mask], sphere[mask]):
+                    buried.append((xyz.astype(float), n.astype(float)))
 
         return buried
 
     def _approx_sc(self, A, B, w=0.5) -> float:
-        cB = np.array([p[0] for p in B]); nB = [p[1] for p in B]
+        cB = np.array([p[0] for p in B], dtype=float)
+        nB = np.array([p[1] for p in B], dtype=float)
+        cA = np.array([p[0] for p in A], dtype=float)
+        nA = np.array([p[1] for p in A], dtype=float)
+
         sA = []
-        for x, nA in A:
-            d = cB - x; j = np.argmin(np.sum(d*d, axis=1))
-            sA.append(float(np.dot(nA, -nB[j]) * math.exp(-w * float(np.sum(d[j]*d[j])))))
-        cA = np.array([p[0] for p in A]); nA = [p[1] for p in A]
+        for x, nA_vec in A:
+            d = cB - x
+            d_sq = np.sum(d * d, axis=1)
+            j = int(np.argmin(d_sq))
+            d_j_sq = float(d_sq[j])
+            sA.append(float(np.dot(nA_vec, -nB[j]) * math.exp(-w * d_j_sq)))
         sB = []
-        for x, n in B:
-            d = cA - x; j = np.argmin(np.sum(d*d, axis=1))
-            sB.append(float(np.dot(n, -nA[j]) * math.exp(-w * float(np.sum(d[j]*d[j])))))
+        for x, n_vec in B:
+            d = cA - x
+            d_sq = np.sum(d * d, axis=1)
+            j = int(np.argmin(d_sq))
+            d_j_sq = float(d_sq[j])
+            sB.append(float(np.dot(n_vec, -nA[j]) * math.exp(-w * d_j_sq)))
         return float(0.5 * (np.median(sA) + np.median(sB)))
