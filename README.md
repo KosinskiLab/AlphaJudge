@@ -1,6 +1,11 @@
 # AlphaJudge: I am the score!
 
 AlphaJudge evaluates AlphaFold-predicted protein complexes by merging AI-derived confidences (ipTM, pTM, iptm+ptm/confidence_score, pLDDT, PAE) with fast, self-contained interface biophysics (contacts, H-bonds, salt bridges, buried area, solvation proxy, shape complementarity) into a tidy CSV for downstream analysis.
+> ⚠️ **Disclaimer**  
+> Interface biophysical scores in AlphaJudge have not yet been validated
+> against CCP4/PISA and are intended for relative ranking, not quantitative
+> biophysical interpretation.
+
 
 ![AlphaJudge icon](images/icon.png)
 
