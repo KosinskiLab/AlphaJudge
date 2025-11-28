@@ -17,6 +17,14 @@ POLAR_RES: Set[str] = {"SER", "THR", "ASN", "GLN", "TYR", "CYS"}
 HYDROPHOBIC_RES: Set[str] = {"ALA", "VAL", "LEU", "ILE", "MET", "PHE", "TRP"}
 CHARGED_RES: Set[str] = {"ARG", "LYS", "ASP", "GLU", "HIS"}
 
+# Atoms that are part of charged groups for salt bridge calculations
+CHARGED_ATOMS: Dict[str, Set[str]] = {
+    "ARG": {"NE", "CZ", "NH1", "NH2"},  # guanidinium group
+    "LYS": {"NZ"},                        # amino group
+    "ASP": {"CG", "OD1", "OD2"},         # carboxylate group
+    "GLU": {"CD", "OE1", "OE2"},         # carboxylate group
+}
+
 # ---- Shrake-Rupley helpers ----
 _SR_TEMPLATE = ShrakeRupley(probe_radius=1.4, n_points=15)
 _SPHERE_15 = np.array(_SR_TEMPLATE._sphere, copy=False)
@@ -280,8 +288,10 @@ class Interface:
     def sb(self) -> int:
         pos, neg = {"ARG","LYS"}, {"ASP","GLU"}
         relevant = pos | neg
-        a1 = [a for r in self.chain1 if r.get_resname() in relevant for a in r if a.id not in ("N","CA","C","O")]
-        a2 = [a for r in self.chain2 if r.get_resname() in relevant for a in r if a.id not in ("N","CA","C","O")]
+        a1 = [a for r in self.chain1 if r.get_resname() in relevant 
+              for a in r if a.id in CHARGED_ATOMS.get(r.get_resname(), set())]
+        a2 = [a for r in self.chain2 if r.get_resname() in relevant 
+              for a in r if a.id in CHARGED_ATOMS.get(r.get_resname(), set())]
         if not a1 or not a2: return 0
         ns = self._ns_all_atoms; cutoff = 4.0
         ids1 = {id(a): 1 if a.get_parent().get_resname() in pos else -1 for a in a1}
