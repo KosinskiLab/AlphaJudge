@@ -267,21 +267,369 @@ class Interface:
             self.c._all_atom_ns_cache[key] = cached
         return cached[1]
 
+    @staticmethod
+    def _angle_between_vectors(v1: np.ndarray, v2: np.ndarray) -> float:
+        """Calculate angle between two vectors in degrees."""
+        norm1 = np.linalg.norm(v1)
+        norm2 = np.linalg.norm(v2)
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        cos_angle = np.dot(v1, v2) / (norm1 * norm2)
+        cos_angle = np.clip(cos_angle, -1.0, 1.0)
+        return math.degrees(math.acos(cos_angle))
+
+    @staticmethod
+    def _angle_at_point(p1: np.ndarray, vertex: np.ndarray, p2: np.ndarray) -> float:
+        """Calculate angle p1-vertex-p2 in degrees."""
+        v1 = p1 - vertex
+        v2 = p2 - vertex
+        return Interface._angle_between_vectors(v1, v2)
+
+    @staticmethod
+    def _find_hydrogen_atoms(donor_atom) -> List[Any]:
+        """
+        Find hydrogen atoms attached to a donor atom.
+        Uses distance-based detection (H-D distance ~1.0-1.1 Å) as primary method,
+        with name-based fallback for robustness.
+        """
+        hydrogens = []
+        residue = donor_atom.get_parent()
+        if residue is None:
+            return hydrogens
+        donor_coord = donor_atom.coord
+        donor_name = donor_atom.id.upper()
+        element = donor_atom.element.upper() if donor_atom.element else ""
+        
+        # Typical H-D bond lengths: N-H ~1.0 Å, O-H ~1.0 Å
+        max_h_dist = 1.3  # Slightly generous to account for variations
+        
+        for atom in residue:
+            if not (atom.element and atom.element.upper() == "H"):
+                continue
+            
+            # Distance-based detection (most reliable)
+            dist = np.linalg.norm(atom.coord - donor_coord)
+            if dist <= max_h_dist:
+                hydrogens.append(atom)
+                continue
+            
+            # Name-based fallback for cases where distance might be off
+            atom_name = atom.id.upper()
+            # Main chain N -> H, 1H, 2H, 3H
+            if donor_name == "N" and atom_name in ("H", "1H", "2H", "3H", "HN"):
+                hydrogens.append(atom)
+            # Side chain patterns: NE -> HE, ND -> HD, etc.
+            elif len(donor_name) >= 2:
+                # Pattern: if donor is "NE", look for "HE", "1HE", "2HE", etc.
+                if atom_name.startswith("H") and donor_name[1:] in atom_name[1:]:
+                    hydrogens.append(atom)
+                # Pattern: if donor is "OG", look for "HG", "1HG", etc.
+                elif atom_name.startswith("H") and donor_name[-1] in atom_name:
+                    # Additional check: distance should be reasonable even if > max_h_dist
+                    if dist <= 1.5:  # More lenient for name-based
+                        hydrogens.append(atom)
+        
+        return hydrogens
+
+    @staticmethod
+    def _find_acceptor_antecedent(acceptor_atom) -> Optional[Any]:
+        """Find the acceptor antecedent (heavy atom attached to acceptor)."""
+        residue = acceptor_atom.get_parent()
+        if residue is None:
+            return None
+        acceptor_name = acceptor_atom.id.upper()
+        acceptor_coord = acceptor_atom.coord
+        
+        # Find the closest heavy atom (not H) in the same residue
+        closest_atom = None
+        min_dist = float('inf')
+        for atom in residue:
+            if atom is acceptor_atom or (atom.element and atom.element.upper() == "H"):
+                continue
+            dist = np.linalg.norm(atom.coord - acceptor_coord)
+            if dist < min_dist and dist < 2.0:  # Covalent bond distance
+                min_dist = dist
+                closest_atom = atom
+        return closest_atom
+
+    @staticmethod
+    def _can_be_donor(atom) -> bool:
+        """
+        Check if an atom can act as a hydrogen bond donor.
+        Based on HBPLUS donor list:
+        - Main chain N (all amino acids except imino acids like PRO)
+        - Side chain N: ARG NE/NH1/NH2, LYS NZ, ASN ND2, GLN NE2, HIS NE2/ND1, TRP NE1
+        - Side chain O: SER OG, THR OG1, TYR OH
+        - CYH SG (cysteine with H)
+        """
+        element = atom.element.upper() if atom.element else ""
+        atom_name = atom.id.upper()
+        residue = atom.get_parent()
+        if residue is None:
+            return False
+        resname = residue.get_resname().upper()
+        
+        # Main chain N (all amino acids except PRO which is imino)
+        if element == "N" and atom_name == "N" and resname != "PRO":
+            return True
+        
+        # Side chain N donors
+        if element == "N":
+            if resname == "ARG" and atom_name in ("NE", "NH1", "NH2"):
+                return True
+            if resname == "LYS" and atom_name == "NZ":
+                return True
+            if resname == "ASN" and atom_name == "ND2":
+                return True
+            if resname == "GLN" and atom_name == "NE2":
+                return True
+            if resname == "HIS" and atom_name in ("NE2", "ND1"):
+                return True
+            if resname == "TRP" and atom_name == "NE1":
+                return True
+        
+        # Side chain O donors (OH groups)
+        if element == "O":
+            if resname == "SER" and atom_name == "OG":
+                return True
+            if resname == "THR" and atom_name == "OG1":
+                return True
+            if resname == "TYR" and atom_name == "OH":
+                return True
+        
+        # CYH SG (cysteine with H) - less common, but included for completeness
+        if element == "S" and resname == "CYS" and atom_name == "SG":
+            # Note: This would require checking for H, but we'll include it
+            # as CYH is a recognized donor type in HBPLUS
+            return True
+        
+        # Water molecules and HETATM: O atoms can be donors if they have H
+        # For water, we'll be permissive - O in HOH can be donor
+        if element == "O" and resname in ("HOH", "WAT", "H2O"):
+            return True
+        
+        # For unknown/non-standard residues, be permissive for N and O
+        # (fallback for HETATM or modified residues not in standard list)
+        if resname not in ("ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", 
+                          "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER",
+                          "THR", "TRP", "TYR", "VAL", "HOH", "WAT", "H2O"):
+            if element == "N":
+                return True
+            if element == "O":
+                return True
+        
+        return False
+
+    @staticmethod
+    def _can_be_acceptor(atom) -> bool:
+        """
+        Check if an atom can act as a hydrogen bond acceptor.
+        Based on HBPLUS acceptor list:
+        - Main chain carbonyl O (all amino acids, including PRO)
+        - Side chain O: ASP OD1/OD2, GLU OE1/OE2, ASN OD1, GLN OE1, SER OG, THR OG1, TYR OH
+        - Side chain N: HIS ND1/NE2 (can be acceptors)
+        - CYH SG, CSS SG (cysteine/cystine sulfur)
+        """
+        element = atom.element.upper() if atom.element else ""
+        atom_name = atom.id.upper()
+        residue = atom.get_parent()
+        if residue is None:
+            return False
+        resname = residue.get_resname().upper()
+        
+        # Main chain carbonyl O (all amino acids, including PRO)
+        if element == "O" and atom_name == "O":
+            return True
+        
+        # Terminal carboxylate oxygen (OXT)
+        if element == "O" and atom_name == "OXT":
+            return True
+
+        # Side chain O acceptors
+        if element == "O":
+            if resname == "ASP" and atom_name in ("OD1", "OD2"):
+                return True
+            if resname == "GLU" and atom_name in ("OE1", "OE2"):
+                return True
+            if resname == "ASN" and atom_name == "OD1":
+                return True
+            if resname == "GLN" and atom_name == "OE1":
+                return True
+            if resname == "SER" and atom_name == "OG":
+                return True
+            if resname == "THR" and atom_name == "OG1":
+                return True
+            if resname == "TYR" and atom_name == "OH":
+                return True
+        
+        # Side chain N acceptors (HIS nitrogens)
+        if element == "N":
+            if resname == "HIS" and atom_name in ("ND1", "NE2"):
+                return True
+        
+        # CYH SG, CSS SG (cysteine/cystine sulfur) - less common
+        if element == "S" and resname == "CYS" and atom_name == "SG":
+            return True
+        
+        # Water molecules and HETATM: O atoms are acceptors
+        if element == "O" and resname in ("HOH", "WAT", "H2O"):
+            return True
+        
+        # For unknown/non-standard residues, be permissive for O and N
+        # (fallback for HETATM or modified residues not in standard list)
+        if resname not in ("ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", 
+                          "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER",
+                          "THR", "TRP", "TYR", "VAL", "HOH", "WAT", "H2O"):
+            if element == "O":
+                return True
+            if element == "N":
+                return True
+        
+        return False
+
     @cached_property
     def hb(self) -> int:
-        atoms1 = [a for r in self.chain1 for a in r if a.id.upper().startswith(("N","O"))]
-        atoms2 = [a for r in self.chain2 for a in r if a.id.upper().startswith(("N","O"))]
+        """
+        Count hydrogen bonds between chain1 and chain2.
+        Uses HBPLUS-style criteria:
+        - D-A distance <= 3.9 Å
+        - H-A distance <= 2.5 Å (if H present)
+        - D-H-A angle >= 90° (if H present)
+        - D-A-AA angle >= 90°
+        - H-A-AA angle >= 90° (if H and AA present)
+        """
+        # Candidate atoms include N/O/S to cover typical donors/acceptors (e.g. SG)
+        def _candidate_atoms(chain):
+            out = []
+            for res in chain:
+                for atom in res:
+                    elem = atom.element.upper() if atom.element else ""
+                    if elem in {"N", "O", "S"}:
+                        out.append(atom)
+            return out
+
+        atoms1 = _candidate_atoms(self.chain1)
+        atoms2 = _candidate_atoms(self.chain2)
         if not atoms1 or not atoms2: return 0
         ids1 = {id(a) for a in atoms1}
         ids2 = {id(a) for a in atoms2}
-        ns = self._ns_all_atoms; cutoff = 3.5
+        ns = self._ns_all_atoms
+        
+        # HBPLUS default distances
+        max_da_dist = 3.9  # Donor-Acceptor
+        max_ha_dist = 2.5  # Hydrogen-Acceptor
+        min_angle = 90.0   # Minimum angle in degrees
+        
         seen, cnt = set(), 0
-        for a1, a2 in ns.search_all(cutoff):
+        for a1, a2 in ns.search_all(max_da_dist):
             i1, i2 = id(a1), id(a2)
-            if (i1 in ids1 and i2 in ids2) or (i1 in ids2 and i2 in ids1):
+            if not ((i1 in ids1 and i2 in ids2) or (i1 in ids2 and i2 in ids1)):
+                continue
+            
+            # Determine donor and acceptor
+            donor, acceptor = None, None
+            if self._can_be_donor(a1) and self._can_be_acceptor(a2):
+                donor, acceptor = a1, a2
+            elif self._can_be_donor(a2) and self._can_be_acceptor(a1):
+                donor, acceptor = a2, a1
+            elif self._can_be_donor(a1) and self._can_be_donor(a2):
+                # Both can be donors - check if either can be acceptor
+                if self._can_be_acceptor(a1):
+                    donor, acceptor = a2, a1
+                elif self._can_be_acceptor(a2):
+                    donor, acceptor = a1, a2
+            elif self._can_be_acceptor(a1) and self._can_be_acceptor(a2):
+                # Both can be acceptors - check if either can be donor
+                if self._can_be_donor(a1):
+                    donor, acceptor = a1, a2
+                elif self._can_be_donor(a2):
+                    donor, acceptor = a2, a1
+            
+            if donor is None or acceptor is None:
+                continue
+            
+            # Check D-A distance (already filtered by search_all, but verify)
+            da_dist = np.linalg.norm(donor.coord - acceptor.coord)
+            if da_dist > max_da_dist:
+                continue
+            
+            # Find hydrogen atoms attached to donor
+            hydrogens = self._find_hydrogen_atoms(donor)
+            
+            # Find acceptor antecedent
+            acceptor_antecedent = self._find_acceptor_antecedent(acceptor)
+            
+            # Check angle criteria
+            valid_hbond = False
+            
+            if hydrogens:
+                # If hydrogen is present, check D-H-A and H-A-AA angles
+                for h in hydrogens:
+                    ha_dist = np.linalg.norm(h.coord - acceptor.coord)
+                    if ha_dist > max_ha_dist:
+                        continue
+                    
+                    # D-H-A angle
+                    dha_angle = self._angle_at_point(donor.coord, h.coord, acceptor.coord)
+                    if dha_angle < min_angle:
+                        continue
+                    
+                    # D-A-AA angle (if AA exists)
+                    if acceptor_antecedent is not None:
+                        daaa_angle = self._angle_at_point(donor.coord, acceptor.coord, acceptor_antecedent.coord)
+                        if daaa_angle < min_angle:
+                            continue
+                        
+                        # H-A-AA angle
+                        haaa_angle = self._angle_at_point(h.coord, acceptor.coord, acceptor_antecedent.coord)
+                        if haaa_angle < min_angle:
+                            continue
+                    else:
+                        # No acceptor antecedent (e.g. water); rely on D-H-A + H-A distance only
+                        pass
+                    
+                    valid_hbond = True
+                    break
+            else:
+                # No hydrogen present - infer H position along D-A vector (HBPLUS approach)
+                # Place H at typical bond distance (~1.0 Å) from donor along D->A direction
+                da_vec = acceptor.coord - donor.coord
+                da_vec_norm = np.linalg.norm(da_vec)
+                if da_vec_norm > 0:
+                    h_bond_length = 1.0  # Typical N-H or O-H bond length
+                    inferred_h_coord = donor.coord + (da_vec / da_vec_norm) * h_bond_length
+                    
+                    # Check H-A distance
+                    ha_dist = np.linalg.norm(inferred_h_coord - acceptor.coord)
+                    if ha_dist <= max_ha_dist:
+                        # D-H-A angle (using inferred H)
+                        dha_angle = self._angle_at_point(donor.coord, inferred_h_coord, acceptor.coord)
+                        if dha_angle >= min_angle:
+                            # D-A-AA angle (if AA exists)
+                            if acceptor_antecedent is not None:
+                                daaa_angle = self._angle_at_point(donor.coord, acceptor.coord, acceptor_antecedent.coord)
+                                if daaa_angle >= min_angle:
+                                    # H-A-AA angle
+                                    haaa_angle = self._angle_at_point(inferred_h_coord, acceptor.coord, acceptor_antecedent.coord)
+                                    if haaa_angle >= min_angle:
+                                        valid_hbond = True
+                            else:
+                                # No AA, but D-H-A angle and H-A distance are satisfied
+                                valid_hbond = True
+                
+                # Fallback: if no H inferred or checks failed, rely on D-A-AA angle
+                # (distance constraint already enforced via max_da_dist)
+                if not valid_hbond and acceptor_antecedent is not None:
+                    daaa_angle = self._angle_at_point(donor.coord, acceptor.coord, acceptor_antecedent.coord)
+                    if daaa_angle >= min_angle:
+                        valid_hbond = True
+            
+            if valid_hbond:
                 key = tuple(sorted((i1, i2)))
                 if key not in seen:
-                    seen.add(key); cnt += 1
+                    seen.add(key)
+                    cnt += 1
+        
         return cnt
 
     @cached_property
