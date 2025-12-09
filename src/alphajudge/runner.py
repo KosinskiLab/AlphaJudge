@@ -196,6 +196,31 @@ def process_many(
     aggregated_rows: list[dict] = []
     for d in unique_run_dirs:
         try:
+            existing_csv = d / "interfaces.csv"
+            reused = False
+
+            # When building a summary, prefer reusing precomputed interfaces.csv
+            if summary_csv and existing_csv.exists():
+                try:
+                    with existing_csv.open() as f:
+                        rows = list(csv.DictReader(f))
+                    if rows:
+                        aggregated_rows.extend(rows)
+                        logging.info(f"reused existing {existing_csv} for aggregation")
+                        reused = True
+                    else:
+                        logging.info(f"existing {existing_csv} is empty; recomputing")
+                except Exception as e:
+                    logging.warning(f"could not reuse {existing_csv}; recomputing: {e}")
+
+            # If no summary is requested but an interfaces.csv exists, skip recompute
+            if not summary_csv and existing_csv.exists():
+                logging.info(f"reused existing {existing_csv}; skipping recompute")
+                reused = True
+
+            if reused:
+                continue
+
             out_path = process(str(d), contact_thresh, pae_filter, models_to_analyse)
             if summary_csv:
                 # Read rows back to aggregate
