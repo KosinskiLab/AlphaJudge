@@ -2,7 +2,7 @@
 name = "alphajudge"
 version = "0.2.0"
 requires-python = ">=3.10"
-dependencies = ["biopython", "numpy", "matplotlib"]
+dependencies = ["biopython", "numpy", "matplotlib", "polars"]
 
 [project.scripts]
 alphajudge = "alphajudge.cli:main"
