@@ -1,0 +1,2 @@
+jobs,iptm_ptm,iptm,pDockQ/mpDockQ,average_interface_pae,average_interface_plddt,binding_energy,interface,Num_intf_residues,Polar,Hydrophobic,Charged,contact_pairs, sc, hb, sb, int_solv_en, int_area,pi_score
+Q9BUL8+Q13033,0.71686727673296,0.7945360541343689,0.46669343074140823,21.781976744186053,62.4750553505535,-1104.5088506802967,7_8,,,,,,,,,,,

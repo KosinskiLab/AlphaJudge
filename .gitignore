@@ -229,6 +229,9 @@ test_data/**
 !test_data/af2/negative_dimers/Q14974+Q13033/
 !test_data/af2/negative_dimers/Q14974+Q13033/**
 
+!test_data/af2/negative_dimers/P46937+P09496/
+!test_data/af2/negative_dimers/P46937+P09496/**
+
 # AF3 positive dimers used in tests
 !test_data/af3/
 !test_data/af3/positive_dimers/
@@ -248,3 +251,6 @@ test_data/**
 !test_data/af3/negative_dimers/
 !test_data/af3/negative_dimers/Q14974+Q13033/
 !test_data/af3/negative_dimers/Q14974+Q13033/**
+
+!test_data/af3/negative_dimers/Q13976+Q00534
+!test_data/af3/negative_dimers/Q13976+Q00534/**
