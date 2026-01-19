@@ -64,7 +64,7 @@ def test_generated_results_vs_benchmark(benchmark_csv_path, model_input_paths, t
         pytest.skip(f"Benchmark file not found at {benchmark_csv_path}")
 
     # 1. Run process_many to generate new results
-    generated_summary_csv = tmp_path / "AF2_summary.csv"
+    generated_summary_csv = tmp_path / "AJ_summary.csv"
     
     result_path = process_many(
         paths=model_input_paths,

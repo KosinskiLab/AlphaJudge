@@ -15,43 +15,43 @@ from alphajudge.runner import process, process_many
 @pytest.fixture(scope="module")
 def af2_dir() -> Path:
     """Single AF2 positive dimer used for detailed score checks."""
-    return Path("test_data/af2/pos_dimers/Q13148+Q92900")
+    return Path("test_data/af2/positive_dimers/Q13148+Q92900")
 
 
 @pytest.fixture(scope="module")
 def af3_dir() -> Path:
     """Single AF3 positive dimer used for detailed score checks."""
-    return Path("test_data/af3/pos_dimers/Q13148+Q92900")
+    return Path("test_data/af3/positive_dimers/Q13148+Q92900")
 
 
 @pytest.fixture(scope="module")
 def af2_pos_sample() -> list[Path]:
     """Small AF2 positive-dimer sample to keep tests fast."""
     return [
-        Path("test_data/af2/pos_dimers/Q13148+Q92900"),
-        Path("test_data/af2/pos_dimers/Q9BUL8+Q13033"),
+        Path("test_data/af2/positive_dimers/Q13148+Q92900"),
+        Path("test_data/af2/positive_dimers/Q9BUL8+Q13033"),
     ]
 
 
 @pytest.fixture(scope="module")
 def af2_neg_sample() -> list[Path]:
     """Single AF2 negative dimer for regression checks."""
-    return [Path("test_data/af2/neg_dimers/Q14974+Q13033")]
+    return [Path("test_data/af2/negative_dimers/Q14974+Q13033")]
 
 
 @pytest.fixture(scope="module")
 def af3_pos_sample() -> list[Path]:
     """Small AF3 positive-dimer sample to keep tests fast."""
     return [
-        Path("test_data/af3/pos_dimers/Q13148+Q92900"),
-        Path("test_data/af3/pos_dimers/Q9BUL8+Q13033"),
+        Path("test_data/af3/positive_dimers/Q13148+Q92900"),
+        Path("test_data/af3/positive_dimers/Q9BUL8+Q13033"),
     ]
 
 
 @pytest.fixture(scope="module")
 def af3_neg_sample() -> list[Path]:
     """Single AF3 negative dimer for regression checks."""
-    return [Path("test_data/af3/neg_dimers/Q14974+Q13033")]
+    return [Path("test_data/af3/negative_dimers/Q14974+Q13033")]
 
 
 def read_csv_rows(path: Path):
