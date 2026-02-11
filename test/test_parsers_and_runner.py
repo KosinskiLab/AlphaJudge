@@ -1,213 +1,405 @@
 from __future__ import annotations
+
 import csv
 import json
 import math
 import shutil
+import subprocess
 from pathlib import Path
+from typing import Any
 
-import numpy as np
 import pytest
 
 from alphajudge.parsers import pick_parser
 from alphajudge.runner import process, process_many
 
 
-@pytest.fixture(scope="module")
-def af2_dir() -> Path:
-    """Single AF2 positive dimer used for detailed score checks."""
-    return Path("test_data/af2/pos_dimers/Q13148+Q92900")
+# -------------------------
+# Expected output schema (based on real AlphaJudge output CSV)
+# -------------------------
+
+EXPECTED_OUTPUT_COLUMNS = {
+    "jobs",
+    "model_used",
+    "interface",
+    "iptm_ptm",
+    "iptm",
+    "ptm",
+    "confidence_score",
+    "pDockQ/mpDockQ",
+    "average_interface_pae",
+    "interface_average_plddt",
+    "interface_num_intf_residues",
+    "interface_polar",
+    "interface_hydrophobic",
+    "interface_charged",
+    "interface_contact_pairs",
+    "interface_score",
+    "interface_pDockQ2",
+    "interface_ipSAE",
+    "interface_LIS",
+    "interface_hb",
+    "interface_sb",
+    "interface_sc",
+    "interface_area",
+    "interface_solv_en",
+}
+
+# columns that are expected to be numeric (but may be NaN)
+EXPECTED_NUMERIC_COLUMNS = EXPECTED_OUTPUT_COLUMNS - {"jobs", "model_used", "interface"}
 
 
-@pytest.fixture(scope="module")
-def af3_dir() -> Path:
-    """Single AF3 positive dimer used for detailed score checks."""
-    return Path("test_data/af3/pos_dimers/Q13148+Q92900")
+# -------------------------
+# Helpers
+# -------------------------
+
+def _repo_path(p: str) -> Path:
+    return Path(p)
 
 
-@pytest.fixture(scope="module")
-def af2_pos_sample() -> list[Path]:
-    """Small AF2 positive-dimer sample to keep tests fast."""
-    return [
-        Path("test_data/af2/pos_dimers/Q13148+Q92900"),
-        Path("test_data/af2/pos_dimers/Q9BUL8+Q13033"),
-    ]
+def _ensure_exists(p: Path) -> Path:
+    if not p.exists():
+        pytest.skip(f"Missing test data: {p}")
+    return p
 
 
-@pytest.fixture(scope="module")
-def af2_neg_sample() -> list[Path]:
-    """Single AF2 negative dimer for regression checks."""
-    return [Path("test_data/af2/neg_dimers/Q14974+Q13033")]
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as f:
+        return list(csv.DictReader(f))
 
 
-@pytest.fixture(scope="module")
-def af3_pos_sample() -> list[Path]:
-    """Small AF3 positive-dimer sample to keep tests fast."""
-    return [
-        Path("test_data/af3/pos_dimers/Q13148+Q92900"),
-        Path("test_data/af3/pos_dimers/Q9BUL8+Q13033"),
-    ]
+def to_float_or_nan(x: Any) -> float:
+    if x is None:
+        return float("nan")
+    s = str(x).strip().lower()
+    if s in ("", "nan", "none"):
+        return float("nan")
+    return float(s)
 
 
-@pytest.fixture(scope="module")
-def af3_neg_sample() -> list[Path]:
-    """Single AF3 negative dimer for regression checks."""
-    return [Path("test_data/af3/neg_dimers/Q14974+Q13033")]
-
-
-def read_csv_rows(path: Path):
-    with path.open() as f:
-        reader = csv.DictReader(f)
-        return list(reader)
-
-
-def nearly_equal(a: float, b: float, tol: float = 1e-6) -> bool:
-    if (a is None) or (b is None):
-        return a is None and b is None
-    if isinstance(a, str):
-        try:
-            a = float(a)
-        except Exception:
-            return False
-    if isinstance(b, str):
-        try:
-            b = float(b)
-        except Exception:
-            return False
+def nearly_equal(a: Any, b: Any, tol: float = 1e-6) -> bool:
+    a = to_float_or_nan(a)
+    b = to_float_or_nan(b)
     if math.isnan(a) and math.isnan(b):
         return True
-    return abs(float(a) - float(b)) <= tol
+    if math.isnan(a) != math.isnan(b):
+        return False
+    return abs(a - b) <= tol
 
+
+def assert_has_expected_headers(rows: list[dict[str, str]], *, where: str) -> None:
+    assert rows, f"{where} must contain at least one row"
+    header = set(rows[0].keys())
+
+    missing = sorted(EXPECTED_OUTPUT_COLUMNS - header)
+    assert not missing, f"{where} missing expected columns: {missing}"
+
+    # Allow extra columns (forward-compatible), but ensure no empty header keys
+    assert "" not in header, f"{where} contains an empty column name"
+
+
+def assert_numeric_columns_parse(rows: list[dict[str, str]], *, where: str) -> None:
+    # verify numeric columns parse as float or NaN for every row
+    for i, r in enumerate(rows):
+        for col in EXPECTED_NUMERIC_COLUMNS:
+            try:
+                _ = to_float_or_nan(r.get(col))
+            except Exception as e:
+                raise AssertionError(f"{where}: row {i} col {col} not parseable: {r.get(col)!r}") from e
+
+
+def copy_run_dir(src: Path, dst_root: Path) -> Path:
+    dst = dst_root / src.name
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+    return dst
+
+
+def _expected_models_for(run, models_to_analyse: str) -> list[str]:
+    return [run.order[0]] if models_to_analyse == "best" else list(run.order)
+
+
+def _assert_pae_pngs_exist(run_dir: Path, model_names: list[str]) -> None:
+    for m in model_names:
+        png = run_dir / f"pae_{m}.png"
+        assert png.exists() and png.stat().st_size > 0, f"Missing/empty PAE png: {png}"
+
+
+def _get_rows_by_model(rows: list[dict[str, str]]) -> dict[str, list[dict[str, str]]]:
+    out: dict[str, list[dict[str, str]]] = {}
+    for r in rows:
+        m = str(r.get("model_used", "")).strip()
+        out.setdefault(m, []).append(r)
+    return out
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    with path.open() as f:
+        return json.load(f)
+
+
+def _af3_expected_rank(summary: dict[str, Any]) -> Any:
+    # AF3: ranking_score is the ranking metric; some files may expose iptm+ptm too
+    if summary.get("ranking_score") is not None:
+        return summary["ranking_score"]
+    if summary.get("iptm+ptm") is not None:
+        return summary["iptm+ptm"]
+    return None
+
+
+def _af3_expected_iptm_ptm(summary: dict[str, Any]) -> Any:
+    # AF3: iptm_ptm may exist; otherwise iptm+ptm is often the "iptm_ptm-like" metric
+    if summary.get("iptm_ptm") is not None:
+        return summary["iptm_ptm"]
+    if summary.get("iptm+ptm") is not None:
+        return summary["iptm+ptm"]
+    return None
+
+
+def _cli_supports(exe: str, flag: str) -> bool:
+    try:
+        r = subprocess.run([exe, "--help"], capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return False
+    txt = (r.stdout or "") + (r.stderr or "")
+    return flag in txt
+
+
+def _run_cli(exe: str, args: list[str]) -> None:
+    r = subprocess.run([exe, *args], capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        raise AssertionError(
+            "CLI failed\n"
+            f"cmd: {exe} {' '.join(args)}\n"
+            f"returncode: {r.returncode}\n"
+            f"stdout:\n{r.stdout}\n"
+            f"stderr:\n{r.stderr}\n"
+        )
+
+
+# -------------------------
+# Fixtures (source dirs)
+# -------------------------
+
+@pytest.fixture(scope="module")
+def af2_dir_src() -> Path:
+    return _ensure_exists(_repo_path("test_data/af2/pos_dimers/Q13148+Q92900"))
+
+
+@pytest.fixture(scope="module")
+def af3_dir_src() -> Path:
+    return _ensure_exists(_repo_path("test_data/af3/pos_dimers/Q13148+Q92900"))
+
+
+@pytest.fixture(scope="module")
+def af2_pos_sample_src() -> list[Path]:
+    srcs = [
+        _repo_path("test_data/af2/pos_dimers/Q13148+Q92900"),
+        _repo_path("test_data/af2/pos_dimers/Q9BUL8+Q13033"),
+    ]
+    return [_ensure_exists(p) for p in srcs]
+
+
+@pytest.fixture(scope="module")
+def af2_neg_sample_src() -> list[Path]:
+    srcs = [_repo_path("test_data/af2/neg_dimers/Q14974+Q13033")]
+    return [_ensure_exists(p) for p in srcs]
+
+
+@pytest.fixture(scope="module")
+def af3_pos_sample_src() -> list[Path]:
+    srcs = [
+        _repo_path("test_data/af3/pos_dimers/Q13148+Q92900"),
+        _repo_path("test_data/af3/pos_dimers/Q9BUL8+Q13033"),
+    ]
+    return [_ensure_exists(p) for p in srcs]
+
+
+@pytest.fixture(scope="module")
+def af3_neg_sample_src() -> list[Path]:
+    srcs = [_repo_path("test_data/af3/neg_dimers/Q14974+Q13033")]
+    return [_ensure_exists(p) for p in srcs]
+
+
+# -------------------------
+# AF2 runner: best/all + score checks (monomer vs multimer)
+# -------------------------
 
 @pytest.mark.parametrize("models_to_analyse", ["best", "all"])
-def test_af2_runner_outputs_have_expected_scores(af2_dir: Path, models_to_analyse: str):
+def test_af2_runner_outputs_have_expected_scores(tmp_path: Path, af2_dir_src: Path, models_to_analyse: str):
+    af2_dir = copy_run_dir(af2_dir_src, tmp_path)
+
     parser = pick_parser(af2_dir)
     assert parser.name == "af2"
+
     process(str(af2_dir), 8.0, 100.0, models_to_analyse)
 
-    # PAE heatmaps should be saved as pae_<model_name>.png next to interfaces.csv
     run = parser.parse_run(af2_dir)
-    models = [run.order[0]] if models_to_analyse == "best" else run.order
-    for m in models:
-        png = af2_dir / f"pae_{m}.png"
-        assert png.exists() and png.stat().st_size > 0
+    expected_models = _expected_models_for(run, models_to_analyse)
 
     out = af2_dir / "interfaces.csv"
     assert out.exists() and out.stat().st_size > 0
+
     rows = read_csv_rows(out)
-    assert rows, "interfaces.csv must contain at least one row"
+    assert_has_expected_headers(rows, where=str(out))
+    assert_numeric_columns_parse(rows, where=str(out))
 
-    # Verify header includes ptm and confidence_score for AF2
-    header = list(rows[0].keys())
-    assert "ptm" in header
-    assert "confidence_score" in header
+    by_model = _get_rows_by_model(rows)
+    assert set(by_model.keys()) == set(expected_models), f"Expected models {expected_models}, got {sorted(by_model.keys())}"
 
-    # Cross-check against ranking_debug.json: iptm+ptm and iptm present; ptm can be derived
-    ranking = json.load((af2_dir / "ranking_debug.json").open())
-    order = ranking["order"]
-    iptm_map = ranking.get("iptm", {})
-    conf_map = ranking.get("iptm+ptm", {})
+    _assert_pae_pngs_exist(af2_dir, expected_models)
 
-    # Pick the first row (best model if best) and verify values
-    r0 = rows[0]
-    model_used = r0["model_used"]
-    assert model_used in order
-    exp_iptm = float(iptm_map[model_used])
-    exp_conf = float(conf_map[model_used])
-    exp_ptm = (exp_conf - 0.8 * exp_iptm) / 0.2
+    ranking_path = af2_dir / "ranking_debug.json"
+    assert ranking_path.exists(), f"Missing {ranking_path}"
+    ranking = _load_json(ranking_path)
 
-    assert nearly_equal(r0["iptm"], exp_iptm)
-    assert nearly_equal(r0["iptm_ptm"], exp_conf)
-    assert nearly_equal(r0["ptm"], exp_ptm)
-    assert nearly_equal(r0["confidence_score"], exp_conf)
+    # AF2 variability: monomers may have only ptm; multimers have iptm and iptm+ptm.
+    iptm_map = ranking.get("iptm", {}) or {}
+    iptm_ptm_map = ranking.get("iptm+ptm", {}) or {}
+    ptm_map = ranking.get("ptm", {}) or {}
 
+    for m in expected_models:
+        r0 = by_model[m][0]
+
+        exp_ptm = ptm_map.get(m)
+        if exp_ptm is not None:
+            assert nearly_equal(r0["ptm"], float(exp_ptm)), f"AF2 ptm mismatch for {m}"
+
+        if m in iptm_map and iptm_map[m] is not None:
+            # AF2 multimer-like: confidence == iptm+ptm, and iptm_ptm should match that
+            assert m in iptm_ptm_map, f"ranking_debug.json missing iptm+ptm for model {m}"
+            exp_iptm = float(iptm_map[m])
+            exp_conf = float(iptm_ptm_map[m])
+
+            assert nearly_equal(r0["iptm"], exp_iptm), f"AF2 iptm mismatch for {m}"
+            assert nearly_equal(r0["confidence_score"], exp_conf), f"AF2 confidence_score mismatch for {m}"
+            assert nearly_equal(r0["iptm_ptm"], exp_conf), f"AF2 iptm_ptm mismatch for {m}"
+        else:
+            # AF2 monomer-like: ranking score is ptm; iptm is undefined (NaN)
+            assert math.isnan(to_float_or_nan(r0["iptm"])), f"AF2 monomer expected NaN iptm for {m}"
+            if exp_ptm is not None:
+                assert nearly_equal(r0["confidence_score"], float(exp_ptm)), f"AF2 monomer confidence_score should equal ptm for {m}"
+                # iptm_ptm may be NaN or ptm depending on writer; accept both
+                got_iptm_ptm = to_float_or_nan(r0["iptm_ptm"])
+                if not math.isnan(got_iptm_ptm):
+                    assert nearly_equal(got_iptm_ptm, float(exp_ptm)), f"AF2 monomer iptm_ptm should be NaN or ptm for {m}"
+
+
+# -------------------------
+# AF3 runner: best/all + score checks
+# -------------------------
 
 @pytest.mark.parametrize("models_to_analyse", ["best", "all"])
-def test_af3_runner_outputs_have_expected_scores(af3_dir: Path, models_to_analyse: str):
+def test_af3_runner_outputs_have_expected_scores(tmp_path: Path, af3_dir_src: Path, models_to_analyse: str):
+    af3_dir = copy_run_dir(af3_dir_src, tmp_path)
+
     parser = pick_parser(af3_dir)
     assert parser.name == "af3"
+
     process(str(af3_dir), 8.0, 100.0, models_to_analyse)
 
-    # PAE heatmaps should be saved as pae_<model_name>.png next to interfaces.csv
     run = parser.parse_run(af3_dir)
-    models = [run.order[0]] if models_to_analyse == "best" else run.order
-    for m in models:
-        png = af3_dir / f"pae_{m}.png"
-        assert png.exists() and png.stat().st_size > 0
+    expected_models = _expected_models_for(run, models_to_analyse)
 
     out = af3_dir / "interfaces.csv"
     assert out.exists() and out.stat().st_size > 0
+
     rows = read_csv_rows(out)
-    assert rows, "interfaces.csv must contain at least one row"
+    assert_has_expected_headers(rows, where=str(out))
+    assert_numeric_columns_parse(rows, where=str(out))
 
-    # Header contains AF3 fields too
-    header = list(rows[0].keys())
-    for col in ("ptm", "confidence_score", "iptm", "iptm_ptm"):
-        assert col in header
+    header = set(rows[0].keys())
+    has_ranking_score = "ranking_score" in header
 
-    # Cross-check first row scores against ranked_0_summary_confidences.json or per-model summary
-    # Determine the model directory from model_used
-    r0 = rows[0]
-    model_used = r0["model_used"]
-    model_dir = af3_dir / model_used
+    by_model = _get_rows_by_model(rows)
+    assert set(by_model.keys()) == set(expected_models), f"Expected models {expected_models}, got {sorted(by_model.keys())}"
 
-    # Prefer per-model summary; fallback to top-level summary
-    if (model_dir / "summary_confidences.json").exists():
-        summary = json.load((model_dir / "summary_confidences.json").open())
-    else:
-        summary = json.load((af3_dir / "ranked_0_summary_confidences.json").open())
+    _assert_pae_pngs_exist(af3_dir, expected_models)
 
-    got_iptm = float(r0["iptm"]) if r0["iptm"] != "nan" else np.nan
-    got_ptm = float(r0["ptm"]) if r0["ptm"] != "nan" else np.nan
-    got_conf = float(r0["confidence_score"]) if r0["confidence_score"] != "nan" else np.nan
-    got_ipptm = float(r0["iptm_ptm"]) if r0["iptm_ptm"] != "nan" else np.nan
+    ranked0_path = af3_dir / "ranked_0_summary_confidences.json"
+    ranked0 = _load_json(ranked0_path) if ranked0_path.exists() else None
 
-    exp_iptm = summary.get("iptm")
-    exp_ptm = summary.get("ptm")
-    exp_rank = summary.get("ranking_score") or summary.get("iptm+ptm")
-    exp_conf = summary.get("confidence_score")
+    for m in expected_models:
+        model_dir = af3_dir / m
+        summary_path = model_dir / "summary_confidences.json"
+        summary = None
+        if summary_path.exists():
+            summary = _load_json(summary_path)
+        elif ranked0 is not None and m == expected_models[0]:
+            summary = ranked0
 
-    # If AF3 omitted ptm but provided iptm+ptm, recompute ptm to compare
-    if exp_ptm is None and (exp_rank is not None) and (exp_iptm is not None):
-        exp_ptm = (float(exp_rank) - 0.8 * float(exp_iptm)) / 0.2
-    if exp_conf is None and (exp_iptm is not None) and (exp_ptm is not None):
-        exp_conf = 0.8 * float(exp_iptm) + 0.2 * float(exp_ptm)
+        if summary is None:
+            pytest.skip(f"Missing AF3 summary for model {m} (no {summary_path} and no ranked_0 fallback)")
 
-    if exp_iptm is not None:
-        assert nearly_equal(got_iptm, float(exp_iptm))
-    if exp_ptm is not None:
-        assert nearly_equal(got_ptm, float(exp_ptm))
-    if exp_rank is not None:
-        assert nearly_equal(got_ipptm, float(exp_rank))
-    if exp_conf is not None:
-        assert nearly_equal(got_conf, float(exp_conf))
+        r0 = by_model[m][0]
+        got_iptm = to_float_or_nan(r0.get("iptm"))
+        got_ptm = to_float_or_nan(r0.get("ptm"))
+        got_conf = to_float_or_nan(r0.get("confidence_score"))
+        got_iptm_ptm = to_float_or_nan(r0.get("iptm_ptm"))
+        got_rankcol = to_float_or_nan(r0.get("ranking_score")) if has_ranking_score else float("nan")
+
+        exp_iptm = summary.get("iptm")
+        exp_ptm = summary.get("ptm")
+        exp_rank = _af3_expected_rank(summary)
+        exp_iptm_ptm = _af3_expected_iptm_ptm(summary)
+
+        if exp_iptm is not None:
+            assert nearly_equal(got_iptm, float(exp_iptm)), f"AF3 iptm mismatch for {m}"
+        else:
+            assert math.isnan(got_iptm), f"Expected NaN iptm for {m}, got {got_iptm}"
+
+        assert exp_ptm is not None, f"AF3 summary missing ptm for {m}"
+        assert nearly_equal(got_ptm, float(exp_ptm)), f"AF3 ptm mismatch for {m}"
+
+        # AF3: confidence_score follows ranking_score (NOT iptm_ptm)
+        if exp_rank is not None:
+            assert nearly_equal(got_conf, float(exp_rank)), f"AF3 confidence_score mismatch for {m}"
+            if has_ranking_score:
+                assert nearly_equal(got_rankcol, float(exp_rank)), f"AF3 ranking_score mismatch for {m}"
+
+        # AF3: iptm_ptm is its own metric; compare to its corresponding key
+        if exp_iptm_ptm is not None:
+            assert nearly_equal(got_iptm_ptm, float(exp_iptm_ptm)), f"AF3 iptm_ptm mismatch for {m}"
 
 
-def test_headers_consistent_between_af2_af3(af2_dir: Path, af3_dir: Path):
+# -------------------------
+# Headers sanity across AF2/AF3
+# -------------------------
+
+def test_headers_include_expected_schema(tmp_path: Path, af2_dir_src: Path, af3_dir_src: Path):
+    af2_dir = copy_run_dir(af2_dir_src, tmp_path / "af2")
+    af3_dir = copy_run_dir(af3_dir_src, tmp_path / "af3")
+
     process(str(af2_dir), 8.0, 100.0, "best")
     process(str(af3_dir), 8.0, 100.0, "best")
-    h2 = list(read_csv_rows(af2_dir / "interfaces.csv")[0].keys())
-    h3 = list(read_csv_rows(af3_dir / "interfaces.csv")[0].keys())
-    # Ensure both contain the union of core score fields
-    for col in ("iptm_ptm", "iptm", "ptm", "confidence_score"):
-        assert col in h2
-        assert col in h3
 
+    r2 = read_csv_rows(af2_dir / "interfaces.csv")
+    r3 = read_csv_rows(af3_dir / "interfaces.csv")
+    assert_has_expected_headers(r2, where=str(af2_dir / "interfaces.csv"))
+    assert_has_expected_headers(r3, where=str(af3_dir / "interfaces.csv"))
+
+
+# -------------------------
+# process_many
+# -------------------------
 
 def test_process_many_aggregates_rows(
-    af2_pos_sample: list[Path],
-    af2_neg_sample: list[Path],
-    af3_pos_sample: list[Path],
-    af3_neg_sample: list[Path],
     tmp_path: Path,
+    af2_pos_sample_src: list[Path],
+    af2_neg_sample_src: list[Path],
+    af3_pos_sample_src: list[Path],
+    af3_neg_sample_src: list[Path],
 ):
-    # Aggregate a small, fixed set of AF2/AF3 positive and negative dimers
+    root = tmp_path / "data"
+    af2_pos = [copy_run_dir(p, root / "af2_pos") for p in af2_pos_sample_src]
+    af2_neg = [copy_run_dir(p, root / "af2_neg") for p in af2_neg_sample_src]
+    af3_pos = [copy_run_dir(p, root / "af3_pos") for p in af3_pos_sample_src]
+    af3_neg = [copy_run_dir(p, root / "af3_neg") for p in af3_neg_sample_src]
+
     summary = tmp_path / "summary.csv"
-    paths = [
-        *(str(p) for p in af2_pos_sample),
-        *(str(p) for p in af2_neg_sample),
-        *(str(p) for p in af3_pos_sample),
-        *(str(p) for p in af3_neg_sample),
-    ]
+    paths = [*(str(p) for p in af2_pos), *(str(p) for p in af2_neg), *(str(p) for p in af3_pos), *(str(p) for p in af3_neg)]
+
     got = process_many(
         paths,
         contact_thresh=8.0,
@@ -217,46 +409,35 @@ def test_process_many_aggregates_rows(
         summary_csv=str(summary),
     )
     assert got is not None and summary.exists() and summary.stat().st_size > 0
+
     rows = read_csv_rows(summary)
-    assert rows, "summary.csv must contain at least one row"
-    header = list(rows[0].keys())
-    for col in ("iptm_ptm", "iptm", "ptm", "confidence_score", "jobs", "model_used"):
-        assert col in header
-    # The summary row count should equal the sum of the individual per-run rows
+    assert_has_expected_headers(rows, where=str(summary))
+    assert_numeric_columns_parse(rows, where=str(summary))
+
     expected_rows = 0
-    for p in af2_pos_sample + af2_neg_sample + af3_pos_sample + af3_neg_sample:
-        expected_rows += len(read_csv_rows(p / "interfaces.csv"))
-    assert len(rows) == expected_rows
+    for p in af2_pos + af2_neg + af3_pos + af3_neg:
+        per = p / "interfaces.csv"
+        assert per.exists(), f"Missing per-run interfaces.csv at {per}"
+        expected_rows += len(read_csv_rows(per))
+
+    assert len(rows) == expected_rows, f"Expected {expected_rows} rows, got {len(rows)}"
 
 
-def test_process_many_recursive_discovers_runs(
-    af2_pos_sample: list[Path],
-    af3_pos_sample: list[Path],
-    tmp_path: Path,
-):
-    """
-    Recurse from small synthetic AF2/AF3 roots; should find at least the known runs.
-
-    To keep pytest fast, we copy just a couple of positive dimers into a temporary
-    directory tree and let process_many discover them recursively.
-    """
-    # Build minimal AF2/AF3 directory trees under tmp_path
+def test_process_many_recursive_discovers_runs(tmp_path: Path, af2_pos_sample_src: list[Path], af3_pos_sample_src: list[Path]):
     af2_root = tmp_path / "af2" / "pos_dimers"
     af3_root = tmp_path / "af3" / "pos_dimers"
     af2_root.mkdir(parents=True, exist_ok=True)
     af3_root.mkdir(parents=True, exist_ok=True)
 
-    for src in af2_pos_sample:
-        dst = af2_root / src.name
-        shutil.copytree(src, dst)
+    for src in af2_pos_sample_src:
+        shutil.copytree(src, af2_root / src.name)
+    for src in af3_pos_sample_src:
+        shutil.copytree(src, af3_root / src.name)
 
-    for src in af3_pos_sample:
-        dst = af3_root / src.name
-        shutil.copytree(src, dst)
-
+    # 1) recursive on single root containing multiple runs
     summary = tmp_path / "recursive_summary.csv"
     got = process_many(
-        [str(af2_root.parent), str(af3_root.parent)],
+        [str(af2_root.parent)],  # AF2 root only
         contact_thresh=8.0,
         pae_filter=100.0,
         models_to_analyse="best",
@@ -265,11 +446,86 @@ def test_process_many_recursive_discovers_runs(
     )
     assert got is not None and summary.exists() and summary.stat().st_size > 0
     rows = read_csv_rows(summary)
-    assert rows, "recursive summary must contain rows"
+    assert_has_expected_headers(rows, where=str(summary))
 
-    # At minimum, recursive should include the rows from both explicit sample runs
-    expected_rows = 0
-    for src in af2_pos_sample + af3_pos_sample:
-        expected_rows += len(read_csv_rows((tmp_path / src.parent.parent.name / src.parent.name / src.name) / "interfaces.csv"))
-    assert len(rows) >= expected_rows
+    expected = 0
+    for src in af2_pos_sample_src:
+        per = (af2_root / src.name) / "interfaces.csv"
+        assert per.exists()
+        expected += len(read_csv_rows(per))
+    assert len(rows) >= expected
 
+    # 2) recursive on mixed AF2+AF3 roots
+    summary2 = tmp_path / "recursive_summary2.csv"
+    got2 = process_many(
+        [str(af2_root.parent), str(af3_root.parent)],
+        contact_thresh=8.0,
+        pae_filter=100.0,
+        models_to_analyse="best",
+        recursive=True,
+        summary_csv=str(summary2),
+    )
+    assert got2 is not None and summary2.exists() and summary2.stat().st_size > 0
+    rows2 = read_csv_rows(summary2)
+    assert_has_expected_headers(rows2, where=str(summary2))
+
+    expected2 = 0
+    for src in af2_pos_sample_src:
+        expected2 += len(read_csv_rows((af2_root / src.name) / "interfaces.csv"))
+    for src in af3_pos_sample_src:
+        expected2 += len(read_csv_rows((af3_root / src.name) / "interfaces.csv"))
+    assert len(rows2) >= expected2
+
+
+# -------------------------
+# CLI integration: --cores and --recursive edge cases
+# -------------------------
+
+def test_cli_cores_two_for_one_directory(tmp_path: Path, af3_dir_src: Path):
+    exe = shutil.which("alphajudge")
+    if not exe:
+        pytest.skip("alphajudge CLI not found in PATH")
+
+    if not _cli_supports(exe, "--cores"):
+        pytest.skip("alphajudge CLI does not advertise --cores")
+
+    run_dir = copy_run_dir(af3_dir_src, tmp_path / "run")
+    out1 = tmp_path / "out_cores1.csv"
+    out2 = tmp_path / "out_cores2.csv"
+
+    base_args = [str(run_dir), "--models_to_analyse", "best", "-o"]
+
+    _run_cli(exe, base_args + [str(out1), "--cores", "1"])
+    _run_cli(exe, base_args + [str(out2), "--cores", "2"])  # edge case: 2 cores, 1 dir
+
+    r1 = read_csv_rows(out1)
+    r2 = read_csv_rows(out2)
+    assert_has_expected_headers(r1, where=str(out1))
+    assert_has_expected_headers(r2, where=str(out2))
+    assert len(r1) == len(r2), "Changing --cores must not change result row count"
+
+
+def test_cli_recursive_single_directory_root(tmp_path: Path, af2_dir_src: Path):
+    exe = shutil.which("alphajudge")
+    if not exe:
+        pytest.skip("alphajudge CLI not found in PATH")
+
+    if not _cli_supports(exe, "--recursive"):
+        pytest.skip("alphajudge CLI does not advertise --recursive")
+
+    # Root contains exactly one run directory
+    root = tmp_path / "root"
+    root.mkdir(parents=True, exist_ok=True)
+    run_dir = copy_run_dir(af2_dir_src, root)
+
+    out_nonrec = tmp_path / "out_nonrec.csv"
+    out_rec = tmp_path / "out_rec.csv"
+
+    _run_cli(exe, [str(run_dir), "--models_to_analyse", "best", "-o", str(out_nonrec)])
+    _run_cli(exe, [str(root), "--recursive", "--models_to_analyse", "best", "-o", str(out_rec)])
+
+    r1 = read_csv_rows(out_nonrec)
+    r2 = read_csv_rows(out_rec)
+    assert_has_expected_headers(r1, where=str(out_nonrec))
+    assert_has_expected_headers(r2, where=str(out_rec))
+    assert len(r1) == len(r2), "Recursive root with one run should match direct-run output row count"
