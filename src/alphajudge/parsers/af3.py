@@ -24,19 +24,16 @@ class AF3Parser(BaseParser):
 
             iptm = self._safe_float(summary.get("iptm"))
             ptm  = self._safe_float(summary.get("ptm"))
-            iptm_ptm = self._safe_float(summary.get("ranking_score")) or self._safe_float(summary.get("iptm+ptm"))
-            conf = self._safe_float(summary.get("confidence_score"))
-            if iptm_ptm is not None and iptm is not None and ptm is None:
-                ptm = (iptm_ptm - 0.8 * iptm) / 0.2
-            if conf is None and iptm is not None and ptm is not None:
-                conf = 0.8 * iptm + 0.2 * ptm
+            ranking_score = self._safe_float(summary.get("ranking_score"))
+            if iptm is not None and ptm is not None:
+                iptm_ptm = 0.2 * ptm + 0.8 * iptm
 
             pae, max_pae = self._normalize_pae_af3(matrix, chains, cid)
             plddt = self._plddt(chains, rim)
 
             return struct, Confidence(
                 pae_matrix=pae, max_pae=max_pae,
-                iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=conf,
+                iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=ranking_score,
                 plddt_residue=plddt,
             )
         return Run(order=order, source="af3", load_model=load_model)
