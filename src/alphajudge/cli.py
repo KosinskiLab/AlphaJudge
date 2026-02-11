@@ -9,6 +9,12 @@ def main():
     p.add_argument("--models_to_analyse", choices=["best","all"], default="best")
     p.add_argument("-r","--recursive", action="store_true", help="Recursively search for runs under given PATHS")
     p.add_argument("-o","--summary", help="Write aggregated CSV across runs to this path")
+    p.add_argument(
+        "--cores",
+        type=int,
+        default=1,
+        help="Number of processes to use across run directories (0 = all available cores)",
+    )
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
     if args.paths:
@@ -19,6 +25,7 @@ def main():
             args.models_to_analyse,
             recursive=args.recursive,
             summary_csv=args.summary,
+            cores=args.cores,
         )
     else:
         p.error("Provide PATHS")
