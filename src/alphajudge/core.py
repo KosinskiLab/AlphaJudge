@@ -84,13 +84,33 @@ def _repr_atom(res):
             return a
     raise KeyError("No representative atom found for residue")
 
+
 # ---- complex and interfaces ----
 class Complex:
-    def __init__(self, structure, confidence: Confidence, contact_thresh: float, pae_filter: float):
+    """
+    contact_thresh (Å):
+      Used to define interface residue–residue contacts via representative atoms (CB/CA/C1'/...).
+      Affects: Interface.contact_pairs, Interface.score_complex, Interface.pDockQ, Interface.pDockQ2,
+              Complex.contact_pairs_global, Complex.mpDockQ.
+
+    ipsae_dist (Å):
+      Optional geometric mask for PAE-based interface metrics.
+      If set, ipSAE and LIS only consider residue pairs that are also within ipsae_dist (by representative atom distance).
+      If None, ipSAE/LIS are purely PAE-based over chain token pairs (no distance mask).
+    """
+    def __init__(
+        self,
+        structure,
+        confidence: Confidence,
+        contact_thresh: float,
+        pae_filter: float,
+        ipsae_dist: float | None = None,
+    ):
         self.structure = structure
         self.conf = confidence
         self.contact_thresh = float(contact_thresh)
         self.pae_filter = float(pae_filter)
+        self.ipsae_dist = None if ipsae_dist is None else float(ipsae_dist)
 
         self._res_index_map, self._chain_indices_by_id, self._chains = self._build_maps()
 
@@ -99,6 +119,8 @@ class Complex:
         self._buried_surface_cache: Dict[Tuple[str, str, float, int], List[Tuple[np.ndarray, np.ndarray]]] = {}
         self._contact_ns_cache: Dict[Tuple[str, str], Tuple[list, list, np.ndarray, np.ndarray]] = {}
         self._all_atom_ns_cache: Dict[Tuple[str, str], Tuple[list, NeighborSearch]] = {}
+        # NEW: cache representative-atom distances between token residues for ipSAE/LIS masking
+        self._token_dist_cache: Dict[Tuple[str, str], np.ndarray] = {}
 
         self.interfaces: List[Interface] = []
         for i in range(len(self._chains)):
@@ -244,7 +266,9 @@ class Interface:
         self._idx1 = np.asarray(self._cid.get(self._cid1_id, []), dtype=int)
         self._idx2 = np.asarray(self._cid.get(self._cid2_id, []), dtype=int)
 
-        self._has_na = any(r.get_resname().strip().upper() in NA_RES for r in (self.chain1 + self.chain2))
+        self._has_na = any(
+            r.get_resname().strip().upper() in NA_RES for r in (self.chain1 + self.chain2)
+        )
 
         self._res1, self._res2, self._pairs = self._get_pairs()
         self._avg_plddt = self._avg_plddt_union()
@@ -273,12 +297,37 @@ class Interface:
             return float("nan")
         return PDOCKQ.score(self._avg_plddt * math.log10(self.contact_pairs))
 
+    def _mean_ptm_dir(self, reverse: bool) -> float:
+        vals = []
+        for r1, r2 in self._pairs:
+            i = self._rim.get((r1.get_parent().id, r1.id))
+            j = self._rim.get((r2.get_parent().id, r2.id))
+            if i is None or j is None:
+                continue
+            pae = float(self._pae[j, i] if reverse else self._pae[i, j])
+            vals.append(1.0 / (1.0 + (pae / D0) ** 2))
+        return float(np.mean(vals)) if vals else float("nan")
+
     def pDockQ2(self) -> tuple[float, float]:
-        vals = self._ptm_values()
-        if not vals or math.isnan(self._avg_plddt):
+        """
+        Return (score_max, mean_ptm_for_direction_that_won).
+        If you want both directions too, return them separately.
+        """
+        if self.contact_pairs <= 0 or math.isnan(self._avg_plddt):
             return float("nan"), 0.0
-        mean_ptm = float(np.mean(vals))
-        return PDOCKQ2.score(self._avg_plddt * mean_ptm), mean_ptm
+
+        m_ab = self._mean_ptm_dir(reverse=False)  # A->B
+        m_ba = self._mean_ptm_dir(reverse=True)   # B->A
+
+        s_ab = PDOCKQ2.score(self._avg_plddt * m_ab) if not math.isnan(m_ab) else float("nan")
+        s_ba = PDOCKQ2.score(self._avg_plddt * m_ba) if not math.isnan(m_ba) else float("nan")
+
+        if math.isnan(s_ab) and math.isnan(s_ba):
+            return float("nan"), 0.0
+        if math.isnan(s_ba) or (not math.isnan(s_ab) and s_ab >= s_ba):
+            return s_ab, (0.0 if math.isnan(m_ab) else m_ab)
+        return s_ba, (0.0 if math.isnan(m_ba) else m_ba)
+
 
     def ipsae(self, pae_cutoff: float = 10.0) -> float:
         return self._ipsae_asym(float(pae_cutoff))
@@ -287,7 +336,12 @@ class Interface:
         def _lis_dir(idx_src: np.ndarray, idx_dst: np.ndarray) -> float:
             if idx_src.size == 0 or idx_dst.size == 0:
                 return float("nan")
-            sub = self._pae[np.ix_(idx_src, idx_dst)]
+            sub = self._pae[np.ix_(idx_src, idx_dst)].ravel()
+
+            if self.c.ipsae_dist is not None:
+                dist = self._token_pair_distances(idx_src, idx_dst)
+                sub = sub[dist <= (self.c.ipsae_dist ** 2)]
+
             valid = sub[sub < 12.0]
             if valid.size == 0:
                 return 0.0
@@ -333,6 +387,102 @@ class Interface:
             cached = (atoms, NeighborSearch(atoms))
             self.c._all_atom_ns_cache[key] = cached
         return cached[1]
+
+    # ---------- NEW: token-pair distances for ipSAE/LIS masking ----------
+    def _token_pair_distances(self, idx_src: np.ndarray, idx_dst: np.ndarray) -> np.ndarray:
+        """
+        Return squared representative-atom distances for all (src,dst) token pairs
+        in the same order as self._pae[np.ix_(idx_src, idx_dst)].ravel().
+
+        idx_src/idx_dst are *global* token indices into the full PAE matrix.
+        We map them to local indices within each chain's token list.
+        """
+        if idx_src.size == 0 or idx_dst.size == 0:
+            return np.empty((0,), dtype=float)
+
+        # Token indices per chain in *global* numbering (same as used by PAE)
+        g1 = np.asarray(self.c._chain_indices_by_id.get(self._cid1_id, []), dtype=int)
+        g2 = np.asarray(self.c._chain_indices_by_id.get(self._cid2_id, []), dtype=int)
+        if g1.size == 0 or g2.size == 0:
+            return np.full((idx_src.size * idx_dst.size,), np.inf, dtype=float)
+
+        # Map global token index -> local index in that chain
+        # (fast dict; chains are not huge vs. doing np.where repeatedly)
+        map1 = {int(g): i for i, g in enumerate(g1.tolist())}
+        map2 = {int(g): j for j, g in enumerate(g2.tolist())}
+
+        # Convert idx_src/idx_dst (global) -> local indices; keep shape, fill unmapped with inf
+        src_local = np.array([map1.get(int(g), -1) for g in idx_src.tolist()], dtype=int)
+        dst_local = np.array([map2.get(int(g), -1) for g in idx_dst.tolist()], dtype=int)
+
+        # If something is unmapped (shouldn't happen), treat as infinite distance
+        if np.any(src_local < 0) or np.any(dst_local < 0):
+            # Build full output with inf, then fill mapped sub-block
+            out = np.full((idx_src.size, idx_dst.size), np.inf, dtype=float)
+            good_i = np.where(src_local >= 0)[0]
+            good_j = np.where(dst_local >= 0)[0]
+            if good_i.size == 0 or good_j.size == 0:
+                return out.ravel()
+            src_good = src_local[good_i]
+            dst_good = dst_local[good_j]
+            dist2_full = self._token_dist2_matrix()
+            out[np.ix_(good_i, good_j)] = dist2_full[np.ix_(src_good, dst_good)]
+            return out.ravel()
+
+        dist2_full = self._token_dist2_matrix()
+        sub = dist2_full[np.ix_(src_local, dst_local)]
+        return sub.ravel()
+
+
+    def _token_dist2_matrix(self) -> np.ndarray:
+        """
+        Cached squared distance matrix between token residues of chain1 (rows)
+        and chain2 (cols), in LOCAL chain token order.
+
+        Handles both directions via transpose.
+        """
+        # Directional key: store both orientation and allow transpose on lookup
+        key_fwd = (self._cid1_id, self._cid2_id)
+        key_rev = (self._cid2_id, self._cid1_id)
+
+        cached = self.c._token_dist_cache.get(key_fwd)
+        if cached is not None:
+            return cached
+
+        cached_rev = self.c._token_dist_cache.get(key_rev)
+        if cached_rev is not None:
+            return cached_rev.T
+
+        # Build coords in LOCAL token order using self.c._chains (already token-filtered)
+        ch_by_id = {ch.id: ch for ch in self.c._chains}
+        ch1 = ch_by_id.get(self._cid1_id)
+        ch2 = ch_by_id.get(self._cid2_id)
+        if ch1 is None or ch2 is None:
+            m = np.full((0, 0), np.inf, dtype=float)
+            self.c._token_dist_cache[key_fwd] = m
+            return m
+
+        coords1 = np.full((len(ch1), 3), np.nan, dtype=float)
+        coords2 = np.full((len(ch2), 3), np.nan, dtype=float)
+
+        for i, r in enumerate(ch1):
+            try:
+                coords1[i] = _repr_atom(r).coord
+            except Exception:
+                pass
+        for j, r in enumerate(ch2):
+            try:
+                coords2[j] = _repr_atom(r).coord
+            except Exception:
+                pass
+
+        diff = coords1[:, None, :] - coords2[None, :, :]
+        dist2 = np.sum(diff * diff, axis=2)
+        dist2[np.isnan(dist2)] = np.inf
+
+        self.c._token_dist_cache[key_fwd] = dist2
+        return dist2
+
 
     # ---------- geometry helpers ----------
     @staticmethod
@@ -655,7 +805,11 @@ class Interface:
 
     @cached_property
     def int_area(self) -> float:
-        return self._sasa_chain(self.chain1) + self._sasa_chain(self.chain2) - self._sasa_complex(self.chain1, self.chain2)
+        return (
+            self._sasa_chain(self.chain1)
+            + self._sasa_chain(self.chain2)
+            - self._sasa_complex(self.chain1, self.chain2)
+        )
 
     @cached_property
     def int_solv_en(self) -> float:
@@ -729,20 +883,6 @@ class Interface:
                 continue
         return sum(vals) / len(vals) if vals else float("nan")
 
-    def _ptm_values(self) -> List[float]:
-        out = []
-        for r1, r2 in self._pairs:
-            i = self._rim.get((r1.get_parent().id, r1.id))
-            j = self._rim.get((r2.get_parent().id, r2.id))
-            if i is None or j is None:
-                continue
-            try:
-                pae = float(self._pae[i, j])
-                out.append(1.0 / (1.0 + (pae / D0) ** 2))
-            except Exception:
-                continue
-        return out
-
     def _ipsae_asym(self, cutoff: float) -> float:
         def calc(idx_src: np.ndarray, idx_dst: np.ndarray) -> float:
             if idx_src.size == 0 or idx_dst.size == 0:
@@ -753,6 +893,18 @@ class Interface:
             best, found = 0.0, False
             for i in idx_src:
                 row = self._pae[i, idx_dst]
+
+                if self.c.ipsae_dist is not None:
+                    # mask row by geometric proximity to dst tokens
+                    dist2_full = self._token_pair_distances(
+                        np.array([i], dtype=int), idx_dst
+                    )
+                    # dist2_full is flattened for (1,len(idx_dst))
+                    geo_ok = dist2_full <= (self.c.ipsae_dist ** 2)
+                    if not np.any(geo_ok):
+                        continue
+                    row = row[geo_ok]
+
                 valid = row < cutoff
                 if not np.any(valid):
                     continue
