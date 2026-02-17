@@ -46,6 +46,9 @@ class Confidence:
     iptm_ptm: Optional[float]
     confidence_score: Optional[float]
     plddt_residue: List[float]
+    # AF3 only: per-chain-pair ipTM matrix (indexed by chain order).
+    # When present, use this for per-interface iptm instead of global iptm.
+    chain_pair_iptm: Optional[List[List[float]]] = None
 
 # ---- dockQ constants ----
 def _sigmoid(x: float, L: float, x0: float, k: float, b: float) -> float:
@@ -194,12 +197,12 @@ class Complex:
             i.average_interface_pae for i in self.interfaces
             if not math.isnan(i.average_interface_pae) and i.average_interface_pae <= self.pae_filter
         ]
-        return sum(vals) / len(vals) if vals else float("nan")
+        return sum(vals) / len(vals) if vals else float(0.0)
 
     @cached_property
     def average_interface_plddt(self) -> float:
         vals = [i.average_interface_plddt for i in self.interfaces]
-        return sum(vals) / len(vals) if vals else float("nan")
+        return sum(vals) / len(vals) if vals else float(0.0)
 
     @cached_property
     def contact_pairs_global(self) -> int:
@@ -253,8 +256,8 @@ class Interface:
             self._idx2 = np.array([], dtype=int)
             self._has_na = False
             self._res1, self._res2, self._pairs = set(), set(), set()
-            self._avg_plddt = float("nan")
-            self._avg_pae = float("nan")
+            self._avg_plddt = 0.0
+            self._avg_pae = 0.0
             return
 
         self._pae = np.asarray(self.c.conf.pae_matrix)
@@ -288,13 +291,44 @@ class Interface:
         return self._avg_pae
 
     @cached_property
+    def iptm_chainpair(self) -> Optional[float]:
+        """
+        Per-interface ipTM from AF3 chain_pair_iptm when available.
+        Returns None for AF2 (no per-interface ipTM).
+        """
+        cpi = getattr(self.c.conf, "chain_pair_iptm", None)
+        if cpi is None or not cpi:
+            return None
+        chain_ids = [ch.id for ch in self.c._chains]
+        try:
+            i = chain_ids.index(self._cid1_id)
+            j = chain_ids.index(self._cid2_id)
+        except ValueError:
+            return None
+        try:
+            row = cpi[i]
+            val = row[j] if isinstance(row, (list, tuple)) else float("nan")
+        except (IndexError, TypeError):
+            try:
+                row = cpi[j]
+                val = row[i] if isinstance(row, (list, tuple)) else float("nan")
+            except (IndexError, TypeError):
+                return None
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    @cached_property
     def contact_pairs(self) -> int:
         return len(self._pairs)
 
     @cached_property
     def pDockQ(self) -> float:
         if self.contact_pairs <= 0 or math.isnan(self._avg_plddt):
-            return float("nan")
+            return 0.0
         return PDOCKQ.score(self._avg_plddt * math.log10(self.contact_pairs))
 
     def _mean_ptm_dir(self, reverse: bool) -> float:
@@ -312,9 +346,10 @@ class Interface:
         """
         Return (score_max, mean_ptm_for_direction_that_won).
         If you want both directions too, return them separately.
+        Returns (0.0, 0.0) when interface is not found (no contacts or invalid).
         """
         if self.contact_pairs <= 0 or math.isnan(self._avg_plddt):
-            return float("nan"), 0.0
+            return 0.0, 0.0
 
         m_ab = self._mean_ptm_dir(reverse=False)  # A->B
         m_ba = self._mean_ptm_dir(reverse=True)   # B->A
@@ -323,7 +358,7 @@ class Interface:
         s_ba = PDOCKQ2.score(self._avg_plddt * m_ba) if not math.isnan(m_ba) else float("nan")
 
         if math.isnan(s_ab) and math.isnan(s_ba):
-            return float("nan"), 0.0
+            return 0.0, 0.0
         if math.isnan(s_ba) or (not math.isnan(s_ab) and s_ab >= s_ba):
             return s_ab, (0.0 if math.isnan(m_ab) else m_ab)
         return s_ba, (0.0 if math.isnan(m_ba) else m_ba)
@@ -333,9 +368,10 @@ class Interface:
         return self._ipsae_asym(float(pae_cutoff))
 
     def lis(self) -> float:
+        """Returns 0.0 when interface is not found or no valid PAE pairs."""
         def _lis_dir(idx_src: np.ndarray, idx_dst: np.ndarray) -> float:
             if idx_src.size == 0 or idx_dst.size == 0:
-                return float("nan")
+                return 0.0
             sub = self._pae[np.ix_(idx_src, idx_dst)].ravel()
 
             if self.c.ipsae_dist is not None:
@@ -351,7 +387,7 @@ class Interface:
         b = _lis_dir(self._idx2, self._idx1)
 
         if math.isnan(a) and math.isnan(b):
-            return float("nan")
+            return 0.0
         if math.isnan(a):
             return b
         if math.isnan(b):
@@ -914,12 +950,12 @@ class Interface:
                 ptm = 1.0 / (1.0 + (row[valid] / d0) ** 2)
                 best = max(best, float(np.mean(ptm)))
                 found = True
-            return best if found else float("nan")
+            return best if found else 0.0
 
         a = calc(self._idx1, self._idx2)
         b = calc(self._idx2, self._idx1)
         if math.isnan(a) and math.isnan(b):
-            return float("nan")
+            return 0.0
         if math.isnan(a):
             return b
         if math.isnan(b):

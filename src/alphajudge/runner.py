@@ -89,6 +89,7 @@ def process(
                 label = (
                     f"{iface.chain1[0].get_parent().id}_{iface.chain2[0].get_parent().id}"
                 )
+                iptm_val = iface.iptm_chainpair if iface.iptm_chainpair is not None else confidence.iptm
                 rows.append(
                     {
                         "jobs": job,
@@ -97,9 +98,7 @@ def process(
                         "iptm_ptm": float(confidence.iptm_ptm)
                         if confidence.iptm_ptm is not None
                         else float("nan"),
-                        "iptm": float(confidence.iptm)
-                        if confidence.iptm is not None
-                        else float("nan"),
+                        "iptm": float(iptm_val) if iptm_val is not None else float("nan"),
                         "ptm": float(confidence.ptm)
                         if confidence.ptm is not None
                         else float("nan"),

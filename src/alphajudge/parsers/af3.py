@@ -28,13 +28,18 @@ class AF3Parser(BaseParser):
             if iptm is not None and ptm is not None:
                 iptm_ptm = 0.2 * ptm + 0.8 * iptm
 
+            chain_pair_iptm_raw = summary.get("chain_pair_iptm")
+            chain_pair_iptm = None
+            if isinstance(chain_pair_iptm_raw, (list, tuple)):
+                chain_pair_iptm = [list(r) if isinstance(r, (list, tuple)) else [] for r in chain_pair_iptm_raw]
+
             pae, max_pae = self._normalize_pae_af3(matrix, chains, cid)
             plddt = self._plddt(chains, rim)
 
             return struct, Confidence(
                 pae_matrix=pae, max_pae=max_pae,
                 iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=ranking_score,
-                plddt_residue=plddt,
+                plddt_residue=plddt, chain_pair_iptm=chain_pair_iptm,
             )
         return Run(order=order, source="af3", load_model=load_model)
 
