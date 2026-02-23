@@ -545,7 +545,7 @@ class Interface:
         donor_coord = donor_atom.coord
         donor_name = donor_atom.id.upper()
 
-        max_h_dist = 1.3
+        max_h_dist = 1.33
         for atom in residue:
             if not (atom.element and atom.element.upper() == "H"):
                 continue
@@ -715,19 +715,11 @@ class Interface:
                 continue
 
             donor = acceptor = None
-            if self._can_be_donor(a1) and self._can_be_acceptor(a2):
-                donor, acceptor = a1, a2
-            elif self._can_be_donor(a2) and self._can_be_acceptor(a1):
-                donor, acceptor = a2, a1
-            elif self._can_be_donor(a1) and self._can_be_donor(a2):
-                if self._can_be_acceptor(a1):
-                    donor, acceptor = a2, a1
-                elif self._can_be_acceptor(a2):
+            match (self._can_be_donor(a1), self._can_be_acceptor(a1),
+                   self._can_be_acceptor(a2), self._can_be_donor(a2)):
+                case (True, _, True, _):
                     donor, acceptor = a1, a2
-            elif self._can_be_acceptor(a1) and self._can_be_acceptor(a2):
-                if self._can_be_donor(a1):
-                    donor, acceptor = a1, a2
-                elif self._can_be_donor(a2):
+                case (_, True, _, True):
                     donor, acceptor = a2, a1
 
             if donor is None or acceptor is None:
