@@ -5,10 +5,10 @@ dependencies:
   - python=3.12
   - numpy>=1.26
   - biopython>=1.83
+  - polars
+  - matplotlib
   - pip
   - pytest
   - pytest-xdist
   - pip:
     - -e .
-
-
