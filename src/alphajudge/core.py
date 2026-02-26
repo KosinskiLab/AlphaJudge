@@ -95,11 +95,6 @@ class Complex:
       Used to define interface residue–residue contacts via representative atoms (CB/CA/C1'/...).
       Affects: Interface.contact_pairs, Interface.score_complex, Interface.pDockQ, Interface.pDockQ2,
               Complex.contact_pairs_global, Complex.mpDockQ.
-
-    ipsae_dist (Å):
-      Optional geometric mask for PAE-based interface metrics.
-      If set, ipSAE and LIS only consider residue pairs that are also within ipsae_dist (by representative atom distance).
-      If None, ipSAE/LIS are purely PAE-based over chain token pairs (no distance mask).
     """
     def __init__(
         self,
@@ -107,13 +102,13 @@ class Complex:
         confidence: Confidence,
         contact_thresh: float,
         pae_filter: float,
-        ipsae_dist: float | None = None,
+        ipsae_pae_cutoff: float | None = None,
     ):
         self.structure = structure
         self.conf = confidence
         self.contact_thresh = float(contact_thresh)
         self.pae_filter = float(pae_filter)
-        self.ipsae_dist = None if ipsae_dist is None else float(ipsae_dist)
+        self.ipsae_pae_cutoff = None if ipsae_pae_cutoff is None else float(ipsae_pae_cutoff)
 
         self._res_index_map, self._chain_indices_by_id, self._chains = self._build_maps()
 
@@ -364,7 +359,19 @@ class Interface:
         return s_ba, (0.0 if math.isnan(m_ba) else m_ba)
 
 
-    def ipsae(self, pae_cutoff: float = 10.0) -> float:
+    def ipsae(self, pae_cutoff=10.0) -> float:
+        """
+        Interface pTM-based Surface Accuracy Estimation (ipSAE).
+
+        Parameters
+        ----------
+        pae_cutoff:
+            Maximum PAE (Å) for a pair to be considered in the ipSAE calculation.
+            - If the parent Complex has `ipsae_pae_cutoff` set, that value is used.
+            - Otherwise the provided `pae_cutoff` argument (default 10.0 Å) is used.
+        """
+        if getattr(self.c, "ipsae_pae_cutoff", None) is not None:
+            pae_cutoff = float(self.c.ipsae_pae_cutoff)
         return self._ipsae_asym(float(pae_cutoff))
 
     def lis(self) -> float:
@@ -373,11 +380,6 @@ class Interface:
             if idx_src.size == 0 or idx_dst.size == 0:
                 return 0.0
             sub = self._pae[np.ix_(idx_src, idx_dst)].ravel()
-
-            if self.c.ipsae_dist is not None:
-                dist = self._token_pair_distances(idx_src, idx_dst)
-                sub = sub[dist <= (self.c.ipsae_dist ** 2)]
-
             valid = sub[sub < 12.0]
             if valid.size == 0:
                 return 0.0
@@ -921,18 +923,6 @@ class Interface:
             best, found = 0.0, False
             for i in idx_src:
                 row = self._pae[i, idx_dst]
-
-                if self.c.ipsae_dist is not None:
-                    # mask row by geometric proximity to dst tokens
-                    dist2_full = self._token_pair_distances(
-                        np.array([i], dtype=int), idx_dst
-                    )
-                    # dist2_full is flattened for (1,len(idx_dst))
-                    geo_ok = dist2_full <= (self.c.ipsae_dist ** 2)
-                    if not np.any(geo_ok):
-                        continue
-                    row = row[geo_ok]
-
                 valid = row < cutoff
                 if not np.any(valid):
                     continue

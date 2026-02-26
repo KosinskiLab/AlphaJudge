@@ -6,6 +6,7 @@ def main():
     p.add_argument("paths", nargs="*", help="One or more run directories or roots")
     p.add_argument("--contact_thresh", type=float, default=8.0)
     p.add_argument("--pae_filter", type=float, default=100.0)
+    p.add_argument("--ipsae_pae_cutoff", type=float, default=10.0)
     p.add_argument("--models_to_analyse", choices=["best","all"], default="best")
     p.add_argument("-r","--recursive", action="store_true", help="Recursively search for runs under given PATHS")
     p.add_argument("-o","--summary", help="Write aggregated CSV across runs to this path")
@@ -26,6 +27,7 @@ def main():
             recursive=args.recursive,
             summary_csv=args.summary,
             cores=args.cores,
+            ipsae_pae_cutoff=args.ipsae_pae_cutoff,
         )
     else:
         p.error("Provide PATHS")
