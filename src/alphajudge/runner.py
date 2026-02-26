@@ -60,7 +60,7 @@ def _save_pae_heatmap(
 
 
 def process(
-    directory: str, contact_thresh: float, pae_filter: float, models_to_analyse: str
+    directory: str, contact_thresh: float, pae_filter: float, models_to_analyse: str, ipsae_pae_cutoff: float
 ) -> Path | None:
     d = Path(directory)
     parser = pick_parser(d)
@@ -72,7 +72,7 @@ def process(
     for m in models:
         try:
             structure, confidence = run.load_model(m)
-            comp = Complex(structure, confidence, contact_thresh, pae_filter)
+            comp = Complex(structure, confidence, contact_thresh, pae_filter, ipsae_pae_cutoff)
 
             global_score = (
                 comp.mpDockQ
@@ -192,7 +192,8 @@ def _process_one_run(
     pae_filter: float,
     models_to_analyse: str,
     summary_csv: str | None,
-) -> tuple[str, list[dict]]:
+    ipsae_pae_cutoff: float,
+    ) -> tuple[str, list[dict]]:
     """
     Worker: process a single run dir (or reuse interfaces.csv) and optionally return rows for aggregation.
     Returns (run_dir, rows_for_summary).
@@ -218,7 +219,7 @@ def _process_one_run(
         logging.info(f"reused existing {existing_csv}; skipping recompute")
         return (d_str, [])
 
-    out_path = process(d_str, contact_thresh, pae_filter, models_to_analyse)
+    out_path = process(d_str, contact_thresh, pae_filter, models_to_analyse, ipsae_pae_cutoff)  
 
     if want_summary and out_path is not None:
         try:
@@ -237,6 +238,7 @@ def process_many(
     recursive: bool = False,
     summary_csv: str | None = None,
     cores: int = 1,
+    ipsae_pae_cutoff: float = 10.0,
 ) -> Path | None:
     """
     Process one or more directories. Optionally recurse into nested directories
@@ -304,6 +306,7 @@ def process_many(
                     pae_filter,
                     models_to_analyse,
                     summary_csv,
+                    ipsae_pae_cutoff,
                 )
                 if summary_csv and rows:
                     aggregated_rows.extend(rows)
@@ -322,6 +325,7 @@ def process_many(
                     pae_filter,
                     models_to_analyse,
                     summary_csv,
+                    ipsae_pae_cutoff,
                 )
                 for d in unique_run_dirs
             ]
