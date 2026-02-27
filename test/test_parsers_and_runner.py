@@ -233,7 +233,7 @@ def test_af2_runner_outputs_have_expected_scores(tmp_path: Path, af2_dir_src: Pa
     parser = pick_parser(af2_dir)
     assert parser.name == "af2"
 
-    process(str(af2_dir), 8.0, 100.0, models_to_analyse)
+    process(str(af2_dir), 8.0, 100.0, models_to_analyse, 10.0)
 
     run = parser.parse_run(af2_dir)
     expected_models = _expected_models_for(run, models_to_analyse)
@@ -297,7 +297,7 @@ def test_af3_runner_outputs_have_expected_scores(tmp_path: Path, af3_dir_src: Pa
     parser = pick_parser(af3_dir)
     assert parser.name == "af3"
 
-    process(str(af3_dir), 8.0, 100.0, models_to_analyse)
+    process(str(af3_dir), 8.0, 100.0, models_to_analyse, 10.0)
 
     run = parser.parse_run(af3_dir)
     expected_models = _expected_models_for(run, models_to_analyse)
@@ -371,8 +371,8 @@ def test_headers_include_expected_schema(tmp_path: Path, af2_dir_src: Path, af3_
     af2_dir = copy_run_dir(af2_dir_src, tmp_path / "af2")
     af3_dir = copy_run_dir(af3_dir_src, tmp_path / "af3")
 
-    process(str(af2_dir), 8.0, 100.0, "best")
-    process(str(af3_dir), 8.0, 100.0, "best")
+    process(str(af2_dir), 8.0, 100.0, "best", 10.0)
+    process(str(af3_dir), 8.0, 100.0, "best", 10.0)
 
     r2 = read_csv_rows(af2_dir / "interfaces.csv")
     r3 = read_csv_rows(af3_dir / "interfaces.csv")
