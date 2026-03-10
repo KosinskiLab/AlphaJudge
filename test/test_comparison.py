@@ -45,7 +45,8 @@ TOLERANCE_MAP = {
 @pytest.fixture(scope="module")
 def benchmark_csv_path() -> Path:
     """Path to the authoritative benchmark CSV."""
-    return Path("test_data/af2/positive_dimers/benchmarks/CCP4.csv")
+    # return Path("test_data/af2/positive_dimers/benchmarks/CCP4.csv")
+    return Path("test_data/af2/positive_dimers/benchmarks/HBPLUS.csv")
 
 @pytest.fixture(scope="module")
 def model_input_paths() -> list[str]:
@@ -80,7 +81,7 @@ def test_generated_results_vs_benchmark(benchmark_csv_path, model_input_paths, t
     # 2. Compare generated results with benchmark
     _compare_dataframes(generated_summary_csv, benchmark_csv_path)
 
-@pytest.mark.xfail
+# @pytest.mark.xfail
 def _compare_dataframes(generated_path: Path, benchmark_path: Path):
     """
     Helper to compare two CSVs using Polars.

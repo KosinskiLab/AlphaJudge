@@ -538,6 +538,172 @@ class Interface:
         return Interface._angle_between_vectors(p1 - vertex, p2 - vertex)
 
     @staticmethod
+    def _normalize(v: np.ndarray) -> np.ndarray:
+        norm = float(np.linalg.norm(v))
+        return v / norm if norm > 0 else v
+
+    @staticmethod
+    def _sp2_1h_2dd(donor: np.ndarray, dd1: np.ndarray, dd2: np.ndarray, dist: float = 1.0) -> np.ndarray:
+        v1 = Interface._normalize(dd1 - donor)
+        v2 = Interface._normalize(dd2 - donor)
+        bisector = Interface._normalize(v1 + v2)
+        return donor - bisector * dist
+
+    @staticmethod
+    def _sp2_2h_1dd(donor: np.ndarray, dd: np.ndarray, ddd: np.ndarray, dist: float = 1.0) -> List[np.ndarray]:
+        v_in = Interface._normalize(donor - dd)
+        v_ref = Interface._normalize(dd - ddd)
+        n = Interface._normalize(np.cross(v_in, v_ref))
+        cos60 = 0.5
+        sin60 = math.sqrt(3.0) / 2.0
+        cross_n_v = np.cross(n, v_in)
+        h1 = donor + (v_in * cos60 + cross_n_v * sin60) * dist
+        h2 = donor + (v_in * cos60 - cross_n_v * sin60) * dist
+        return [h1, h2]
+
+    @staticmethod
+    def _sp3_3h_1dd(donor: np.ndarray, dd: np.ndarray, ddd: np.ndarray, dist: float = 1.01) -> List[np.ndarray]:
+        v_axis = Interface._normalize(donor - dd)
+        v_ref = dd - ddd
+        v_proj = v_ref - float(np.dot(v_ref, v_axis)) * v_axis
+        u = Interface._normalize(v_proj)
+        v = np.cross(v_axis, u)
+        cos110 = math.cos(math.radians(110.0))
+        sin110 = math.sin(math.radians(110.0))
+        axial_comp = -cos110
+        trans_comp = sin110
+        hydrogens = []
+        for angle_deg in [0.0, 120.0, 240.0]:
+            rad = math.radians(angle_deg)
+            transverse = u * math.cos(rad) + v * math.sin(rad)
+            h = donor + (v_axis * axial_comp + transverse * trans_comp) * dist
+            hydrogens.append(h)
+        return hydrogens
+
+    @staticmethod
+    def _sp3_1h_1dd(donor: np.ndarray, dd: np.ndarray, acceptor: np.ndarray, angle_deg: float = 110.0, dist: float = 1.0) -> List[np.ndarray]:
+        v_axis = Interface._normalize(donor - dd)
+        v_acc = acceptor - donor
+        v_proj = v_acc - float(np.dot(v_acc, v_axis)) * v_axis
+        norm_proj = float(np.linalg.norm(v_proj))
+        if norm_proj < 1e-6:
+            arbitrary = np.array([1.0, 0.0, 0.0])
+            if abs(v_axis[0]) > 0.9: arbitrary = np.array([0.0, 1.0, 0.0])
+            u = Interface._normalize(arbitrary - float(np.dot(arbitrary, v_axis)) * v_axis)
+        else:
+            u = v_proj / norm_proj
+        axial_comp = -math.cos(math.radians(angle_deg))
+        trans_comp = math.sin(math.radians(angle_deg))
+        h = donor + (v_axis * axial_comp + u * trans_comp) * dist
+        return [h]
+
+    @staticmethod
+    def _sp2_1h_1dd(donor: np.ndarray, dd: np.ndarray, ddd1: np.ndarray, ddd2: np.ndarray, acceptor: np.ndarray, dist: float = 1.0) -> List[np.ndarray]:
+        v1 = Interface._normalize(dd - ddd1)
+        v2 = Interface._normalize(dd - ddd2)
+        n = Interface._normalize(np.cross(v1, v2))
+        v_axis = Interface._normalize(donor - dd)
+        cos70 = -math.cos(math.radians(110.0))
+        sin70 = math.sin(math.radians(110.0))
+        cross_n_v = np.cross(n, v_axis)
+        h1 = donor + (v_axis * cos70 + cross_n_v * sin70) * dist
+        h2 = donor + (v_axis * cos70 - cross_n_v * sin70) * dist
+        d1 = float(np.linalg.norm(h1 - acceptor))
+        d2 = float(np.linalg.norm(h2 - acceptor))
+        return [h1] if d1 < d2 else [h2]
+
+    @staticmethod
+    def _generate_ideal_hydrogens(donor_atom, acceptor_coord: np.ndarray) -> List[np.ndarray]:
+        res = donor_atom.get_parent()
+        if res is None: return []
+        resname = res.get_resname().strip().upper()
+        name = donor_atom.id.upper()
+        
+        def _get_c(n):
+            return res[n].coord if n in res else None
+            
+        if resname == "ARG":
+            if name == "NE":
+                cd, cz = _get_c("CD"), _get_c("CZ")
+                if cd is not None and cz is not None:
+                    return [Interface._sp2_1h_2dd(donor_atom.coord, cd, cz)]
+            elif name in ("NH1", "NH2"):
+                cz, ne = _get_c("CZ"), _get_c("NE")
+                if cz is not None and ne is not None:
+                    return Interface._sp2_2h_1dd(donor_atom.coord, cz, ne)
+        elif resname == "LYS" and name == "NZ":
+            ce, cd = _get_c("CE"), _get_c("CD")
+            if ce is not None and cd is not None:
+                return Interface._sp3_3h_1dd(donor_atom.coord, ce, cd)
+        elif resname == "ASN" and name == "ND2":
+            cg, cb = _get_c("CG"), _get_c("CB")
+            if cg is not None and cb is not None:
+                return Interface._sp2_2h_1dd(donor_atom.coord, cg, cb)
+        elif resname == "GLN" and name == "NE2":
+            cd, cg = _get_c("CD"), _get_c("CG")
+            if cd is not None and cg is not None:
+                return Interface._sp2_2h_1dd(donor_atom.coord, cd, cg)
+        elif resname == "HIS":
+            if name == "NE2":
+                cd2, ce1 = _get_c("CD2"), _get_c("CE1")
+                if cd2 is not None and ce1 is not None:
+                    return [Interface._sp2_1h_2dd(donor_atom.coord, cd2, ce1)]
+            elif name == "ND1":
+                cg, ce1 = _get_c("CG"), _get_c("CE1")
+                if cg is not None and ce1 is not None:
+                    return [Interface._sp2_1h_2dd(donor_atom.coord, cg, ce1)]
+        elif resname == "TRP" and name == "NE1":
+            cd1, ce2 = _get_c("CD1"), _get_c("CE2")
+            if cd1 is not None and ce2 is not None:
+                return [Interface._sp2_1h_2dd(donor_atom.coord, cd1, ce2)]
+        elif resname == "SER" and name == "OG":
+            cb = _get_c("CB")
+            if cb is not None:
+                return Interface._sp3_1h_1dd(donor_atom.coord, cb, acceptor_coord, 110.0, 1.0)
+        elif resname == "THR" and name == "OG1":
+            cb = _get_c("CB")
+            if cb is not None:
+                return Interface._sp3_1h_1dd(donor_atom.coord, cb, acceptor_coord, 110.0, 1.0)
+        elif resname == "TYR" and name == "OH":
+            cz, ce1, ce2 = _get_c("CZ"), _get_c("CE1"), _get_c("CE2")
+            if cz is not None and ce1 is not None and ce2 is not None:
+                return Interface._sp2_1h_1dd(donor_atom.coord, cz, ce1, ce2, acceptor_coord)
+        elif resname == "CYS" and name == "SG":
+            cb = _get_c("CB")
+            if cb is not None:
+                return Interface._sp3_1h_1dd(donor_atom.coord, cb, acceptor_coord, 96.0, 1.33)
+                
+        # Main-chain N (backbone) or N-terminus
+        if name == "N":
+            ca = _get_c("CA")
+            # If standard main chain, we want the previous residue's C
+            # But the 'res' object only has atoms for the current residue.
+            # We can use biopython's structure navigation.
+            c_prev = None
+            chain = res.get_parent()
+            if chain:
+                # get previous residue logically (slow linear search or index)
+                idx = -1
+                res_list = list(chain)
+                try:
+                    idx = res_list.index(res)
+                except ValueError:
+                    pass
+                if idx > 0:
+                    prev_res = res_list[idx-1]
+                    if "C" in prev_res:
+                        c_prev = prev_res["C"].coord
+            
+            if ca is not None and c_prev is not None:
+                return [Interface._sp2_1h_2dd(donor_atom.coord, ca, c_prev, 1.0)]
+            elif ca is not None:
+                # N-terminus fallback: sp3 3H 1DD
+                return Interface._sp3_3h_1dd(donor_atom.coord, ca, ca + np.array([1,1,1])) # arbitrary ddd if none
+
+        # N-terminus or unknown
+        return []
+
+    @staticmethod
     def _find_hydrogen_atoms(donor_atom) -> List[Any]:
         hydrogens = []
         residue = donor_atom.get_parent()
@@ -753,26 +919,44 @@ class Interface:
                     valid_hbond = True
                     break
             else:
-                da_vec = acceptor.coord - donor.coord
-                da_norm = float(np.linalg.norm(da_vec))
-                if da_norm > 0:
-                    inferred_h = donor.coord + (da_vec / da_norm) * 1.0
-                    ha_dist = float(np.linalg.norm(inferred_h - acceptor.coord))
-                    if ha_dist <= max_ha_dist:
-                        dha = self._angle_at_point(donor.coord, inferred_h, acceptor.coord)
-                        if dha >= min_angle:
-                            if aa is not None:
-                                daaa = self._angle_at_point(donor.coord, acceptor.coord, aa.coord)
-                                if daaa >= min_angle:
-                                    haaa = self._angle_at_point(inferred_h, acceptor.coord, aa.coord)
-                                    if haaa >= min_angle:
-                                        valid_hbond = True
-                            else:
-                                valid_hbond = True
-                if (not valid_hbond) and aa is not None:
-                    daaa = self._angle_at_point(donor.coord, acceptor.coord, aa.coord)
-                    if daaa >= min_angle:
-                        valid_hbond = True
+                ideal_hydrogens = self._generate_ideal_hydrogens(donor, acceptor.coord)
+                if ideal_hydrogens:
+                    for h_coord in ideal_hydrogens:
+                        ha_dist = float(np.linalg.norm(h_coord - acceptor.coord))
+                        if ha_dist <= max_ha_dist:
+                            dha = self._angle_at_point(donor.coord, h_coord, acceptor.coord)
+                            if dha >= min_angle:
+                                if aa is not None:
+                                    daaa = self._angle_at_point(donor.coord, acceptor.coord, aa.coord)
+                                    if daaa >= min_angle:
+                                        haaa = self._angle_at_point(h_coord, acceptor.coord, aa.coord)
+                                        if haaa >= min_angle:
+                                            valid_hbond = True
+                                            break
+                                else:
+                                    valid_hbond = True
+                                    break
+                else:
+                    da_vec = acceptor.coord - donor.coord
+                    da_norm = float(np.linalg.norm(da_vec))
+                    if da_norm > 0:
+                        inferred_h = donor.coord + (da_vec / da_norm) * 1.0
+                        ha_dist = float(np.linalg.norm(inferred_h - acceptor.coord))
+                        if ha_dist <= max_ha_dist:
+                            dha = self._angle_at_point(donor.coord, inferred_h, acceptor.coord)
+                            if dha >= min_angle:
+                                if aa is not None:
+                                    daaa = self._angle_at_point(donor.coord, acceptor.coord, aa.coord)
+                                    if daaa >= min_angle:
+                                        haaa = self._angle_at_point(inferred_h, acceptor.coord, aa.coord)
+                                        if haaa >= min_angle:
+                                            valid_hbond = True
+                                else:
+                                    valid_hbond = True
+                    if (not valid_hbond) and aa is not None:
+                        daaa = self._angle_at_point(donor.coord, acceptor.coord, aa.coord)
+                        if daaa >= min_angle:
+                            valid_hbond = True
 
             if valid_hbond:
                 key = tuple(sorted((i1, i2)))
