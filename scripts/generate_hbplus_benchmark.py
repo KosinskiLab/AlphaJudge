@@ -6,7 +6,6 @@ import glob
 HBPLUS_PATH = "/Users/admin/Alpha/hbplus/hbplus"
 CLEAN_PATH = "/Users/admin/Alpha/hbplus/clean"
 BASE_DIR = "test_data/af2/positive_dimers/predictions"
-CCP4_CSV = "test_data/af2/positive_dimers/benchmarks/CCP4.csv"
 OUTPUT_CSV = "test_data/af2/positive_dimers/benchmarks/HBPLUS.csv"
 
 def run_hbplus_for_complex(pdb_path):
@@ -16,7 +15,7 @@ def run_hbplus_for_complex(pdb_path):
     pdb_filename = os.path.basename(abs_pdb_path)
     
     # 1. Clean the PDB
-    # If we are in work_dir, we can use the local filename
+    # ./clean requires passing @ before input filenames!
     clean_input = f"@{pdb_filename}\n"
     res = subprocess.run([CLEAN_PATH], input=clean_input.encode(), cwd=work_dir, capture_output=True)
     
@@ -40,10 +39,10 @@ def run_hbplus_for_complex(pdb_path):
         
     # 3. Parse .hb2
     hb_count = 0
-    sb_count = 0
+    #sb_count = 0
     
-    sb_donors = {"ARG": ["NH1", "NH2", "NE"], "LYS": ["NZ"], "HIS": ["ND1", "NE2"]}
-    sb_acceptors = {"ASP": ["OD1", "OD2"], "GLU": ["OE1", "OE2"]}
+    #sb_donors = {"ARG": ["NH1", "NH2", "NE"], "LYS": ["NZ"], "HIS": ["ND1", "NE2"]}
+    #sb_acceptors = {"ASP": ["OD1", "OD2"], "GLU": ["OE1", "OE2"]}
 
     with open(hb2_file, "r") as f:
         lines = f.readlines()
@@ -51,95 +50,84 @@ def run_hbplus_for_complex(pdb_path):
             if len(line) < 27: continue
             
             d_chain = line[0]
-            d_res_type = line[6:9].strip()
-            d_atom_type = line[9:13].strip()
+            #d_res_type = line[6:9].strip()
+            #d_atom_type = line[9:13].strip()
             
             a_chain = line[14]
-            a_res_type = line[20:23].strip()
-            a_atom_type = line[23:27].strip()
+            #a_res_type = line[20:23].strip()
+            #a_atom_type = line[23:27].strip()
             
-            categories = line[33:35]
+            #categories = line[33:35]
             
             if d_chain != a_chain:
                 hb_count += 1
-                
-                if categories == "SS":
-                    is_sb_donor = d_res_type in sb_donors and d_atom_type in sb_donors[d_res_type]
-                    is_sb_acceptor = a_res_type in sb_acceptors and a_atom_type in sb_acceptors[a_res_type]
-                    is_sb_donor_rev = a_res_type in sb_donors and a_atom_type in sb_donors[a_res_type]
-                    is_sb_acceptor_rev = d_res_type in sb_acceptors and d_atom_type in sb_acceptors[d_res_type]
+
+                #if categories == "SS":
+                #    is_sb_donor = d_res_type in sb_donors and d_atom_type in sb_donors[d_res_type]
+                #    is_sb_acceptor = a_res_type in sb_acceptors and a_atom_type in sb_acceptors[a_res_type]
+                #    is_sb_donor_rev = a_res_type in sb_donors and a_atom_type in sb_donors[a_res_type]
+                #    is_sb_acceptor_rev = d_res_type in sb_acceptors and d_atom_type in sb_acceptors[d_res_type]
                     
-                    if (is_sb_donor and is_sb_acceptor) or (is_sb_donor_rev and is_sb_acceptor_rev):
-                        sb_count += 1
+                #    if (is_sb_donor and is_sb_acceptor) or (is_sb_donor_rev and is_sb_acceptor_rev):
+                #        sb_count += 1
                         
-    # Cleanup temp files
+    # Cleanup tmp files
     if os.path.exists(cleaned_pdb): os.remove(cleaned_pdb)
     if os.path.exists(hb2_file): os.remove(hb2_file)
     debug_dat = os.path.join(work_dir, "hbdebug.dat")
     if os.path.exists(debug_dat): os.remove(debug_dat)
 
-    print(f"Complex: {complex_name}, HB: {hb_count}, SB: {sb_count}")
+    print(f"Complex: {complex_name}, HB: {hb_count}")
     return {
         "complex": complex_name,
         "hb": hb_count,
-        "sb": sb_count
+        #"sb": sb_count
     }
 
 def main():
-    pdb_files = glob.glob(f"{BASE_DIR}/*/ranked_0.pdb")
-    results = {}
+    ccp4_csv = "test_data/af2/positive_dimers/benchmarks/CCP4.csv"
+    output_merged = "test_data/af2/positive_dimers/benchmarks/HBPLUS_CCP4.csv" # For a unified benchmark CSV file.
     
-    for i, pdb_path in enumerate(pdb_files):
-        print(f"[{i+1}/{len(pdb_files)}] Processing {pdb_path}...")
-        res = run_hbplus_for_complex(pdb_path)
-        if res:
-            results[res["complex"]] = res
-            
-    if not results:
-        print("No results generated.")
+    if not os.path.exists(ccp4_csv):
+        print(f"CCP4 benchmark not found at {ccp4_csv}")
         return
 
-    # Merge with CCP4.csv using standard csv module
+    with open(ccp4_csv, "r") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        fieldnames = reader.fieldnames
+
+    print(f"Loaded {len(rows)} complexes from {ccp4_csv}")
+    
     final_rows = []
-    try:
-        with open(CCP4_CSV, "r") as f:
-            reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames
-            if not fieldnames:
-                print("CCP4.csv has no fieldnames.")
-                return
+    for i, row in enumerate(rows):
+        complex_name = row["complex"]
+        pdb_path = os.path.join(BASE_DIR, complex_name, "ranked_0.pdb")
+        
+        if not os.path.exists(pdb_path):
+            print(f"[{i+1}/{len(rows)}] Skipping {complex_name}: PDB not found")
+            final_rows.append(row)
+            continue
             
-            # Ensure complex is in fieldnames
-            if "complex" not in fieldnames:
-                print(f"'complex' column not found in {CCP4_CSV}")
-                return
+        print(f"[{i+1}/{len(rows)}] Processing {complex_name} with HBPLUS...")
+        res = run_hbplus_for_complex(pdb_path)
+        
+        if res:
+            row["hb"] = res["hb"]
+            # row["sb"] = res["sb"] # We are manually keeping PISA's SB for now
+        
+        final_rows.append(row)
 
-            for row in reader:
-                comp = row["complex"]
-                if comp in results:
-                    row["hb"] = results[comp]["hb"]
-                    row["sb"] = results[comp]["sb"]
-                    final_rows.append(row)
-                else:
-                    # Keep original if not found in results? 
-                    # Actually, the user wants a new benchmark based on HBPLUS
-                    # If it's not in results, we skip it or keep it?
-                    # Let's keep it but maybe it might be empty.
-                    pass
-                    
-        if not final_rows:
-            print("No matching complexes found to merge.")
-            return
-
-        with open(OUTPUT_CSV, "w", newline="") as f:
+    try:
+        with open(output_merged, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(final_rows)
             
-        print(f"Generated {OUTPUT_CSV} with {len(final_rows)} rows.")
+        print(f"Successfully generated unified benchmark: {output_merged}")
         
     except Exception as e:
-        print(f"Error during merge or file writing: {e}")
+        print(f"Error writing file: {e}")
 
 if __name__ == "__main__":
     main()
