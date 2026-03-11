@@ -1023,7 +1023,7 @@ class Interface:
             self._sasa_chain(self.chain1)
             + self._sasa_chain(self.chain2)
             - self._sasa_complex(self.chain1, self.chain2)
-        )
+        ) / 2.0
 
     @cached_property
     def int_solv_en(self) -> float:
