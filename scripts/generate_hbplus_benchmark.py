@@ -114,7 +114,7 @@ def main():
         
         if res:
             row["hb"] = res["hb"]
-            # row["sb"] = res["sb"] # We are manually keeping PISA's SB for now
+            #row["sb"] = res["sb"] # Keeping PISA's SB score for now
         
         final_rows.append(row)
 
