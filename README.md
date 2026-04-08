@@ -43,7 +43,13 @@ AlphaFold models (AF2 or AF3)  →  AlphaJudge  →  interfaces.csv
 
 ## Installation
 
-Create conda/mamba env
+Create conda/mamba env, then install from pypi:
+
+```bash
+pip install alphajudge
+```
+
+If you are a developer, install from github:
 
 ```bash
 git clone https://github.com/KosinskiLab/AlphaJudge.git
@@ -78,7 +84,8 @@ alphajudge PATH [PATH ...] \
   --contact_thresh 8.0 \
   --pae_filter 100.0 \
   [-r|--recursive] \
-  [-o|--summary SUMMARY.csv]
+  [-o|--summary SUMMARY.csv] \
+  [--cores]
 ```
 
 - **PATH**: One or more run directories or roots to search
@@ -87,6 +94,7 @@ alphajudge PATH [PATH ...] \
 - **--models_to_analyse**: `best` or `all` (default: best)
 - **-r / --recursive**: Recursively discover runs under each PATH
 - **-o / --summary**: Write an aggregated CSV across all processed runs
+- **--cores**: Number of processes to use across run directories (0 = all available cores)
 
 Outputs:
 - Always writes `interfaces.csv` inside each processed run directory.
