@@ -1,8 +1,47 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "alphajudge"
 version = "0.3.0"
+description = "Evaluate AlphaFold-predicted protein complexes using confidence metrics and interface biophysics."
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
-dependencies = ["biopython", "numpy", "matplotlib"]
+dependencies = [
+    "biopython",
+    "numpy",
+    "matplotlib",
+]
+license = { text = "MIT" }
+
+authors = [
+    { name = "Dima Molodenskiy" }
+]
+
+keywords = [
+    "alphafold",
+    "protein-complex",
+    "structural-biology",
+    "bioinformatics",
+    "interface-scoring",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 
 [project.scripts]
 alphajudge = "alphajudge.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/KosinskiLab/AlphaJudge"
+Repository = "https://github.com/KosinskiLab/AlphaJudge"
+Issues = "https://github.com/KosinskiLab/AlphaJudge/issues"
