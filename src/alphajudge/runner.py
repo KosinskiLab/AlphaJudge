@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .parsers import pick_parser
-from .core import Complex
+from .complex import Complex
 
 
 def _save_pae_heatmap(
@@ -119,6 +119,7 @@ def process(
                         "interface_LIS": iface.lis(),
                         "interface_hb": iface.hb,
                         "interface_sb": iface.sb,
+                        "interface_ss": iface.ss,
                         "interface_sc": iface.sc,
                         "interface_area": iface.int_area,
                         "interface_solv_en": iface.int_solv_en,
