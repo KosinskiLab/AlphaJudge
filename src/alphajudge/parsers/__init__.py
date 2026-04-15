@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 import json
 import numpy as np
 from Bio.PDB import PDBParser, MMCIFParser
-from ..core import Confidence
+from ..confidence import Confidence
 
 @dataclass
 class Run:
@@ -118,5 +118,4 @@ manager.register(AF3Parser)
 
 pick_parser = manager.pick
 register_parser = manager.register
-
 

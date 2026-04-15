@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 from . import BaseParser, Run
-from ..core import Confidence
+from ..confidence import Confidence
 
 class AF2Parser(BaseParser):
     name = "af2"
@@ -50,4 +50,3 @@ class AF2Parser(BaseParser):
                 plddt_residue=plddt,
             )
         return Run(order=order, source="af2", load_model=load_model)
-

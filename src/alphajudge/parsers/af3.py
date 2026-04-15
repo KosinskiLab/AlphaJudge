@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List, Optional, Any, Tuple
 import csv, numpy as np
 from . import BaseParser, Run
-from ..core import Confidence
+from ..confidence import Confidence
 
 class AF3Parser(BaseParser):
     name = "af3"
@@ -111,4 +111,3 @@ class AF3Parser(BaseParser):
             raise ValueError("unknown AF3 confidences schema")
 
         return pae.tolist(), float(max_pae)
-
