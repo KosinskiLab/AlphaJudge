@@ -212,6 +212,9 @@ __marimo__/
 # Generated outputs in test_data
 test_data/**/interfaces.csv
 
+# Local validation scratch space
+tmp/
+
 # Ignore all test_data by default, then include only what's required for tests
 test_data/**
 !test_data/

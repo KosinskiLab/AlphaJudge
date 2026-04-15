@@ -11,7 +11,10 @@ and SCASA (Lawrence & Colman shape complementarity via Connolly surface).
 from __future__ import annotations
 
 import math
+import os
+import struct
 from functools import lru_cache
+from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import numpy as np
@@ -28,12 +31,15 @@ from .connolly import (
 # PISA bond-detection constants (Krissinel & Henrick, J. Mol. Biol. 2007)
 # ---------------------------------------------------------------------------
 
-HB_MAX_DIST = 3.9   # Angstrom, donor-acceptor
-HB_MIN_DIST = 2.5   # Angstrom
+HB_MAX_DIST = 3.6   # Angstrom, calibrated against ccp4srs::CalcHBonds
+HB_MIN_DIST = 2.0   # Angstrom, CCP4 SRS accepts very short H-bonds in clashes
 SB_MAX_DIST = 4.0   # Angstrom, charged-atom pair
-SS_MAX_DIST = 2.5   # Angstrom, Cys SG-SG
+SB_MIN_DIST = 2.0   # Angstrom, suppress severe atom clashes not reported by PISA
+SS_MAX_DIST = 2.3   # Angstrom, DSBondThresh in pisa_interface.cpp
 PISA_PROBE_RADIUS = 1.4  # Angstrom, default solvent probe in pisa_prosurf.cpp
 PISA_CODE_NO = 36        # default spherical code size in pisa_prosurf.cpp
+HB_DONOR_ANGLE_MIN = 90.0
+HB_ACCEPTOR_ANGLE_MIN = 90.0
 
 # Residue-specific donor/acceptor atom names (heavy atoms only; hydrogens
 # optional). Backbone N is donor and backbone O is acceptor for all standard
@@ -92,6 +98,70 @@ _PISA_ELEMENT_RADII = {
     "I": 1.98,
 }
 
+_MOLREF_SEARCH_PATHS = (
+    Path(os.environ["ALPHAJUDGE_PISA_MOLREF"]) if "ALPHAJUDGE_PISA_MOLREF" in os.environ else None,
+    Path("/g/kosinski/dima/PycharmProjects/pisa/molref"),
+    Path(__file__).resolve().parents[4] / "pisa" / "molref",
+)
+
+_STANDARD_BONDS = {
+    "ALA": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB")),
+    "ARG": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD"), ("CD", "NE"), ("NE", "CZ"), ("CZ", "NH1"), ("CZ", "NH2")),
+    "ASN": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "OD1"), ("CG", "ND2")),
+    "ASP": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "OD1"), ("CG", "OD2")),
+    "CYS": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "SG")),
+    "GLN": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD"), ("CD", "OE1"), ("CD", "NE2")),
+    "GLU": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD"), ("CD", "OE1"), ("CD", "OE2")),
+    "GLY": (("N", "CA"), ("CA", "C"), ("C", "O")),
+    "HIS": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "ND1"), ("ND1", "CE1"), ("CE1", "NE2"), ("NE2", "CD2"),
+            ("CD2", "CG")),
+    "ILE": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG1"),
+            ("CG1", "CD1"), ("CB", "CG2")),
+    "LEU": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD1"), ("CG", "CD2")),
+    "LYS": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD"), ("CD", "CE"), ("CE", "NZ")),
+    "MET": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "SD"), ("SD", "CE")),
+    "PHE": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD1"), ("CD1", "CE1"), ("CE1", "CZ"), ("CZ", "CE2"),
+            ("CE2", "CD2"), ("CD2", "CG")),
+    "PRO": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD"), ("CD", "N")),
+    "SER": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "OG")),
+    "THR": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "OG1"),
+            ("CB", "CG2")),
+    "TRP": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD1"), ("CD1", "NE1"), ("NE1", "CE2"), ("CE2", "CD2"),
+            ("CD2", "CG"), ("CE2", "CZ2"), ("CZ2", "CH2"), ("CH2", "CZ3"),
+            ("CZ3", "CE3"), ("CE3", "CD2")),
+    "TYR": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
+            ("CG", "CD1"), ("CD1", "CE1"), ("CE1", "CZ"), ("CZ", "OH"),
+            ("CZ", "CE2"), ("CE2", "CD2"), ("CD2", "CG")),
+    "VAL": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG1"),
+            ("CB", "CG2")),
+}
+
+
+def _bond_neighbours() -> dict[str, dict[str, set[str]]]:
+    neighbours: dict[str, dict[str, set[str]]] = {}
+    for resname, bonds in _STANDARD_BONDS.items():
+        residue_neighbours: dict[str, set[str]] = {}
+        for atom1, atom2 in bonds:
+            residue_neighbours.setdefault(atom1, set()).add(atom2)
+            residue_neighbours.setdefault(atom2, set()).add(atom1)
+        neighbours[resname] = residue_neighbours
+    return neighbours
+
+
+_STANDARD_NEIGHBOURS = _bond_neighbours()
+
 
 def _atom_is_donor(resname: str, atom_name: str) -> bool:
     if resname in _STANDARD_AA and atom_name == "N" and resname != "PRO":
@@ -130,25 +200,98 @@ def _atom_element(atom) -> str:
     return name[0]
 
 
+def _clean_molref_string(raw: bytes) -> str:
+    return raw.decode("ascii", errors="ignore").replace("\0", "").strip()
+
+
+def _decode_mmdb_float(raw: bytes) -> float:
+    """Decode MMDB's 5-byte UniBin float used in PISA molref.rdt."""
+    # Constants from mmdb_mattype.cpp for UseDoubleFloat builds.
+    base = 256.0
+    power0 = 127
+    power4 = 130
+    powers = [0.0] * 256
+    powers[power0] = 1.0
+    for i in range(1, power0 + 1):
+        powers[power0 + i] = powers[power0 + i - 1] * base
+        powers[power0 - i] = powers[power0 - i + 1] / base
+
+    data = list(raw)
+    sign = bool(data[1] & 0x80)
+    data[1] &= 0x7F
+    value = float(data[1])
+    for j in range(2, 5):
+        value = value * base + float(data[j])
+    value = (value / powers[power4]) * powers[data[0]]
+    return -value if sign else value
+
+
+def _find_molref_dir() -> Path | None:
+    for candidate in _MOLREF_SEARCH_PATHS:
+        if candidate and (candidate / "molref.idx").exists() and (candidate / "molref.rdt").exists():
+            return candidate
+    return None
+
+
+@lru_cache(maxsize=1)
+def _pisa_molref_radii() -> dict[Tuple[str, str], float]:
+    """Read PISA's molref atom radii for standard residues when available."""
+    molref_dir = _find_molref_dir()
+    if molref_dir is None:
+        return {}
+
+    idx = (molref_dir / "molref.idx").read_bytes()
+    data = (molref_dir / "molref.rdt").read_bytes()
+    n_entries = struct.unpack_from("<i", idx, 0)[0]
+    offsets: dict[str, int] = {}
+    for i in range(n_entries):
+        offset = 4 + i * 16
+        residue_name = _clean_molref_string(idx[offset:offset + 4])
+        data_offset = struct.unpack_from("<i", idx, offset + 12)[0]
+        offsets[residue_name] = data_offset
+
+    radii: dict[Tuple[str, str], float] = {}
+    for residue_name in _STANDARD_AA:
+        offset = offsets.get(residue_name)
+        if offset is None:
+            continue
+        atom_count = struct.unpack_from("<i", data, offset + 16)[0]
+        atom_offset = offset + 20
+        for _ in range(atom_count):
+            atom_name = _clean_molref_string(data[atom_offset:atom_offset + 5])
+            radius = _decode_mmdb_float(data[atom_offset + 10:atom_offset + 15])
+            radii[(residue_name, atom_name)] = radius
+            atom_offset += 29
+    return radii
+
+
 def _pisa_radius(atom) -> float:
     """PISA-style VdW radius used by ProSurf for SAS calculations."""
+    residue = atom.get_parent()
+    resname = residue.get_resname().strip().upper()
+    atom_name = atom.id.strip().upper()
+    molref_radius = _pisa_molref_radii().get((resname, atom_name))
+    if molref_radius is not None:
+        return molref_radius
+
     element = _atom_element(atom)
     if element in _PISA_ELEMENT_RADII:
         return _PISA_ELEMENT_RADII[element]
-    return get_radius(atom.get_parent().get_resname(), atom.id)
+    return get_radius(resname, atom_name)
 
 
-def _collect_surface_atoms(residues: Iterable) -> Tuple[np.ndarray, np.ndarray]:
-    coords, radii = [], []
+def _collect_surface_atoms_with_residues(residues: Iterable) -> Tuple[np.ndarray, np.ndarray, List]:
+    coords, radii, atom_residues = [], [], []
     for residue in residues:
         for atom in residue:
             if _atom_element(atom) == "H":
                 continue
             coords.append(atom.coord)
             radii.append(_pisa_radius(atom))
+            atom_residues.append(residue)
     if not coords:
-        return np.empty((0, 3), dtype=float), np.empty(0, dtype=float)
-    return np.asarray(coords, dtype=float), np.asarray(radii, dtype=float)
+        return np.empty((0, 3), dtype=float), np.empty(0, dtype=float), []
+    return np.asarray(coords, dtype=float), np.asarray(radii, dtype=float), atom_residues
 
 
 def _mround(value: float) -> int:
@@ -200,62 +343,72 @@ def buried_surface_area(
     own molecule but covered by the opposing molecule are summed, and PISA's
     reported interface area is (area_side_1 + area_side_2) / 2.
     """
-    coords1, radii1 = _collect_surface_atoms(residues1)
-    coords2, radii2 = _collect_surface_atoms(residues2)
+    coords1, radii1, _ = _collect_surface_atoms_with_residues(residues1)
+    coords2, radii2, _ = _collect_surface_atoms_with_residues(residues2)
     if len(coords1) == 0 or len(coords2) == 0:
         return 0.0
 
-    coords = np.vstack([coords1, coords2])
-    radii = np.concatenate([radii1, radii2]) + float(probe_radius)
-    sides = np.concatenate([
-        np.ones(len(coords1), dtype=int),
-        np.full(len(coords2), 2, dtype=int),
-    ])
     code_points, code_areas = _pisa_spherical_code(code_no)
+    radii1 = radii1 + float(probe_radius)
+    radii2 = radii2 + float(probe_radius)
 
-    tree = cKDTree(coords)
-    max_r = float(np.max(radii))
-    int_area1 = 0.0
-    int_area2 = 0.0
+    tree1 = cKDTree(coords1)
+    tree2 = cKDTree(coords2)
+    max_r1 = float(np.max(radii1))
+    max_r2 = float(np.max(radii2))
 
-    for i, coord in enumerate(coords):
-        ri = float(radii[i])
-        own_side = int(sides[i])
-        own_mask = np.ones(len(code_points), dtype=bool)
-        other_mask = np.ones(len(code_points), dtype=bool)
-
-        for j in tree.query_ball_point(coord, ri + max_r):
-            if j == i:
+    def side_area(
+        own_coords: np.ndarray,
+        own_radii: np.ndarray,
+        own_tree: cKDTree,
+        other_coords: np.ndarray,
+        other_radii: np.ndarray,
+        other_tree: cKDTree,
+        other_max_radius: float,
+    ) -> float:
+        area = 0.0
+        own_max_radius = float(np.max(own_radii))
+        for i, coord in enumerate(own_coords):
+            ri = float(own_radii[i])
+            other_neighbours = other_tree.query_ball_point(coord, ri + other_max_radius)
+            if not other_neighbours:
                 continue
-            rj = float(radii[j])
-            delta = coord - coords[j]
-            if float(np.dot(delta, delta)) > (ri + rj) ** 2:
+
+            own_mask = np.ones(len(code_points), dtype=bool)
+            other_mask = np.ones(len(code_points), dtype=bool)
+
+            for j in own_tree.query_ball_point(coord, ri + own_max_radius):
+                if j == i:
+                    continue
+                rj = float(own_radii[j])
+                delta = coord - own_coords[j]
+                if float(np.dot(delta, delta)) > (ri + rj) ** 2:
+                    continue
+                surface_vectors = delta + ri * code_points
+                covered = np.einsum("ij,ij->i", surface_vectors, surface_vectors) <= (rj * rj + 0.00001)
+                own_mask &= ~covered
+                if not own_mask.any():
+                    break
+
+            if not own_mask.any():
                 continue
 
-            surface_vectors = delta + ri * code_points
-            covered = np.einsum("ij,ij->i", surface_vectors, surface_vectors) <= (rj * rj + 0.00001)
-            if int(sides[j]) == 1:
-                if own_side == 1:
-                    own_mask &= ~covered
-                else:
-                    other_mask &= ~covered
-            else:
-                if own_side == 2:
-                    own_mask &= ~covered
-                else:
-                    other_mask &= ~covered
+            for j in other_neighbours:
+                rj = float(other_radii[j])
+                delta = coord - other_coords[j]
+                if float(np.dot(delta, delta)) > (ri + rj) ** 2:
+                    continue
+                surface_vectors = delta + ri * code_points
+                covered = np.einsum("ij,ij->i", surface_vectors, surface_vectors) <= (rj * rj + 0.00001)
+                other_mask &= ~covered
+                if not other_mask.any():
+                    break
 
-            if not own_mask.any() and not other_mask.any():
-                break
+            area += float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
+        return area
 
-        if not own_mask.any():
-            continue
-
-        atom_area = float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
-        if own_side == 1:
-            int_area1 += atom_area
-        else:
-            int_area2 += atom_area
+    int_area1 = side_area(coords1, radii1, tree1, coords2, radii2, tree2, max_r2)
+    int_area2 = side_area(coords2, radii2, tree2, coords1, radii1, tree1, max_r1)
 
     return float((int_area1 + int_area2) / 2.0)
 
@@ -321,7 +474,8 @@ def shape_complementarity(
     if len(d1) == 0 or len(d2) == 0:
         return 0.0
 
-    # Distance-based trim (equivalent to CCP4 SC peripheral trim band).
+    # SCASA mirrors CCP4 SC's peripheral trim by keeping buried dots whose
+    # nearest opposing buried dot lies within the practical trim distance.
     _, i2 = cKDTree(d2).query(d1)
     _, i1 = cKDTree(d1).query(d2)
     dist1 = np.linalg.norm(d1 - d2[i2], axis=1)
@@ -391,48 +545,120 @@ def _count_pairs_within(pts_a: np.ndarray, pts_b: np.ndarray,
     return cnt
 
 
-def _add_pairs_within(
-    atoms_a: List,
-    pts_a: np.ndarray,
-    atoms_b: List,
-    pts_b: np.ndarray,
-    dmin: float,
-    dmax: float,
-    pairs: set[Tuple[int, int]],
-) -> None:
-    if len(pts_a) == 0 or len(pts_b) == 0:
-        return
-    tree = cKDTree(pts_b)
-    for i, coord in enumerate(pts_a):
-        for j in tree.query_ball_point(coord, dmax):
-            d = float(np.linalg.norm(coord - pts_b[j]))
-            if dmin <= d <= dmax:
-                a_id = id(atoms_a[i])
-                b_id = id(atoms_b[j])
-                pairs.add((a_id, b_id) if a_id < b_id else (b_id, a_id))
+def _residue_seqid(residue) -> str:
+    seqid = str(residue.id[1])
+    insertion = residue.id[2].strip()
+    return seqid + insertion if insertion else seqid
+
+
+def _atom_pair_key(atom1, atom2) -> Tuple[Tuple[str, str, str, str], Tuple[str, str, str, str]]:
+    def one(atom):
+        residue = atom.get_parent()
+        chain = residue.get_parent()
+        return (
+            chain.id,
+            residue.get_resname().strip().upper(),
+            _residue_seqid(residue),
+            atom.id.strip().upper(),
+        )
+
+    key1 = one(atom1)
+    key2 = one(atom2)
+    return (key1, key2) if key1 <= key2 else (key2, key1)
+
+
+def _angle_degrees(point1: np.ndarray, vertex: np.ndarray, point2: np.ndarray) -> float:
+    vec1 = point1 - vertex
+    vec2 = point2 - vertex
+    norm1 = float(np.linalg.norm(vec1))
+    norm2 = float(np.linalg.norm(vec2))
+    if norm1 == 0.0 or norm2 == 0.0:
+        return 180.0
+    cosine = float(np.dot(vec1, vec2)) / (norm1 * norm2)
+    return float(math.degrees(math.acos(max(-1.0, min(1.0, cosine)))))
+
+
+def _atom_by_name(residue) -> dict[str, object]:
+    return {atom.id.strip().upper(): atom for atom in residue}
+
+
+def _max_bond_angle(pivot_atom, target_atom) -> float:
+    """Largest angle between a bonded heavy neighbour, pivot, and target."""
+    residue = pivot_atom.get_parent()
+    resname = residue.get_resname().strip().upper()
+    atom_name = pivot_atom.id.strip().upper()
+    neighbours = _STANDARD_NEIGHBOURS.get(resname, {}).get(atom_name, ())
+    residue_atoms = _atom_by_name(residue)
+    angles = [
+        _angle_degrees(residue_atoms[name].coord, pivot_atom.coord, target_atom.coord)
+        for name in neighbours
+        if name in residue_atoms
+    ]
+    return max(angles, default=180.0)
+
+
+def _salt_bridge_pairs(residues1, residues2) -> set[Tuple[Tuple[str, str, str, str], Tuple[str, str, str, str]]]:
+    pos = lambda rn, an: an in _POS_CHARGED.get(rn, ())
+    neg = lambda rn, an: an in _NEG_CHARGED.get(rn, ())
+    pairs = set()
+    for atoms_a, pts_a, atoms_b, pts_b in (
+        (*_select_atom_coords(residues1, pos), *_select_atom_coords(residues2, neg)),
+        (*_select_atom_coords(residues2, pos), *_select_atom_coords(residues1, neg)),
+    ):
+        if len(pts_a) == 0 or len(pts_b) == 0:
+            continue
+        tree = cKDTree(pts_b)
+        for i, coord in enumerate(pts_a):
+            for j in tree.query_ball_point(coord, SB_MAX_DIST):
+                dist = float(np.linalg.norm(coord - pts_b[j]))
+                if SB_MIN_DIST <= dist <= SB_MAX_DIST:
+                    pairs.add(_atom_pair_key(atoms_a[i], atoms_b[j]))
+    return pairs
 
 
 def hydrogen_bonds(residues1, residues2) -> int:
-    """Count PISA-style inter-chain hydrogen bonds (heavy-atom D...A criterion)."""
+    """Count PISA-style inter-chain hydrogen bonds.
+
+    CCP4 PISA delegates this to ccp4srs::CalcHBonds. In pure Python we mirror
+    the observable SRS behavior with heavy-atom donor/acceptor chemistry,
+    monomer-bond angular filters, and removal of pairs that PISA reports as
+    salt bridges rather than hydrogen bonds.
+    """
     donors1, d1 = _select_atom_coords(residues1, _atom_is_donor)
     acceptors2, a2 = _select_atom_coords(residues2, _atom_is_acceptor)
     donors2, d2 = _select_atom_coords(residues2, _atom_is_donor)
     acceptors1, a1 = _select_atom_coords(residues1, _atom_is_acceptor)
-    pairs: set[Tuple[int, int]] = set()
-    _add_pairs_within(donors1, d1, acceptors2, a2, HB_MIN_DIST, HB_MAX_DIST, pairs)
-    _add_pairs_within(donors2, d2, acceptors1, a1, HB_MIN_DIST, HB_MAX_DIST, pairs)
+    salt_pairs = _salt_bridge_pairs(residues1, residues2)
+    pairs: set[Tuple[Tuple[str, str, str, str], Tuple[str, str, str, str]]] = set()
+
+    for donor_atoms, donor_coords, acceptor_atoms, acceptor_coords in (
+        (donors1, d1, acceptors2, a2),
+        (donors2, d2, acceptors1, a1),
+    ):
+        if len(donor_coords) == 0 or len(acceptor_coords) == 0:
+            continue
+        tree = cKDTree(acceptor_coords)
+        for i, donor_coord in enumerate(donor_coords):
+            donor_atom = donor_atoms[i]
+            for j in tree.query_ball_point(donor_coord, HB_MAX_DIST):
+                acceptor_atom = acceptor_atoms[j]
+                dist = float(np.linalg.norm(donor_coord - acceptor_coords[j]))
+                if not (HB_MIN_DIST <= dist <= HB_MAX_DIST):
+                    continue
+                pair_key = _atom_pair_key(donor_atom, acceptor_atom)
+                if pair_key in salt_pairs:
+                    continue
+                donor_angle = _max_bond_angle(donor_atom, acceptor_atom)
+                acceptor_angle = _max_bond_angle(acceptor_atom, donor_atom)
+                if donor_angle < HB_DONOR_ANGLE_MIN or acceptor_angle < HB_ACCEPTOR_ANGLE_MIN:
+                    continue
+                pairs.add(pair_key)
     return len(pairs)
 
 
 def salt_bridges(residues1, residues2) -> int:
     """Count PISA-style inter-chain salt bridges."""
-    pos = lambda rn, an: an in _POS_CHARGED.get(rn, ())
-    neg = lambda rn, an: an in _NEG_CHARGED.get(rn, ())
-    p1 = _select_coords(residues1, pos); n2 = _select_coords(residues2, neg)
-    p2 = _select_coords(residues2, pos); n1 = _select_coords(residues1, neg)
-    c = _count_pairs_within(p1, n2, 0.0, SB_MAX_DIST)
-    c += _count_pairs_within(p2, n1, 0.0, SB_MAX_DIST)
-    return int(c)
+    return len(_salt_bridge_pairs(residues1, residues2))
 
 
 def disulfide_bonds(residues1, residues2) -> int:
