@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "biopython",
     "numpy",
+    "scipy",
     "matplotlib",
 ]
 license = { text = "MIT" }
