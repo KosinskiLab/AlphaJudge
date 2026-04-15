@@ -1,15 +1,10 @@
+"""Backward-compatible facade for the split AlphaJudge core modules."""
+
 from __future__ import annotations
 
 from .complex import Complex
 from .confidence import Confidence
-from .docking_scores import (
-    D0,
-    MPDOCKQ,
-    PDOCKQ,
-    PDOCKQ2,
-    DockQParams,
-    _sigmoid,
-)
+from .docking_scores import D0, MPDOCKQ, PDOCKQ, PDOCKQ2, DockQParams, _sigmoid
 from .geometry import (
     CHARGED_ATOMS,
     CHARGED_RES,

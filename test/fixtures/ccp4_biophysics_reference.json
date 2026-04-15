@@ -1,0 +1,2256 @@
+{
+  "ccp4_module": "ccp4/7.1.000-shelx-arpwarp-linux64",
+  "generated_by": "scripts/validate_ccp4_biophysics.py",
+  "references": [
+    {
+      "chains": [
+        "9",
+        "A"
+      ],
+      "id": "test_data__af2__pos_dimers__Q13148_plus_Q92900__ranked_0_pdb",
+      "path": "test_data/af2/pos_dimers/Q13148+Q92900/ranked_0.pdb",
+      "pisa": {
+        "area": 2114.029997,
+        "bonds": {
+          "hb": [
+            {
+              "atom_1": "N",
+              "atom_2": "OH",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.8147086389,
+              "res_1": "SER",
+              "res_2": "TYR",
+              "seqnum_1": "144",
+              "seqnum_2": "184"
+            },
+            {
+              "atom_1": "OG1",
+              "atom_2": "OH",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.6473783736,
+              "res_1": "THR",
+              "res_2": "TYR",
+              "seqnum_1": "141",
+              "seqnum_2": "184"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OH",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.5873091587,
+              "res_1": "LYS",
+              "res_2": "TYR",
+              "seqnum_1": "145",
+              "seqnum_2": "184"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OH",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.2017463985,
+              "res_1": "ASP",
+              "res_2": "TYR",
+              "seqnum_1": "138",
+              "seqnum_2": "184"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "O",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.1905173562,
+              "res_1": "LYS",
+              "res_2": "ASN",
+              "seqnum_1": "145",
+              "seqnum_2": "185"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.3439500594,
+              "res_1": "ARG",
+              "res_2": "ASP",
+              "seqnum_1": "268",
+              "seqnum_2": "380"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 2.7901392438,
+              "res_1": "GLN",
+              "res_2": "ASP",
+              "seqnum_1": "269",
+              "seqnum_2": "380"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.192480227,
+              "res_1": "GLN",
+              "res_2": "PHE",
+              "seqnum_1": "365",
+              "seqnum_2": "1098"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "OH",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 2.3357902303,
+              "res_1": "HIS",
+              "res_2": "TYR",
+              "seqnum_1": "143",
+              "seqnum_2": "184"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "OH",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.1031090861,
+              "res_1": "SER",
+              "res_2": "TYR",
+              "seqnum_1": "144",
+              "seqnum_2": "184"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "OG1",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 2.3686293505,
+              "res_1": "GLU",
+              "res_2": "THR",
+              "seqnum_1": "261",
+              "seqnum_2": "330"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "NH1",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 2.3225307318,
+              "res_1": "ARG",
+              "res_2": "ARG",
+              "seqnum_1": "83",
+              "seqnum_2": "332"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "NH1",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.5378213635,
+              "res_1": "LYS",
+              "res_2": "ARG",
+              "seqnum_1": "82",
+              "seqnum_2": "332"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.4612259389,
+              "res_1": "LYS",
+              "res_2": "LEU",
+              "seqnum_1": "84",
+              "seqnum_2": "335"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.7357577545,
+              "res_1": "SER",
+              "res_2": "LEU",
+              "seqnum_1": "266",
+              "seqnum_2": "381"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.8439514825,
+              "res_1": "ARG",
+              "res_2": "ASP",
+              "seqnum_1": "361",
+              "seqnum_2": "1096"
+            }
+          ],
+          "sb": [
+            {
+              "atom_1": "OD1",
+              "atom_2": "NE",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.3325085146,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "86",
+              "seqnum_2": "341"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NE",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 2.3113956823,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "86",
+              "seqnum_2": "341"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "NH2",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.0688092153,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "86",
+              "seqnum_2": "341"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NH2",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 2.6773414052,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "86",
+              "seqnum_2": "341"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "ND1",
+              "chain_1": "9",
+              "chain_2": "A",
+              "dist": 3.2355395222,
+              "res_1": "GLU",
+              "res_2": "HIS",
+              "seqnum_1": "261",
+              "seqnum_2": "418"
+            }
+          ],
+          "ss": []
+        },
+        "hb": 16,
+        "int_solv_en": -3.6824970978,
+        "sb": 5,
+        "ss": 0
+      },
+      "sc": 0.227
+    },
+    {
+      "chains": [
+        "7",
+        "8"
+      ],
+      "id": "test_data__af2__pos_dimers__Q9BUL8_plus_Q13033__ranked_0_pdb",
+      "path": "test_data/af2/pos_dimers/Q9BUL8+Q13033/ranked_0.pdb",
+      "pisa": {
+        "area": 2717.2788272,
+        "bonds": {
+          "hb": [
+            {
+              "atom_1": "NH2",
+              "atom_2": "OG1",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.2890224992,
+              "res_1": "ARG",
+              "res_2": "THR",
+              "seqnum_1": "124",
+              "seqnum_2": "298"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OD2",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 2.0321567361,
+              "res_1": "GLU",
+              "res_2": "ASP",
+              "seqnum_1": "97",
+              "seqnum_2": "458"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OD1",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.5868030333,
+              "res_1": "TYR",
+              "res_2": "ASP",
+              "seqnum_1": "91",
+              "seqnum_2": "464"
+            },
+            {
+              "atom_1": "NE2",
+              "atom_2": "OD2",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.3185502859,
+              "res_1": "GLN",
+              "res_2": "ASP",
+              "seqnum_1": "206",
+              "seqnum_2": "464"
+            },
+            {
+              "atom_1": "ND2",
+              "atom_2": "O",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 2.2687902063,
+              "res_1": "ASN",
+              "res_2": "ALA",
+              "seqnum_1": "31",
+              "seqnum_2": "465"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 2.6772190796,
+              "res_1": "MET",
+              "res_2": "SER",
+              "seqnum_1": "3",
+              "seqnum_2": "718"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "N",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.4790753082,
+              "res_1": "GLU",
+              "res_2": "LEU",
+              "seqnum_1": "97",
+              "seqnum_2": "459"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "N",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.6800941564,
+              "res_1": "GLU",
+              "res_2": "LEU",
+              "seqnum_1": "97",
+              "seqnum_2": "459"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.3427693609,
+              "res_1": "VAL",
+              "res_2": "ASP",
+              "seqnum_1": "88",
+              "seqnum_2": "464"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "N",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 2.4865506229,
+              "res_1": "GLU",
+              "res_2": "ALA",
+              "seqnum_1": "90",
+              "seqnum_2": "465"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "N",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.0181583789,
+              "res_1": "GLU",
+              "res_2": "PHE",
+              "seqnum_1": "90",
+              "seqnum_2": "466"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "N",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 2.3388533515,
+              "res_1": "ASN",
+              "res_2": "ARG",
+              "seqnum_1": "31",
+              "seqnum_2": "467"
+            },
+            {
+              "atom_1": "OH",
+              "atom_2": "NE",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 2.9494535087,
+              "res_1": "TYR",
+              "res_2": "ARG",
+              "seqnum_1": "27",
+              "seqnum_2": "467"
+            },
+            {
+              "atom_1": "OH",
+              "atom_2": "NH2",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.0203713348,
+              "res_1": "TYR",
+              "res_2": "ARG",
+              "seqnum_1": "27",
+              "seqnum_2": "467"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "N",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 2.5843411153,
+              "res_1": "ASN",
+              "res_2": "LYS",
+              "seqnum_1": "31",
+              "seqnum_2": "468"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "N",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.7699856764,
+              "res_1": "GLU",
+              "res_2": "THR",
+              "seqnum_1": "34",
+              "seqnum_2": "469"
+            },
+            {
+              "atom_1": "OG1",
+              "atom_2": "ND2",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.2315483905,
+              "res_1": "THR",
+              "res_2": "ASN",
+              "seqnum_1": "43",
+              "seqnum_2": "734"
+            }
+          ],
+          "sb": [
+            {
+              "atom_1": "NE",
+              "atom_2": "OD2",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.3158282525,
+              "res_1": "ARG",
+              "res_2": "ASP",
+              "seqnum_1": "124",
+              "seqnum_2": "295"
+            },
+            {
+              "atom_1": "NH2",
+              "atom_2": "OD2",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 2.7257542076,
+              "res_1": "ARG",
+              "res_2": "ASP",
+              "seqnum_1": "124",
+              "seqnum_2": "295"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NE",
+              "chain_1": "7",
+              "chain_2": "8",
+              "dist": 3.2612371886,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "90",
+              "seqnum_2": "467"
+            }
+          ],
+          "ss": []
+        },
+        "hb": 17,
+        "int_solv_en": -30.222223936,
+        "sb": 3,
+        "ss": 0
+      },
+      "sc": 0.273
+    },
+    {
+      "chains": [
+        "8",
+        "9"
+      ],
+      "id": "test_data__af2__neg_dimers__Q14974_plus_Q13033__ranked_0_pdb",
+      "path": "test_data/af2/neg_dimers/Q14974+Q13033/ranked_0.pdb",
+      "pisa": {
+        "area": 5163.9717822,
+        "bonds": {
+          "hb": [
+            {
+              "atom_1": "NE2",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.2929206266,
+              "res_1": "GLN",
+              "res_2": "ILE",
+              "seqnum_1": "521",
+              "seqnum_2": "97"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.7935372675,
+              "res_1": "ASN",
+              "res_2": "GLN",
+              "seqnum_1": "522",
+              "seqnum_2": "101"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OE2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.8007457163,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "525",
+              "seqnum_2": "108"
+            },
+            {
+              "atom_1": "OG",
+              "atom_2": "OD1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.9435082809,
+              "res_1": "SER",
+              "res_2": "ASN",
+              "seqnum_1": "526",
+              "seqnum_2": "109"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.6283215176,
+              "res_1": "GLY",
+              "res_2": "LEU",
+              "seqnum_1": "813",
+              "seqnum_2": "135"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.4050610861,
+              "res_1": "LYS",
+              "res_2": "LYS",
+              "seqnum_1": "854",
+              "seqnum_2": "136"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.8628421193,
+              "res_1": "LYS",
+              "res_2": "TYR",
+              "seqnum_1": "857",
+              "seqnum_2": "137"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OG",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.9157607927,
+              "res_1": "THR",
+              "res_2": "SER",
+              "seqnum_1": "855",
+              "seqnum_2": "168"
+            },
+            {
+              "atom_1": "NE2",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.3920381779,
+              "res_1": "GLN",
+              "res_2": "SER",
+              "seqnum_1": "278",
+              "seqnum_2": "197"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OD1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.8604784678,
+              "res_1": "THR",
+              "res_2": "ASN",
+              "seqnum_1": "231",
+              "seqnum_2": "208"
+            },
+            {
+              "atom_1": "ND2",
+              "atom_2": "OD1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.7423801706,
+              "res_1": "ASN",
+              "res_2": "ASP",
+              "seqnum_1": "704",
+              "seqnum_2": "458"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.933795153,
+              "res_1": "ILE",
+              "res_2": "PRO",
+              "seqnum_1": "72",
+              "seqnum_2": "460"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OD1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.0985923854,
+              "res_1": "ALA",
+              "res_2": "ASN",
+              "seqnum_1": "74",
+              "seqnum_2": "462"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OD1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.7212228869,
+              "res_1": "GLN",
+              "res_2": "ASN",
+              "seqnum_1": "75",
+              "seqnum_2": "462"
+            },
+            {
+              "atom_1": "ND2",
+              "atom_2": "OG",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.1810655448,
+              "res_1": "ASN",
+              "res_2": "SER",
+              "seqnum_1": "336",
+              "seqnum_2": "478"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OG",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.3599694939,
+              "res_1": "ASP",
+              "res_2": "SER",
+              "seqnum_1": "341",
+              "seqnum_2": "518"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OG",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.3839069136,
+              "res_1": "ASP",
+              "res_2": "SER",
+              "seqnum_1": "341",
+              "seqnum_2": "520"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OD2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.4843299212,
+              "res_1": "ASP",
+              "res_2": "ASP",
+              "seqnum_1": "339",
+              "seqnum_2": "522"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OD2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.2613668914,
+              "res_1": "THR",
+              "res_2": "ASP",
+              "seqnum_1": "571",
+              "seqnum_2": "724"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.4448229272,
+              "res_1": "SER",
+              "res_2": "ASN",
+              "seqnum_1": "12",
+              "seqnum_2": "734"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.8240555697,
+              "res_1": "GLU",
+              "res_2": "LEU",
+              "seqnum_1": "19",
+              "seqnum_2": "752"
+            },
+            {
+              "atom_1": "OG",
+              "atom_2": "NE",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.8156893217,
+              "res_1": "SER",
+              "res_2": "ARG",
+              "seqnum_1": "468",
+              "seqnum_2": "104"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "NE2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.7354864476,
+              "res_1": "ASP",
+              "res_2": "GLN",
+              "seqnum_1": "338",
+              "seqnum_2": "107"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "NZ",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.4810169286,
+              "res_1": "ASN",
+              "res_2": "LYS",
+              "seqnum_1": "469",
+              "seqnum_2": "111"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.4242996364,
+              "res_1": "ASP",
+              "res_2": "TYR",
+              "seqnum_1": "812",
+              "seqnum_2": "137"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "OG1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.6559807166,
+              "res_1": "LYS",
+              "res_2": "THR",
+              "seqnum_1": "854",
+              "seqnum_2": "139"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NH2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.186295341,
+              "res_1": "GLN",
+              "res_2": "ARG",
+              "seqnum_1": "239",
+              "seqnum_2": "201"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.2511201656,
+              "res_1": "GLU",
+              "res_2": "LEU",
+              "seqnum_1": "274",
+              "seqnum_2": "204"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.7461085142,
+              "res_1": "GLU",
+              "res_2": "GLY",
+              "seqnum_1": "274",
+              "seqnum_2": "205"
+            },
+            {
+              "atom_1": "OG1",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.5944194246,
+              "res_1": "THR",
+              "res_2": "SER",
+              "seqnum_1": "231",
+              "seqnum_2": "207"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "ND2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.3113563686,
+              "res_1": "ASP",
+              "res_2": "ASN",
+              "seqnum_1": "230",
+              "seqnum_2": "208"
+            },
+            {
+              "atom_1": "OG1",
+              "atom_2": "NH2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.895154169,
+              "res_1": "THR",
+              "res_2": "ARG",
+              "seqnum_1": "860",
+              "seqnum_2": "370"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.3903384698,
+              "res_1": "ASP",
+              "res_2": "ASN",
+              "seqnum_1": "69",
+              "seqnum_2": "462"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.3647349078,
+              "res_1": "ASP",
+              "res_2": "ASP",
+              "seqnum_1": "69",
+              "seqnum_2": "464"
+            },
+            {
+              "atom_1": "OG1",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.9952512415,
+              "res_1": "THR",
+              "res_2": "ALA",
+              "seqnum_1": "66",
+              "seqnum_2": "465"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.0470257629,
+              "res_1": "SER",
+              "res_2": "ALA",
+              "seqnum_1": "67",
+              "seqnum_2": "465"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "OG1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.216888248,
+              "res_1": "ASP",
+              "res_2": "THR",
+              "seqnum_1": "340",
+              "seqnum_2": "475"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.7920646482,
+              "res_1": "ASP",
+              "res_2": "LYS",
+              "seqnum_1": "341",
+              "seqnum_2": "516"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.6100113573,
+              "res_1": "ASP",
+              "res_2": "LYS",
+              "seqnum_1": "341",
+              "seqnum_2": "517"
+            },
+            {
+              "atom_1": "OG1",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.4541257939,
+              "res_1": "THR",
+              "res_2": "ASP",
+              "seqnum_1": "571",
+              "seqnum_2": "724"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "N",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.2663253053,
+              "res_1": "GLN",
+              "res_2": "LYS",
+              "seqnum_1": "22",
+              "seqnum_2": "755"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "NH1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.400259361,
+              "res_1": "HIS",
+              "res_2": "ARG",
+              "seqnum_1": "520",
+              "seqnum_2": "765"
+            }
+          ],
+          "sb": [
+            {
+              "atom_1": "NH2",
+              "atom_2": "OE1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.490245771,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "707",
+              "seqnum_2": "185"
+            },
+            {
+              "atom_1": "NH2",
+              "atom_2": "OE2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.8877456193,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "707",
+              "seqnum_2": "185"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NZ",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.7977218171,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "296",
+              "seqnum_2": "173"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "NE",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.6946714085,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "288",
+              "seqnum_2": "176"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NE",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.7615099362,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "288",
+              "seqnum_2": "176"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NH1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.3088313647,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "288",
+              "seqnum_2": "176"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NH2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.4848281631,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "288",
+              "seqnum_2": "176"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NE",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.8527645918,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "281",
+              "seqnum_2": "196"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NH1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.5663362152,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "281",
+              "seqnum_2": "196"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NH1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.7956039045,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "281",
+              "seqnum_2": "196"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NE",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.9078660561,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "341",
+              "seqnum_2": "199"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "NH1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.3806337392,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "341",
+              "seqnum_2": "199"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NH1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.5515488171,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "341",
+              "seqnum_2": "199"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NZ",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.8970519627,
+              "res_1": "ASP",
+              "res_2": "LYS",
+              "seqnum_1": "490",
+              "seqnum_2": "372"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NZ",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.981616757,
+              "res_1": "ASP",
+              "res_2": "LYS",
+              "seqnum_1": "162",
+              "seqnum_2": "463"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NE",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.9611318782,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "338",
+              "seqnum_2": "477"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "NH1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.4693165033,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "338",
+              "seqnum_2": "477"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NH2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.7992273934,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "340",
+              "seqnum_2": "477"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "NH2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 2.5933104326,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "338",
+              "seqnum_2": "477"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "NH2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.6324696833,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "340",
+              "seqnum_2": "477"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NZ",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.6454877589,
+              "res_1": "ASP",
+              "res_2": "LYS",
+              "seqnum_1": "384",
+              "seqnum_2": "516"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "ND1",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.6229758487,
+              "res_1": "GLU",
+              "res_2": "HIS",
+              "seqnum_1": "19",
+              "seqnum_2": "717"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NE2",
+              "chain_1": "8",
+              "chain_2": "9",
+              "dist": 3.4992143404,
+              "res_1": "GLU",
+              "res_2": "HIS",
+              "seqnum_1": "19",
+              "seqnum_2": "717"
+            }
+          ],
+          "ss": []
+        },
+        "hb": 42,
+        "int_solv_en": -6.1683540012,
+        "sb": 23,
+        "ss": 0
+      },
+      "sc": 0.087
+    },
+    {
+      "chains": [
+        "A",
+        "B"
+      ],
+      "id": "test_data__af3__pos_dimers__Q13148_plus_Q92900__ranked_0_model_cif",
+      "path": "test_data/af3/pos_dimers/Q13148+Q92900/ranked_0_model.cif",
+      "pisa": {
+        "area": 3700.261869,
+        "bonds": {
+          "hb": [
+            {
+              "atom_1": "NZ",
+              "atom_2": "OG",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8075400264,
+              "res_1": "LYS",
+              "res_2": "SER",
+              "seqnum_1": "114",
+              "seqnum_2": "967"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.767644755,
+              "res_1": "THR",
+              "res_2": "GLY",
+              "seqnum_1": "115",
+              "seqnum_2": "964"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.6545965578,
+              "res_1": "THR",
+              "res_2": "GLY",
+              "seqnum_1": "116",
+              "seqnum_2": "964"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "OD1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.368958296,
+              "res_1": "VAL",
+              "res_2": "ASP",
+              "seqnum_1": "133",
+              "seqnum_2": "235"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.0505994493,
+              "res_1": "LYS",
+              "res_2": "GLN",
+              "seqnum_1": "137",
+              "seqnum_2": "963"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.9360803804,
+              "res_1": "SER",
+              "res_2": "SER",
+              "seqnum_1": "144",
+              "seqnum_2": "962"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OH",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.5535514485,
+              "res_1": "LYS",
+              "res_2": "TYR",
+              "seqnum_1": "176",
+              "seqnum_2": "1112"
+            },
+            {
+              "atom_1": "OG",
+              "atom_2": "OG",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.7824977987,
+              "res_1": "SER",
+              "res_2": "SER",
+              "seqnum_1": "266",
+              "seqnum_2": "1100"
+            },
+            {
+              "atom_1": "ND2",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.5167274386,
+              "res_1": "ASN",
+              "res_2": "ASN",
+              "seqnum_1": "378",
+              "seqnum_2": "185"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.9526611726,
+              "res_1": "ILE",
+              "res_2": "VAL",
+              "seqnum_1": "383",
+              "seqnum_2": "205"
+            },
+            {
+              "atom_1": "N",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.8509341724,
+              "res_1": "GLY",
+              "res_2": "SER",
+              "seqnum_1": "386",
+              "seqnum_2": "203"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "OH",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.8470469194,
+              "res_1": "ASN",
+              "res_2": "TYR",
+              "seqnum_1": "398",
+              "seqnum_2": "184"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "ND2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.0837183111,
+              "res_1": "GLU",
+              "res_2": "ASN",
+              "seqnum_1": "209",
+              "seqnum_2": "190"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.9159434151,
+              "res_1": "ILE",
+              "res_2": "VAL",
+              "seqnum_1": "383",
+              "seqnum_2": "205"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "N",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.5531222889,
+              "res_1": "ALA",
+              "res_2": "LEU",
+              "seqnum_1": "381",
+              "seqnum_2": "207"
+            },
+            {
+              "atom_1": "OH",
+              "atom_2": "NH1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.3342858306,
+              "res_1": "TYR",
+              "res_2": "ARG",
+              "seqnum_1": "214",
+              "seqnum_2": "210"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NH1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.829951413,
+              "res_1": "GLN",
+              "res_2": "ARG",
+              "seqnum_1": "213",
+              "seqnum_2": "210"
+            },
+            {
+              "atom_1": "SD",
+              "atom_2": "NE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.6049126665,
+              "res_1": "MET",
+              "res_2": "GLN",
+              "seqnum_1": "322",
+              "seqnum_2": "228"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "OG",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.2705314553,
+              "res_1": "THR",
+              "res_2": "SER",
+              "seqnum_1": "141",
+              "seqnum_2": "962"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "NE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.3764185167,
+              "res_1": "GLU",
+              "res_2": "GLN",
+              "seqnum_1": "261",
+              "seqnum_2": "1101"
+            }
+          ],
+          "sb": [
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.7438732617,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "114",
+              "seqnum_2": "460"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OD2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.662232334,
+              "res_1": "LYS",
+              "res_2": "ASP",
+              "seqnum_1": "121",
+              "seqnum_2": "235"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OD2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8078748191,
+              "res_1": "LYS",
+              "res_2": "ASP",
+              "seqnum_1": "145",
+              "seqnum_2": "1109"
+            },
+            {
+              "atom_1": "ND1",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8717724492,
+              "res_1": "HIS",
+              "res_2": "GLU",
+              "seqnum_1": "264",
+              "seqnum_2": "1097"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NH1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.2284977002,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "117",
+              "seqnum_2": "148"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.6365450878,
+              "res_1": "ASP",
+              "res_2": "LYS",
+              "seqnum_1": "205",
+              "seqnum_2": "164"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.7032469366,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "209",
+              "seqnum_2": "166"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.2465048899,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "209",
+              "seqnum_2": "166"
+            },
+            {
+              "atom_1": "OD2",
+              "atom_2": "NH1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.1571358856,
+              "res_1": "ASP",
+              "res_2": "ARG",
+              "seqnum_1": "201",
+              "seqnum_2": "236"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NH2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.838507783,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "117",
+              "seqnum_2": "236"
+            }
+          ],
+          "ss": []
+        },
+        "hb": 20,
+        "int_solv_en": -32.771219464,
+        "sb": 10,
+        "ss": 0
+      },
+      "sc": 0.411
+    },
+    {
+      "chains": [
+        "A",
+        "B"
+      ],
+      "id": "test_data__af3__pos_dimers__Q9BUL8_plus_Q13033__ranked_0_model_cif",
+      "path": "test_data/af3/pos_dimers/Q9BUL8+Q13033/ranked_0_model.cif",
+      "pisa": {
+        "area": 4783.3103533,
+        "bonds": {
+          "hb": [
+            {
+              "atom_1": "NZ",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.0937533838,
+              "res_1": "LYS",
+              "res_2": "ALA",
+              "seqnum_1": "69",
+              "seqnum_2": "38"
+            },
+            {
+              "atom_1": "NE2",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.4683958354,
+              "res_1": "HIS",
+              "res_2": "LEU",
+              "seqnum_1": "199",
+              "seqnum_2": "57"
+            },
+            {
+              "atom_1": "ND2",
+              "atom_2": "SD",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.5773674678,
+              "res_1": "ASN",
+              "res_2": "MET",
+              "seqnum_1": "75",
+              "seqnum_2": "278"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.6929903872,
+              "res_1": "LYS",
+              "res_2": "ASP",
+              "seqnum_1": "186",
+              "seqnum_2": "342"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.1672639612,
+              "res_1": "LYS",
+              "res_2": "VAL",
+              "seqnum_1": "70",
+              "seqnum_2": "343"
+            },
+            {
+              "atom_1": "NE2",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8896653786,
+              "res_1": "GLN",
+              "res_2": "GLU",
+              "seqnum_1": "60",
+              "seqnum_2": "358"
+            },
+            {
+              "atom_1": "OG1",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.3431980199,
+              "res_1": "THR",
+              "res_2": "TYR",
+              "seqnum_1": "43",
+              "seqnum_2": "570"
+            },
+            {
+              "atom_1": "ND2",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8224546055,
+              "res_1": "ASN",
+              "res_2": "ASP",
+              "seqnum_1": "10",
+              "seqnum_2": "790"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "OH",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.4424341679,
+              "res_1": "GLU",
+              "res_2": "TYR",
+              "seqnum_1": "32",
+              "seqnum_2": "63"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "ND2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.8405986513,
+              "res_1": "ASN",
+              "res_2": "ASN",
+              "seqnum_1": "122",
+              "seqnum_2": "285"
+            },
+            {
+              "atom_1": "OD1",
+              "atom_2": "N",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.3688187841,
+              "res_1": "ASN",
+              "res_2": "ASP",
+              "seqnum_1": "189",
+              "seqnum_2": "342"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8959877417,
+              "res_1": "PRO",
+              "res_2": "LYS",
+              "seqnum_1": "56",
+              "seqnum_2": "362"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "N",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.2498509197,
+              "res_1": "GLU",
+              "res_2": "PHE",
+              "seqnum_1": "7",
+              "seqnum_2": "480"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.0325800896,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "52",
+              "seqnum_2": "516"
+            },
+            {
+              "atom_1": "OG",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.2046023154,
+              "res_1": "SER",
+              "res_2": "LYS",
+              "seqnum_1": "19",
+              "seqnum_2": "516"
+            },
+            {
+              "atom_1": "O",
+              "atom_2": "OH",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.6169712468,
+              "res_1": "ALA",
+              "res_2": "TYR",
+              "seqnum_1": "46",
+              "seqnum_2": "570"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "OG1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.5633905282,
+              "res_1": "GLN",
+              "res_2": "THR",
+              "seqnum_1": "42",
+              "seqnum_2": "572"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "N",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.8832816019,
+              "res_1": "GLN",
+              "res_2": "TYR",
+              "seqnum_1": "42",
+              "seqnum_2": "573"
+            }
+          ],
+          "sb": [
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.4136250744,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "9",
+              "seqnum_2": "89"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.6808037974,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "9",
+              "seqnum_2": "89"
+            },
+            {
+              "atom_1": "NH2",
+              "atom_2": "OD1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.4626410441,
+              "res_1": "ARG",
+              "res_2": "ASP",
+              "seqnum_1": "124",
+              "seqnum_2": "295"
+            },
+            {
+              "atom_1": "NH1",
+              "atom_2": "OD2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.6490294449,
+              "res_1": "ARG",
+              "res_2": "ASP",
+              "seqnum_1": "124",
+              "seqnum_2": "295"
+            },
+            {
+              "atom_1": "NE",
+              "atom_2": "OD2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.5886182578,
+              "res_1": "ARG",
+              "res_2": "ASP",
+              "seqnum_1": "124",
+              "seqnum_2": "295"
+            },
+            {
+              "atom_1": "NH2",
+              "atom_2": "OD2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.3280468208,
+              "res_1": "ARG",
+              "res_2": "ASP",
+              "seqnum_1": "124",
+              "seqnum_2": "295"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.820854093,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "132",
+              "seqnum_2": "300"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.4090972412,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "172",
+              "seqnum_2": "312"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.5894798706,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "172",
+              "seqnum_2": "312"
+            },
+            {
+              "atom_1": "NH1",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.9791841165,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "196",
+              "seqnum_2": "339"
+            },
+            {
+              "atom_1": "NH2",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.741070836,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "196",
+              "seqnum_2": "339"
+            },
+            {
+              "atom_1": "NH1",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8173340235,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "196",
+              "seqnum_2": "339"
+            },
+            {
+              "atom_1": "NH2",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.7010212104,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "196",
+              "seqnum_2": "339"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OD1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.9537376322,
+              "res_1": "LYS",
+              "res_2": "ASP",
+              "seqnum_1": "70",
+              "seqnum_2": "342"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OD2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.9555177211,
+              "res_1": "LYS",
+              "res_2": "ASP",
+              "seqnum_1": "70",
+              "seqnum_2": "342"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OD1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.7433085864,
+              "res_1": "LYS",
+              "res_2": "ASP",
+              "seqnum_1": "186",
+              "seqnum_2": "344"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8262225673,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "53",
+              "seqnum_2": "524"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.7346893791,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "68",
+              "seqnum_2": "352"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NH1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8330421811,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "34",
+              "seqnum_2": "530"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NH2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.9770597911,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "34",
+              "seqnum_2": "530"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NH2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.5057076845,
+              "res_1": "GLU",
+              "res_2": "ARG",
+              "seqnum_1": "34",
+              "seqnum_2": "530"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.1770919093,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "13",
+              "seqnum_2": "766"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.0090915573,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "6",
+              "seqnum_2": "767"
+            }
+          ],
+          "ss": []
+        },
+        "hb": 18,
+        "int_solv_en": -51.609843654,
+        "sb": 23,
+        "ss": 0
+      },
+      "sc": 0.534
+    },
+    {
+      "chains": [
+        "A",
+        "B"
+      ],
+      "id": "test_data__af3__neg_dimers__Q14974_plus_Q13033__ranked_0_model_cif",
+      "path": "test_data/af3/neg_dimers/Q14974+Q13033/ranked_0_model.cif",
+      "pisa": {
+        "area": 1714.6446103,
+        "bonds": {
+          "hb": [
+            {
+              "atom_1": "NE2",
+              "atom_2": "OG1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.1984198871,
+              "res_1": "GLN",
+              "res_2": "THR",
+              "seqnum_1": "563",
+              "seqnum_2": "692"
+            },
+            {
+              "atom_1": "OG",
+              "atom_2": "OD2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.6574598774,
+              "res_1": "SER",
+              "res_2": "ASP",
+              "seqnum_1": "566",
+              "seqnum_2": "753"
+            },
+            {
+              "atom_1": "NH1",
+              "atom_2": "O",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.4224138788,
+              "res_1": "ARG",
+              "res_2": "PRO",
+              "seqnum_1": "613",
+              "seqnum_2": "691"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "OH",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.2181717697,
+              "res_1": "GLU",
+              "res_2": "TYR",
+              "seqnum_1": "31",
+              "seqnum_2": "71"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "ND2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.7171751876,
+              "res_1": "GLU",
+              "res_2": "ASN",
+              "seqnum_1": "648",
+              "seqnum_2": "599"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "ND2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.8620203262,
+              "res_1": "GLU",
+              "res_2": "ASN",
+              "seqnum_1": "648",
+              "seqnum_2": "544"
+            }
+          ],
+          "sb": [
+            {
+              "atom_1": "NH1",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.4413886732,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "27",
+              "seqnum_2": "82"
+            },
+            {
+              "atom_1": "NH1",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.93225681,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "27",
+              "seqnum_2": "82"
+            },
+            {
+              "atom_1": "NH2",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.8990436007,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "27",
+              "seqnum_2": "82"
+            },
+            {
+              "atom_1": "NH2",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.650870992,
+              "res_1": "ARG",
+              "res_2": "GLU",
+              "seqnum_1": "27",
+              "seqnum_2": "82"
+            },
+            {
+              "atom_1": "NE2",
+              "atom_2": "OD2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.6998033732,
+              "res_1": "HIS",
+              "res_2": "ASP",
+              "seqnum_1": "567",
+              "seqnum_2": "753"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE1",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.7310739646,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "651",
+              "seqnum_2": "546"
+            },
+            {
+              "atom_1": "NZ",
+              "atom_2": "OE2",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 3.1043442142,
+              "res_1": "LYS",
+              "res_2": "GLU",
+              "seqnum_1": "651",
+              "seqnum_2": "546"
+            },
+            {
+              "atom_1": "OE1",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.8632416943,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "565",
+              "seqnum_2": "781"
+            },
+            {
+              "atom_1": "OE2",
+              "atom_2": "NZ",
+              "chain_1": "A",
+              "chain_2": "B",
+              "dist": 2.6920700214,
+              "res_1": "GLU",
+              "res_2": "LYS",
+              "seqnum_1": "565",
+              "seqnum_2": "781"
+            }
+          ],
+          "ss": []
+        },
+        "hb": 6,
+        "int_solv_en": -14.907997664,
+        "sb": 9,
+        "ss": 0
+      },
+      "sc": 0.463
+    }
+  ]
+}
