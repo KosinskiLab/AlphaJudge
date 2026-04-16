@@ -24,63 +24,21 @@ from .connolly import (
     mds as _connolly_mds,
 )
 from .pisa_radii import PISA_STANDARD_AA_RADII
+from .srs_chemistry import SRS_ATOM_HB_TYPES, SRS_NEIGHBOURS, SRS_STANDARD_AA
 
 # ---------------------------------------------------------------------------
 # PISA bond-detection constants (Krissinel & Henrick, J. Mol. Biol. 2007)
 # ---------------------------------------------------------------------------
 
-HB_MAX_DIST = 3.6   # Angstrom, calibrated against ccp4srs::CalcHBonds
+HB_MAX_DIST = 3.9   # Angstrom, ccp4srs::Chem::maxDAdist
 HB_MIN_DIST = 2.0   # Angstrom, CCP4 SRS accepts very short H-bonds in clashes
 SB_MAX_DIST = 4.0   # Angstrom, charged-atom pair
 SB_MIN_DIST = 2.0   # Angstrom, suppress severe atom clashes not reported by PISA
 SS_MAX_DIST = 2.3   # Angstrom, DSBondThresh in pisa_interface.cpp
 PISA_PROBE_RADIUS = 1.4  # Angstrom, default solvent probe in pisa_prosurf.cpp
 PISA_CODE_NO = 36        # default spherical code size in pisa_prosurf.cpp
-HB_DONOR_ANGLE_MIN = 90.0
-HB_ACCEPTOR_ANGLE_MIN = 90.0
-
-# Residue-specific donor/acceptor atom names (heavy atoms only; hydrogens
-# optional). Backbone N is donor and backbone O is acceptor for all standard
-# amino acids - added automatically in _atom_is_donor / _atom_is_acceptor.
-_SIDECHAIN_DONORS = {
-    "ARG": {"NE", "NH1", "NH2"},
-    "LYS": {"NZ"},
-    "HIS": {"ND1", "NE2"},
-    "ASN": {"ND2"},
-    "GLN": {"NE2"},
-    "TRP": {"NE1"},
-    "SER": {"OG"},
-    "THR": {"OG1"},
-    "TYR": {"OH"},
-    "CYS": {"SG"},
-}
-_SIDECHAIN_ACCEPTORS = {
-    "ASP": {"OD1", "OD2"},
-    "GLU": {"OE1", "OE2"},
-    "ASN": {"OD1"},
-    "GLN": {"OE1"},
-    "HIS": {"ND1", "NE2"},
-    "SER": {"OG"},
-    "THR": {"OG1"},
-    "TYR": {"OH"},
-    "CYS": {"SG"},
-    "MET": {"SD"},
-}
-
-_POS_CHARGED = {
-    "ARG": {"NE", "NH1", "NH2"},
-    "LYS": {"NZ"},
-    "HIS": {"ND1", "NE2"},
-}
-_NEG_CHARGED = {
-    "ASP": {"OD1", "OD2"},
-    "GLU": {"OE1", "OE2"},
-}
-
-_STANDARD_AA = {
-    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
-    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
-}
+HB_MAX_HA_DIST2 = 2.5 * 2.5
+HB_MAX_COSINE = 0.0  # equivalent to all ccp4srs h-bond angle thresholds of 90 deg
 
 _PISA_ELEMENT_RADII = {
     "H": 1.20,
@@ -96,75 +54,20 @@ _PISA_ELEMENT_RADII = {
     "I": 1.98,
 }
 
-_STANDARD_BONDS = {
-    "ALA": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB")),
-    "ARG": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD"), ("CD", "NE"), ("NE", "CZ"), ("CZ", "NH1"), ("CZ", "NH2")),
-    "ASN": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "OD1"), ("CG", "ND2")),
-    "ASP": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "OD1"), ("CG", "OD2")),
-    "CYS": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "SG")),
-    "GLN": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD"), ("CD", "OE1"), ("CD", "NE2")),
-    "GLU": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD"), ("CD", "OE1"), ("CD", "OE2")),
-    "GLY": (("N", "CA"), ("CA", "C"), ("C", "O")),
-    "HIS": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "ND1"), ("ND1", "CE1"), ("CE1", "NE2"), ("NE2", "CD2"),
-            ("CD2", "CG")),
-    "ILE": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG1"),
-            ("CG1", "CD1"), ("CB", "CG2")),
-    "LEU": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD1"), ("CG", "CD2")),
-    "LYS": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD"), ("CD", "CE"), ("CE", "NZ")),
-    "MET": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "SD"), ("SD", "CE")),
-    "PHE": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD1"), ("CD1", "CE1"), ("CE1", "CZ"), ("CZ", "CE2"),
-            ("CE2", "CD2"), ("CD2", "CG")),
-    "PRO": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD"), ("CD", "N")),
-    "SER": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "OG")),
-    "THR": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "OG1"),
-            ("CB", "CG2")),
-    "TRP": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD1"), ("CD1", "NE1"), ("NE1", "CE2"), ("CE2", "CD2"),
-            ("CD2", "CG"), ("CE2", "CZ2"), ("CZ2", "CH2"), ("CH2", "CZ3"),
-            ("CZ3", "CE3"), ("CE3", "CD2")),
-    "TYR": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG"),
-            ("CG", "CD1"), ("CD1", "CE1"), ("CE1", "CZ"), ("CZ", "OH"),
-            ("CZ", "CE2"), ("CE2", "CD2"), ("CD2", "CG")),
-    "VAL": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB"), ("CB", "CG1"),
-            ("CB", "CG2")),
-}
-
-
-def _bond_neighbours() -> dict[str, dict[str, set[str]]]:
-    neighbours: dict[str, dict[str, set[str]]] = {}
-    for resname, bonds in _STANDARD_BONDS.items():
-        residue_neighbours: dict[str, set[str]] = {}
-        for atom1, atom2 in bonds:
-            residue_neighbours.setdefault(atom1, set()).add(atom2)
-            residue_neighbours.setdefault(atom2, set()).add(atom1)
-        neighbours[resname] = residue_neighbours
-    return neighbours
-
-
-_STANDARD_NEIGHBOURS = _bond_neighbours()
+def _srs_hb_type(resname: str, atom_name: str) -> str:
+    return SRS_ATOM_HB_TYPES.get(resname, {}).get(atom_name, "N")
 
 
 def _atom_is_donor(resname: str, atom_name: str) -> bool:
-    if resname in _STANDARD_AA and atom_name == "N" and resname != "PRO":
-        return True
-    return atom_name in _SIDECHAIN_DONORS.get(resname, ())
+    return _srs_hb_type(resname, atom_name) in {"D", "B"}
 
 
 def _atom_is_acceptor(resname: str, atom_name: str) -> bool:
-    if resname in _STANDARD_AA and atom_name == "O":
-        return True
-    return atom_name in _SIDECHAIN_ACCEPTORS.get(resname, ())
+    return _srs_hb_type(resname, atom_name) in {"A", "B"}
+
+
+def _atom_is_hydrogen_candidate(resname: str, atom_name: str) -> bool:
+    return _srs_hb_type(resname, atom_name) == "H"
 
 
 def _collect_atoms(residues: Iterable) -> Tuple[List, np.ndarray, List[str], List[str]]:
@@ -256,24 +159,45 @@ def _pisa_spherical_code(code_no: int = PISA_CODE_NO) -> Tuple[np.ndarray, np.nd
     return np.asarray(points, dtype=float), np.asarray(areas, dtype=float)
 
 
-def buried_surface_area(
+_PISA_INTERFACE_CACHE: dict[tuple, tuple[float, frozenset[int], frozenset[int]]] = {}
+
+
+def _interface_cache_key(residues1, residues2, probe_radius: float, code_no: int) -> tuple:
+    return (
+        tuple(id(residue) for residue in residues1),
+        tuple(id(residue) for residue in residues2),
+        float(probe_radius),
+        int(code_no),
+    )
+
+
+def _pisa_interface_result(
     residues1,
     residues2,
     probe_radius: float = PISA_PROBE_RADIUS,
     code_no: int = PISA_CODE_NO,
-) -> float:
+) -> tuple[float, frozenset[int], frozenset[int]]:
     """
-    PISA-style interface area in Angstrom^2.
+    PISA ProSurf interface area plus residue selections.
 
-    This is a direct Python port of the area logic in ProSurf::calcInterface:
-    each atom receives a spherical code, code segments accessible in the atom's
-    own molecule but covered by the opposing molecule are summed, and PISA's
-    reported interface area is (area_side_1 + area_side_2) / 2.
+    ProSurf selects atoms with nonzero interface area into ``selHndInt1/2``.
+    PISA later expands those atom selections to residues before calling
+    ccp4srs::CalcHBonds.  Keeping the selected residue ids here lets area and
+    bond scoring share the same source of truth.
     """
-    coords1, radii1, _ = _collect_surface_atoms_with_residues(residues1)
-    coords2, radii2, _ = _collect_surface_atoms_with_residues(residues2)
+    residues1 = tuple(residues1)
+    residues2 = tuple(residues2)
+    key = _interface_cache_key(residues1, residues2, probe_radius, code_no)
+    cached = _PISA_INTERFACE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    coords1, radii1, atom_residues1 = _collect_surface_atoms_with_residues(residues1)
+    coords2, radii2, atom_residues2 = _collect_surface_atoms_with_residues(residues2)
     if len(coords1) == 0 or len(coords2) == 0:
-        return 0.0
+        result = (0.0, frozenset(), frozenset())
+        _PISA_INTERFACE_CACHE[key] = result
+        return result
 
     code_points, code_areas = _pisa_spherical_code(code_no)
     radii1 = radii1 + float(probe_radius)
@@ -292,8 +216,10 @@ def buried_surface_area(
         other_radii: np.ndarray,
         other_tree: cKDTree,
         other_max_radius: float,
-    ) -> float:
+        own_atom_residues: list,
+    ) -> tuple[float, frozenset[int]]:
         area = 0.0
+        interface_residue_ids: set[int] = set()
         own_max_radius = float(np.max(own_radii))
         for i, coord in enumerate(own_coords):
             ri = float(own_radii[i])
@@ -331,13 +257,52 @@ def buried_surface_area(
                 if not other_mask.any():
                     break
 
-            area += float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
-        return area
+            atom_interface_area = float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
+            area += atom_interface_area
+            if atom_interface_area > 0.0:
+                interface_residue_ids.add(id(own_atom_residues[i]))
+        return area, frozenset(interface_residue_ids)
 
-    int_area1 = side_area(coords1, radii1, tree1, coords2, radii2, tree2, max_r2)
-    int_area2 = side_area(coords2, radii2, tree2, coords1, radii1, tree1, max_r1)
+    int_area1, int_residue_ids1 = side_area(
+        coords1, radii1, tree1, coords2, radii2, tree2, max_r2, atom_residues1
+    )
+    int_area2, int_residue_ids2 = side_area(
+        coords2, radii2, tree2, coords1, radii1, tree1, max_r1, atom_residues2
+    )
 
-    return float((int_area1 + int_area2) / 2.0)
+    result = (float((int_area1 + int_area2) / 2.0), int_residue_ids1, int_residue_ids2)
+    if len(_PISA_INTERFACE_CACHE) > 32:
+        _PISA_INTERFACE_CACHE.clear()
+    _PISA_INTERFACE_CACHE[key] = result
+    return result
+
+
+def _pisa_interface_residues(residues1, residues2) -> tuple[list, list]:
+    residues1 = list(residues1)
+    residues2 = list(residues2)
+    _, ids1, ids2 = _pisa_interface_result(residues1, residues2)
+    return (
+        [residue for residue in residues1 if id(residue) in ids1],
+        [residue for residue in residues2 if id(residue) in ids2],
+    )
+
+
+def buried_surface_area(
+    residues1,
+    residues2,
+    probe_radius: float = PISA_PROBE_RADIUS,
+    code_no: int = PISA_CODE_NO,
+) -> float:
+    """
+    PISA-style interface area in Angstrom^2.
+
+    This is a direct Python port of the area logic in ProSurf::calcInterface:
+    each atom receives a spherical code, code segments accessible in the atom's
+    own molecule but covered by the opposing molecule are summed, and PISA's
+    reported interface area is (area_side_1 + area_side_2) / 2.
+    """
+    area, _, _ = _pisa_interface_result(residues1, residues2, probe_radius, code_no)
+    return area
 
 
 # ---------------------------------------------------------------------------
@@ -494,52 +459,149 @@ def _atom_pair_key(atom1, atom2) -> Tuple[Tuple[str, str, str, str], Tuple[str, 
     return (key1, key2) if key1 <= key2 else (key2, key1)
 
 
-def _angle_degrees(point1: np.ndarray, vertex: np.ndarray, point2: np.ndarray) -> float:
-    vec1 = point1 - vertex
-    vec2 = point2 - vertex
+def _cosine_at_vertex(vertex_atom, atom1, atom2) -> float:
+    """Cosine of the atom1-vertex-atom2 angle, matching mmdb::Atom::GetCosine."""
+    vec1 = atom1.coord - vertex_atom.coord
+    vec2 = atom2.coord - vertex_atom.coord
     norm1 = float(np.linalg.norm(vec1))
     norm2 = float(np.linalg.norm(vec2))
     if norm1 == 0.0 or norm2 == 0.0:
-        return 180.0
-    cosine = float(np.dot(vec1, vec2)) / (norm1 * norm2)
-    return float(math.degrees(math.acos(max(-1.0, min(1.0, cosine)))))
+        return -1.0
+    return float(np.dot(vec1, vec2)) / (norm1 * norm2)
 
 
 def _atom_by_name(residue) -> dict[str, object]:
     return {atom.id.strip().upper(): atom for atom in residue}
 
 
-def _max_bond_angle(pivot_atom, target_atom) -> float:
-    """Largest angle between a bonded heavy neighbour, pivot, and target."""
-    residue = pivot_atom.get_parent()
-    resname = residue.get_resname().strip().upper()
-    atom_name = pivot_atom.id.strip().upper()
-    neighbours = _STANDARD_NEIGHBOURS.get(resname, {}).get(atom_name, ())
+def _bonded_atoms(atom) -> list:
+    residue = atom.get_parent()
     residue_atoms = _atom_by_name(residue)
-    angles = [
-        _angle_degrees(residue_atoms[name].coord, pivot_atom.coord, target_atom.coord)
-        for name in neighbours
+    resname = residue.get_resname().strip().upper()
+    atom_name = atom.id.strip().upper()
+    return [
+        residue_atoms[name]
+        for name in SRS_NEIGHBOURS.get(resname, {}).get(atom_name, ())
         if name in residue_atoms
     ]
-    return max(angles, default=180.0)
+
+
+def _all_cosines_ok(vertex_atom, atom1, atoms2) -> bool:
+    return all(
+        _cosine_at_vertex(vertex_atom, atom1, atom2) <= HB_MAX_COSINE
+        for atom2 in atoms2
+    )
+
+
+def _standard_chain_residues(chain) -> list:
+    return [
+        residue for residue in chain
+        if residue.id[0] == " " and residue.get_resname().strip().upper() in SRS_STANDARD_AA
+    ]
+
+
+def _is_n_terminus(atom) -> bool:
+    residue = atom.get_parent()
+    if atom.id.strip().upper() != "N":
+        return False
+    residues = _standard_chain_residues(residue.get_parent())
+    return bool(residues) and residues[0] is residue
+
+
+def _is_c_terminus(atom) -> bool:
+    residue = atom.get_parent()
+    if atom.id.strip().upper() not in {"O", "OXT"}:
+        return False
+    residues = _standard_chain_residues(residue.get_parent())
+    return bool(residues) and residues[-1] is residue
+
+
+def _is_salt_bridge_pair(donor_atom, acceptor_atom) -> bool:
+    if donor_atom.get_parent() is acceptor_atom.get_parent():
+        return False
+    if _atom_element(donor_atom) != "N" or _atom_element(acceptor_atom) != "O":
+        return False
+
+    donor_resname = donor_atom.get_parent().get_resname().strip().upper()
+    donor_name = donor_atom.id.strip().upper()
+    if donor_name == "N":
+        donor_ok = _is_n_terminus(donor_atom)
+    else:
+        donor_ok = donor_resname in {"LYS", "ARG", "HIS"}
+    if not donor_ok:
+        return False
+
+    acceptor_resname = acceptor_atom.get_parent().get_resname().strip().upper()
+    acceptor_name = acceptor_atom.id.strip().upper()
+    if acceptor_name in {"O", "OXT"}:
+        return _is_c_terminus(acceptor_atom)
+    return acceptor_resname in {"GLU", "ASP"}
+
+
+def _hydrogen_bond_pairs_for_contact(donor_atom, acceptor_atom) -> list[tuple[object, object]]:
+    """Return the atom pairs ccp4srs would report for one D-A contact."""
+    acceptor_bonds = _bonded_atoms(acceptor_atom)
+    if not acceptor_bonds:
+        return []
+
+    donor_bonds = _bonded_atoms(donor_atom)
+    donor_hydrogens = [
+        atom for atom in donor_bonds
+        if (
+            atom.occupancy > 0.0
+            and _atom_is_hydrogen_candidate(
+                atom.get_parent().get_resname().strip().upper(),
+                atom.id.strip().upper(),
+            )
+        )
+    ]
+
+    if donor_hydrogens:
+        pairs = []
+        for hydrogen in donor_hydrogens:
+            ha_dist2 = float(np.dot(hydrogen.coord - acceptor_atom.coord, hydrogen.coord - acceptor_atom.coord))
+            if ha_dist2 >= HB_MAX_HA_DIST2:
+                continue
+            if _cosine_at_vertex(hydrogen, donor_atom, acceptor_atom) > HB_MAX_COSINE:
+                continue
+            if _all_cosines_ok(acceptor_atom, hydrogen, acceptor_bonds):
+                pairs.append((hydrogen, acceptor_atom))
+        return pairs
+
+    if not donor_bonds:
+        return []
+    if not _all_cosines_ok(donor_atom, acceptor_atom, donor_bonds):
+        return []
+    if not _all_cosines_ok(acceptor_atom, donor_atom, acceptor_bonds):
+        return []
+    return [(donor_atom, acceptor_atom)]
+
+
+def _donor_acceptor_contacts(residues1, residues2, max_dist: float):
+    donors1, d1 = _select_atom_coords(residues1, _atom_is_donor)
+    acceptors2, a2 = _select_atom_coords(residues2, _atom_is_acceptor)
+    donors2, d2 = _select_atom_coords(residues2, _atom_is_donor)
+    acceptors1, a1 = _select_atom_coords(residues1, _atom_is_acceptor)
+
+    for donor_atoms, donor_coords, acceptor_atoms, acceptor_coords in (
+        (donors1, d1, acceptors2, a2),
+        (donors2, d2, acceptors1, a1),
+    ):
+        if len(donor_coords) == 0 or len(acceptor_coords) == 0:
+            continue
+        tree = cKDTree(acceptor_coords)
+        for i, donor_coord in enumerate(donor_coords):
+            for j in tree.query_ball_point(donor_coord, max_dist):
+                dist = float(np.linalg.norm(donor_coord - acceptor_coords[j]))
+                if HB_MIN_DIST <= dist <= max_dist:
+                    yield donor_atoms[i], acceptor_atoms[j], dist
 
 
 def _salt_bridge_pairs(residues1, residues2) -> set[Tuple[Tuple[str, str, str, str], Tuple[str, str, str, str]]]:
-    pos = lambda rn, an: an in _POS_CHARGED.get(rn, ())
-    neg = lambda rn, an: an in _NEG_CHARGED.get(rn, ())
     pairs = set()
-    for atoms_a, pts_a, atoms_b, pts_b in (
-        (*_select_atom_coords(residues1, pos), *_select_atom_coords(residues2, neg)),
-        (*_select_atom_coords(residues2, pos), *_select_atom_coords(residues1, neg)),
-    ):
-        if len(pts_a) == 0 or len(pts_b) == 0:
-            continue
-        tree = cKDTree(pts_b)
-        for i, coord in enumerate(pts_a):
-            for j in tree.query_ball_point(coord, SB_MAX_DIST):
-                dist = float(np.linalg.norm(coord - pts_b[j]))
-                if SB_MIN_DIST <= dist <= SB_MAX_DIST:
-                    pairs.add(_atom_pair_key(atoms_a[i], atoms_b[j]))
+    for donor_atom, acceptor_atom, dist in _donor_acceptor_contacts(residues1, residues2, SB_MAX_DIST):
+        if SB_MIN_DIST <= dist <= SB_MAX_DIST and _is_salt_bridge_pair(donor_atom, acceptor_atom):
+            pairs.add(_atom_pair_key(donor_atom, acceptor_atom))
     return pairs
 
 
@@ -551,40 +613,24 @@ def hydrogen_bonds(residues1, residues2) -> int:
     monomer-bond angular filters, and removal of pairs that PISA reports as
     salt bridges rather than hydrogen bonds.
     """
-    donors1, d1 = _select_atom_coords(residues1, _atom_is_donor)
-    acceptors2, a2 = _select_atom_coords(residues2, _atom_is_acceptor)
-    donors2, d2 = _select_atom_coords(residues2, _atom_is_donor)
-    acceptors1, a1 = _select_atom_coords(residues1, _atom_is_acceptor)
+    residues1, residues2 = _pisa_interface_residues(residues1, residues2)
     salt_pairs = _salt_bridge_pairs(residues1, residues2)
     pairs: set[Tuple[Tuple[str, str, str, str], Tuple[str, str, str, str]]] = set()
 
-    for donor_atoms, donor_coords, acceptor_atoms, acceptor_coords in (
-        (donors1, d1, acceptors2, a2),
-        (donors2, d2, acceptors1, a1),
-    ):
-        if len(donor_coords) == 0 or len(acceptor_coords) == 0:
+    for donor_atom, acceptor_atom, dist in _donor_acceptor_contacts(residues1, residues2, HB_MAX_DIST):
+        if not (HB_MIN_DIST <= dist <= HB_MAX_DIST):
             continue
-        tree = cKDTree(acceptor_coords)
-        for i, donor_coord in enumerate(donor_coords):
-            donor_atom = donor_atoms[i]
-            for j in tree.query_ball_point(donor_coord, HB_MAX_DIST):
-                acceptor_atom = acceptor_atoms[j]
-                dist = float(np.linalg.norm(donor_coord - acceptor_coords[j]))
-                if not (HB_MIN_DIST <= dist <= HB_MAX_DIST):
-                    continue
-                pair_key = _atom_pair_key(donor_atom, acceptor_atom)
-                if pair_key in salt_pairs:
-                    continue
-                donor_angle = _max_bond_angle(donor_atom, acceptor_atom)
-                acceptor_angle = _max_bond_angle(acceptor_atom, donor_atom)
-                if donor_angle < HB_DONOR_ANGLE_MIN or acceptor_angle < HB_ACCEPTOR_ANGLE_MIN:
-                    continue
-                pairs.add(pair_key)
+        pair_key = _atom_pair_key(donor_atom, acceptor_atom)
+        if pair_key in salt_pairs:
+            continue
+        for atom1, atom2 in _hydrogen_bond_pairs_for_contact(donor_atom, acceptor_atom):
+            pairs.add(_atom_pair_key(atom1, atom2))
     return len(pairs)
 
 
 def salt_bridges(residues1, residues2) -> int:
     """Count PISA-style inter-chain salt bridges."""
+    residues1, residues2 = _pisa_interface_residues(residues1, residues2)
     return len(_salt_bridge_pairs(residues1, residues2))
 
 

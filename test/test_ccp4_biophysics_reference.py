@@ -43,10 +43,11 @@ def test_pisa_area_and_bond_counts_against_ccp4_reference(reference: dict):
     assert salt_bridges(residues1, residues2) == pisa["sb"]
     assert disulfide_bonds(residues1, residues2) == pisa["ss"]
 
-    # ccp4srs::CalcHBonds uses internal monomer geometry that is not distributed
-    # with AlphaJudge. The pure-Python chemistry filter is calibrated to the
-    # frozen CCP4 fixtures and must stay close while remaining dependency-free.
-    assert hydrogen_bonds(residues1, residues2) == pytest.approx(pisa["hb"], abs=4)
+    # The runtime path mirrors ccp4srs::CalcHBonds from embedded SRS monomer
+    # chemistry and PISA's ProSurf interface-residue selection. CCP4's binary
+    # still has a few reporting/chemistry edge cases not exposed in the source,
+    # so the regression window is intentionally tight but not exact for HB.
+    assert hydrogen_bonds(residues1, residues2) == pytest.approx(pisa["hb"], abs=2)
 
 
 @pytest.mark.skipif(

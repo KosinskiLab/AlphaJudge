@@ -29,9 +29,24 @@ END
 """
     )
 
-    assert hydrogen_bonds(residues_a, residues_b) == 1
+    assert hydrogen_bonds(residues_a, residues_b) == 0
     assert salt_bridges(residues_a, residues_b) == 1
     assert disulfide_bonds(residues_a, residues_b) == 1
+
+
+def test_ccp4srs_style_hbond_requires_monomer_bond_geometry():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CG  ASN A   1      -1.000   0.000   0.000  1.00 50.00           C
+ATOM      2  ND2 ASN A   1       0.000   0.000   0.000  1.00 50.00           N
+ATOM      3  O   ALA B   1       3.000   0.000   0.000  1.00 50.00           O
+ATOM      4  C   ALA B   1       4.000   0.000   0.000  1.00 50.00           C
+TER
+END
+"""
+    )
+
+    assert hydrogen_bonds(residues_a, residues_b) == 1
 
 
 def test_pisa_style_buried_surface_area_is_positive_for_contacting_atoms():
