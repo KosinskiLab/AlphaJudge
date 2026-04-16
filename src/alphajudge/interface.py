@@ -170,13 +170,6 @@ class Interface:
 
         a = _lis_dir(self._idx1, self._idx2)
         b = _lis_dir(self._idx2, self._idx1)
-
-        if math.isnan(a) and math.isnan(b):
-            return 0.0
-        if math.isnan(a):
-            return b
-        if math.isnan(b):
-            return a
         return float(0.5 * (a + b))
 
     @property
@@ -196,96 +189,6 @@ class Interface:
         if self.contact_pairs <= 0 or math.isnan(self._avg_plddt):
             return float("nan")
         return self._avg_plddt * math.log10(self.contact_pairs)
-
-    @cached_property
-    def _ns_all_atoms(self) -> NeighborSearch:
-        key = tuple(sorted((self._cid1_id, self._cid2_id)))
-        cached = self.c._all_atom_ns_cache.get(key)
-        if cached is None:
-            atoms = [a for r in (self.chain1 + self.chain2) for a in r]
-            cached = (atoms, NeighborSearch(atoms))
-            self.c._all_atom_ns_cache[key] = cached
-        return cached[1]
-
-    def _token_pair_distances(self, idx_src: np.ndarray, idx_dst: np.ndarray) -> np.ndarray:
-        """
-        Return squared representative-atom distances for all (src,dst) token pairs
-        in the same order as self._pae[np.ix_(idx_src, idx_dst)].ravel().
-        """
-        if idx_src.size == 0 or idx_dst.size == 0:
-            return np.empty((0,), dtype=float)
-
-        g1 = np.asarray(self.c._chain_indices_by_id.get(self._cid1_id, []), dtype=int)
-        g2 = np.asarray(self.c._chain_indices_by_id.get(self._cid2_id, []), dtype=int)
-        if g1.size == 0 or g2.size == 0:
-            return np.full((idx_src.size * idx_dst.size,), np.inf, dtype=float)
-
-        map1 = {int(g): i for i, g in enumerate(g1.tolist())}
-        map2 = {int(g): j for j, g in enumerate(g2.tolist())}
-
-        src_local = np.array([map1.get(int(g), -1) for g in idx_src.tolist()], dtype=int)
-        dst_local = np.array([map2.get(int(g), -1) for g in idx_dst.tolist()], dtype=int)
-
-        if np.any(src_local < 0) or np.any(dst_local < 0):
-            out = np.full((idx_src.size, idx_dst.size), np.inf, dtype=float)
-            good_i = np.where(src_local >= 0)[0]
-            good_j = np.where(dst_local >= 0)[0]
-            if good_i.size == 0 or good_j.size == 0:
-                return out.ravel()
-            src_good = src_local[good_i]
-            dst_good = dst_local[good_j]
-            dist2_full = self._token_dist2_matrix()
-            out[np.ix_(good_i, good_j)] = dist2_full[np.ix_(src_good, dst_good)]
-            return out.ravel()
-
-        dist2_full = self._token_dist2_matrix()
-        sub = dist2_full[np.ix_(src_local, dst_local)]
-        return sub.ravel()
-
-    def _token_dist2_matrix(self) -> np.ndarray:
-        """
-        Cached squared distance matrix between token residues of chain1 (rows)
-        and chain2 (cols), in local chain token order.
-        """
-        key_fwd = (self._cid1_id, self._cid2_id)
-        key_rev = (self._cid2_id, self._cid1_id)
-
-        cached = self.c._token_dist_cache.get(key_fwd)
-        if cached is not None:
-            return cached
-
-        cached_rev = self.c._token_dist_cache.get(key_rev)
-        if cached_rev is not None:
-            return cached_rev.T
-
-        ch_by_id = {ch.id: ch for ch in self.c._chains}
-        ch1 = ch_by_id.get(self._cid1_id)
-        ch2 = ch_by_id.get(self._cid2_id)
-        if ch1 is None or ch2 is None:
-            m = np.full((0, 0), np.inf, dtype=float)
-            self.c._token_dist_cache[key_fwd] = m
-            return m
-
-        coords1 = np.full((len(ch1), 3), np.nan, dtype=float)
-        coords2 = np.full((len(ch2), 3), np.nan, dtype=float)
-
-        for i, residue in enumerate(ch1):
-            try:
-                coords1[i] = representative_atom(residue).coord
-            except Exception:
-                pass
-        for j, residue in enumerate(ch2):
-            try:
-                coords2[j] = representative_atom(residue).coord
-            except Exception:
-                pass
-
-        diff = coords1[:, None, :] - coords2[None, :, :]
-        dist2 = np.sum(diff * diff, axis=2)
-        dist2[np.isnan(dist2)] = np.inf
-
-        self.c._token_dist_cache[key_fwd] = dist2
-        return dist2
 
     @cached_property
     def hb(self) -> int:
@@ -401,12 +304,6 @@ class Interface:
 
         a = calc(self._idx1, self._idx2)
         b = calc(self._idx2, self._idx1)
-        if math.isnan(a) and math.isnan(b):
-            return 0.0
-        if math.isnan(a):
-            return b
-        if math.isnan(b):
-            return a
         return max(a, b)
 
     def _frac(self, names: Set[str]) -> float:

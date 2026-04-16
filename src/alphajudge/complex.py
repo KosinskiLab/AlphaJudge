@@ -37,8 +37,6 @@ class Complex:
         self._res_index_map, self._chain_indices_by_id, self._chains = self._build_maps()
 
         self._contact_ns_cache: Dict[Tuple[str, str], Tuple[list, list, np.ndarray, np.ndarray]] = {}
-        self._all_atom_ns_cache: Dict[Tuple[str, str], Tuple[list, NeighborSearch]] = {}
-        self._token_dist_cache: Dict[Tuple[str, str], np.ndarray] = {}
 
         self.interfaces: List[Interface] = []
         for i in range(len(self._chains)):

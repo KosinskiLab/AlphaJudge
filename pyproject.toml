@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alphajudge"
-version = "0.3.0"
+version = "1.0.0"
 description = "Evaluate AlphaFold-predicted protein complexes using confidence metrics and interface biophysics."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
@@ -43,6 +43,8 @@ classifiers = [
 test = [
     "pytest",
     "pytest-cov",
+    "pytest-xdist",
+    "pytest-timeout",
 ]
 
 [project.scripts]
