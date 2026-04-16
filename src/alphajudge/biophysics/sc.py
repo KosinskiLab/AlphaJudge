@@ -45,10 +45,8 @@ def shape_complementarity(
     # SCASA filters side 1 against side 2, then side 2 against the filtered
     # side 1. This slightly asymmetric ordering matches its CLI/reference path.
     t2 = cKDTree(coords2)
-    mask1 = np.zeros(len(coords1), dtype=bool)
-    for i, c in enumerate(coords1):
-        if t2.query_ball_point(c, distance):
-            mask1[i] = True
+    neighbours1 = t2.query_ball_point(coords1, distance)
+    mask1 = np.fromiter((len(nbrs) > 0 for nbrs in neighbours1), dtype=bool, count=len(coords1))
 
     c1 = coords1[mask1]
     n1_rn = [rn1[i] for i in np.where(mask1)[0]]
@@ -57,10 +55,8 @@ def shape_complementarity(
         return 0.0
 
     t1_filtered = cKDTree(c1)
-    mask2 = np.zeros(len(coords2), dtype=bool)
-    for i, c in enumerate(coords2):
-        if t1_filtered.query_ball_point(c, distance):
-            mask2[i] = True
+    neighbours2 = t1_filtered.query_ball_point(coords2, distance)
+    mask2 = np.fromiter((len(nbrs) > 0 for nbrs in neighbours2), dtype=bool, count=len(coords2))
 
     c2 = coords2[mask2]
     n2_rn = [rn2[i] for i in np.where(mask2)[0]]
