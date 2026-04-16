@@ -11,10 +11,7 @@ and SCASA (Lawrence & Colman shape complementarity via Connolly surface).
 from __future__ import annotations
 
 import math
-import os
-import struct
 from functools import lru_cache
-from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import numpy as np
@@ -26,6 +23,7 @@ from .connolly import (
     get_radius,
     mds as _connolly_mds,
 )
+from .pisa_radii import PISA_STANDARD_AA_RADII
 
 # ---------------------------------------------------------------------------
 # PISA bond-detection constants (Krissinel & Henrick, J. Mol. Biol. 2007)
@@ -97,12 +95,6 @@ _PISA_ELEMENT_RADII = {
     "BR": 1.85,
     "I": 1.98,
 }
-
-_MOLREF_SEARCH_PATHS = (
-    Path(os.environ["ALPHAJUDGE_PISA_MOLREF"]) if "ALPHAJUDGE_PISA_MOLREF" in os.environ else None,
-    Path("/g/kosinski/dima/PycharmProjects/pisa/molref"),
-    Path(__file__).resolve().parents[4] / "pisa" / "molref",
-)
 
 _STANDARD_BONDS = {
     "ALA": (("N", "CA"), ("CA", "C"), ("C", "O"), ("CA", "CB")),
@@ -200,77 +192,12 @@ def _atom_element(atom) -> str:
     return name[0]
 
 
-def _clean_molref_string(raw: bytes) -> str:
-    return raw.decode("ascii", errors="ignore").replace("\0", "").strip()
-
-
-def _decode_mmdb_float(raw: bytes) -> float:
-    """Decode MMDB's 5-byte UniBin float used in PISA molref.rdt."""
-    # Constants from mmdb_mattype.cpp for UseDoubleFloat builds.
-    base = 256.0
-    power0 = 127
-    power4 = 130
-    powers = [0.0] * 256
-    powers[power0] = 1.0
-    for i in range(1, power0 + 1):
-        powers[power0 + i] = powers[power0 + i - 1] * base
-        powers[power0 - i] = powers[power0 - i + 1] / base
-
-    data = list(raw)
-    sign = bool(data[1] & 0x80)
-    data[1] &= 0x7F
-    value = float(data[1])
-    for j in range(2, 5):
-        value = value * base + float(data[j])
-    value = (value / powers[power4]) * powers[data[0]]
-    return -value if sign else value
-
-
-def _find_molref_dir() -> Path | None:
-    for candidate in _MOLREF_SEARCH_PATHS:
-        if candidate and (candidate / "molref.idx").exists() and (candidate / "molref.rdt").exists():
-            return candidate
-    return None
-
-
-@lru_cache(maxsize=1)
-def _pisa_molref_radii() -> dict[Tuple[str, str], float]:
-    """Read PISA's molref atom radii for standard residues when available."""
-    molref_dir = _find_molref_dir()
-    if molref_dir is None:
-        return {}
-
-    idx = (molref_dir / "molref.idx").read_bytes()
-    data = (molref_dir / "molref.rdt").read_bytes()
-    n_entries = struct.unpack_from("<i", idx, 0)[0]
-    offsets: dict[str, int] = {}
-    for i in range(n_entries):
-        offset = 4 + i * 16
-        residue_name = _clean_molref_string(idx[offset:offset + 4])
-        data_offset = struct.unpack_from("<i", idx, offset + 12)[0]
-        offsets[residue_name] = data_offset
-
-    radii: dict[Tuple[str, str], float] = {}
-    for residue_name in _STANDARD_AA:
-        offset = offsets.get(residue_name)
-        if offset is None:
-            continue
-        atom_count = struct.unpack_from("<i", data, offset + 16)[0]
-        atom_offset = offset + 20
-        for _ in range(atom_count):
-            atom_name = _clean_molref_string(data[atom_offset:atom_offset + 5])
-            radius = _decode_mmdb_float(data[atom_offset + 10:atom_offset + 15])
-            radii[(residue_name, atom_name)] = radius
-            atom_offset += 29
-    return radii
-
-
 def _pisa_radius(atom) -> float:
     """PISA-style VdW radius used by ProSurf for SAS calculations."""
     residue = atom.get_parent()
     resname = residue.get_resname().strip().upper()
     atom_name = atom.id.strip().upper()
-    molref_radius = _pisa_molref_radii().get((resname, atom_name))
+    molref_radius = PISA_STANDARD_AA_RADII.get(resname, {}).get(atom_name)
     if molref_radius is not None:
         return molref_radius
 
