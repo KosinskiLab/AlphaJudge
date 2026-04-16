@@ -39,6 +39,12 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
 [project.scripts]
 alphajudge = "alphajudge.cli:main"
 
@@ -46,3 +52,24 @@ alphajudge = "alphajudge.cli:main"
 Homepage = "https://github.com/KosinskiLab/AlphaJudge"
 Repository = "https://github.com/KosinskiLab/AlphaJudge"
 Issues = "https://github.com/KosinskiLab/AlphaJudge/issues"
+
+[tool.coverage.run]
+source = ["src/alphajudge"]
+branch = true
+parallel = true
+
+[tool.coverage.paths]
+source = [
+    "src/alphajudge",
+    "*/site-packages/alphajudge",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
