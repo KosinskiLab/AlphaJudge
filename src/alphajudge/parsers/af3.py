@@ -25,8 +25,7 @@ class AF3Parser(BaseParser):
             iptm = self._safe_float(summary.get("iptm"))
             ptm  = self._safe_float(summary.get("ptm"))
             ranking_score = self._safe_float(summary.get("ranking_score"))
-            if iptm is not None and ptm is not None:
-                iptm_ptm = 0.2 * ptm + 0.8 * iptm
+            iptm_ptm = 0.2 * ptm + 0.8 * iptm if (iptm is not None and ptm is not None) else None
 
             chain_pair_iptm_raw = summary.get("chain_pair_iptm")
             chain_pair_iptm = None

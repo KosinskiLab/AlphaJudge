@@ -28,8 +28,14 @@ jobs:
           pip install -e ".[test]"
 
       - name: Run tests with coverage
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+          OMP_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          NUMEXPR_NUM_THREADS: "1"
         run: |
           pytest test/ \
+            -n auto --timeout=900 \
             --cov=src/alphajudge \
             --cov-report=term \
             --cov-report=xml:coverage.xml \
