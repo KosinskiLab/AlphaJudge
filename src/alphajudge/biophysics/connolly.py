@@ -17,13 +17,15 @@ Reference:
 """
 
 import math
+from functools import lru_cache
+
 import numpy as np
 from scipy.spatial import cKDTree
 
 # CCP4 SC defaults (from defaults.fh)
-PROBE_RADIUS    = 1.7    # Å
-DOT_DENSITY     = 15.0   # dots per Å²
-BURIED_FLAG     = 1
+PROBE_RADIUS = 1.7
+DOT_DENSITY = 15.0
+BURIED_FLAG = 1
 ACCESSIBLE_FLAG = 0
 
 # ---------------------------------------------------------------------------
@@ -39,7 +41,6 @@ ACCESSIBLE_FLAG = 0
 # ---------------------------------------------------------------------------
 
 _SC_RADII_TABLE = [
-    # Wildcards first (lowest priority)
     ("***", "H",    0.50),
     ("***", "H*",   0.50),
     ("***", "H**",  0.50),
@@ -53,7 +54,6 @@ _SC_RADII_TABLE = [
     ("***", "OXT",  1.60),
     ("***", "S*",   1.90),
     ("***", "P",    1.80),
-    # Residue-specific overrides (higher priority)
     ("ALA", "CB",   1.95),
     ("ARG", "NH*",  1.70),
     ("ARG", "CZ",   1.80),
@@ -122,134 +122,285 @@ _SC_RADII_TABLE = [
     ("WAT", "O*",   1.70),
 ]
 
-# Pre-build a lookup cache: (residue, atom) -> radius
-# Uses the same priority logic as the Fortran: later matches overwrite earlier ones.
-# Wildcard residue "***" matches anything; atom pattern ending in "*" is a prefix match.
-
-def _build_radii_cache():
-    """Build a (residue, atom) -> radius lookup applying Fortran priority rules."""
-    cache = {}
-    return cache  # populated lazily in get_radius()
-
-_RADII_CACHE = {}
 
 def _sc_match_atom(atom_name, pattern):
     """
     Match atom_name against pattern, where trailing '*' is a prefix wildcard.
     Mirrors the Fortran match() function.
     """
-    atom = atom_name.strip().upper()
-    pat  = pattern.strip().upper()
-    if pat == "*":
+    if pattern == "*":
         return True
-    star = pat.find("*")
+    star = pattern.find("*")
     if star == -1:
-        return atom == pat
-    # prefix match up to the first '*'
-    return atom.startswith(pat[:star])
+        return atom_name == pattern
+    return atom_name.startswith(pattern[:star])
 
 
+@lru_cache(maxsize=None)
 def get_radius(residue_name, atom_name):
     """
-    Look up the CCP4 sc_radii radius for a given residue/atom pair.
-    Applies the same priority scheme as the Fortran: iterate through the table
-    in order; later matches overwrite earlier ones (so specific residue entries
-    correctly override wildcards).
-
-    :param residue_name: str, PDB residue name (3-letter code, e.g. 'ALA')
-    :param atom_name:    str, PDB atom name (e.g. 'CA', 'OD1')
-    :return: float, radius in Å
+    Look up the CCP4 sc_radii radius for a (residue, atom) pair. Later entries
+    in `_SC_RADII_TABLE` overwrite earlier ones, matching the Fortran priority.
     """
-    res  = residue_name.strip().upper()
+    res = residue_name.strip().upper()
     atom = atom_name.strip().upper()
-    key  = (res, atom)
-    if key in _RADII_CACHE:
-        return _RADII_CACHE[key]
 
-    radius = 1.80  # fallback default
-    for (res_pat, atom_pat, r) in _SC_RADII_TABLE:
-        res_match  = (res_pat == "***") or (res_pat.upper() == res)
-        atom_match = _sc_match_atom(atom, atom_pat)
-        if res_match and atom_match:
-            radius = r  # later entries overwrite — same as Fortran
-
-    _RADII_CACHE[key] = radius
+    radius = 1.80
+    for res_pat, atom_pat, r in _SC_RADII_TABLE:
+        if (res_pat == "***" or res_pat.upper() == res) and _sc_match_atom(atom, atom_pat.upper()):
+            radius = r
     return radius
 
 
 # ---------------------------------------------------------------------------
-# Vector helpers (mirrors the Fortran elementary subroutines)
+# Vector helpers
 # ---------------------------------------------------------------------------
 
-def _dot(a, b):      return float(np.dot(a, b))
-def _cross(a, b):    return np.cross(a, b)
+def _dot(a, b):
+    return float(np.dot(a, b))
+
+
+def _cross(a, b):
+    # np.cross has high dispatch overhead for the many scalar 3-vector calls in
+    # the Connolly loops. Keep this helper explicit and local to the 3D case.
+    return np.array(
+        (
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ),
+        dtype=float,
+    )
+
+
 def _dis2(a, b):
-    d = a - b; return float(np.dot(d, d))
-def _dis(a, b):      return math.sqrt(max(0.0, _dis2(a, b)))
+    d = a - b
+    return float(np.dot(d, d))
+
+
+def _dis(a, b):
+    return math.sqrt(max(0.0, _dis2(a, b)))
+
+
 def _norm(a):
     n = math.sqrt(float(np.dot(a, a)))
-    if n <= 0.0: raise ValueError("zero vector in _norm")
+    if n <= 0.0:
+        raise ValueError("zero vector in _norm")
     return a / n
+
+
 def _disptl(cen, axis, pnt):
-    vec = pnt - cen; dt = _dot(vec, axis)
-    return math.sqrt(max(0.0, float(np.dot(vec, vec)) - dt*dt))
+    vec = pnt - cen
+    dt = _dot(vec, axis)
+    return math.sqrt(max(0.0, float(np.dot(vec, vec)) - dt * dt))
 
 
 # ---------------------------------------------------------------------------
-# Subdivision helpers (mirrors subdiv / subarc / subcir)
+# Sampling helpers
 # ---------------------------------------------------------------------------
+
+def _empty_points():
+    return np.empty((0, 3), dtype=float)
+
 
 def _subdiv(cen, rad, x, y, angle, density):
-    if density <= 0 or rad <= 0 or angle <= 0: return [], 0.0
+    """
+    Sample points along an arc in the plane spanned by orthonormal x/y.
+
+    Returns
+    -------
+    points : (n, 3) ndarray
+    spacing : float
+        Arc length divided by number of returned points.
+
+    Notes
+    -----
+    This preserves the original Fortran/Python sampling phase offset:
+    points are placed at delta/2, 3*delta/2, 5*delta/2, ...
+    """
+    if density <= 0.0 or rad <= 0.0 or angle <= 0.0:
+        return _empty_points(), 0.0
+
     delta = 1.0 / (math.sqrt(density) * rad)
-    a = -delta / 2.0; pnts = []
-    while True:
-        a += delta
-        if a > angle: break
-        pnts.append(cen + rad*math.cos(a)*x + rad*math.sin(a)*y)
-    if not pnts: return [], 0.0
-    return pnts, rad * angle / len(pnts)
+    n_points = int(math.floor(angle / delta + 0.5))
+    if n_points <= 0:
+        return _empty_points(), 0.0
+
+    angles = delta * (0.5 + np.arange(n_points, dtype=float))
+    cos_a = np.cos(angles)[:, None]
+    sin_a = np.sin(angles)[:, None]
+    points = cen + rad * (cos_a * x + sin_a * y)
+    return points, (rad * angle / n_points)
+
 
 def _subarc(cen, rad, axis, density, x, v):
     y = _cross(axis, x)
     angle = math.atan2(_dot(v, y), _dot(v, x))
-    if angle < 0.0: angle += 2*math.pi
+    if angle < 0.0:
+        angle += 2.0 * math.pi
     return _subdiv(cen, rad, x, y, angle, density)
 
-def _subcir(cen, rad, axis, density):
-    v1 = np.array([axis[1]**2+axis[2]**2,
-                   axis[0]**2+axis[2]**2,
-                   axis[0]**2+axis[1]**2], dtype=float)
-    n = math.sqrt(float(np.dot(v1,v1)))
-    if n > 0: v1 /= n
-    if abs(_dot(v1, axis)) > 0.99: v1 = np.array([1.,0.,0.])
+
+def _axis_seed(axis):
+    axis = np.asarray(axis, dtype=float)
+    v1 = np.array(
+        [
+            axis[1] ** 2 + axis[2] ** 2,
+            axis[0] ** 2 + axis[2] ** 2,
+            axis[0] ** 2 + axis[1] ** 2,
+        ],
+        dtype=float,
+    )
+    n = math.sqrt(float(np.dot(v1, v1)))
+    if n > 0.0:
+        v1 /= n
+    if abs(_dot(v1, axis)) > 0.99:
+        v1 = np.array([1.0, 0.0, 0.0], dtype=float)
+    return v1
+
+
+def _basis_from_axis(axis):
+    axis = np.asarray(axis, dtype=float)
+    v1 = _axis_seed(axis)
     v2 = _norm(_cross(axis, v1))
-    x  = _norm(_cross(axis, v2))
-    y  = _cross(axis, x)
-    return _subdiv(cen, rad, x, y, 2.0*math.pi, density)
+    x = _norm(_cross(axis, v2))
+    y = _cross(axis, x)
+    return x, y
+
+
+def _equatorial_vector(axis):
+    return _norm(_cross(axis, _axis_seed(axis)))
+
+
+def _subcir(cen, rad, axis, density):
+    x, y = _basis_from_axis(axis)
+    return _subdiv(cen, rad, x, y, 2.0 * math.pi, density)
 
 
 # ---------------------------------------------------------------------------
-# Burial check
+# Occlusion / burial helpers
 # ---------------------------------------------------------------------------
 
-def _check_buried(pcen, atom_idx, burco, burrad_list, rp):
+def _points_outside_spheres(points, centers, radii2, chunk_size=256, inclusive=True):
+    """
+    Return a mask selecting points that are outside all blocker spheres.
+
+    Parameters
+    ----------
+    points : (n, 3) ndarray
+    centers : (m, 3) ndarray
+    radii2 : (m,) ndarray
+        Squared blocker radii.
+    inclusive : bool
+        If True, block on distance^2 <= radius^2.
+        If False, block on distance^2 < radius^2.
+    """
+    points = np.asarray(points, dtype=float)
+    if points.size == 0:
+        return np.zeros(0, dtype=bool)
+
+    centers = np.asarray(centers, dtype=float)
+    radii2 = np.asarray(radii2, dtype=float)
+
+    if centers.size == 0:
+        return np.ones(len(points), dtype=bool)
+
+    center_norms = np.einsum("ij,ij->i", centers, centers)
+    keep = np.ones(len(points), dtype=bool)
+
+    for start in range(0, len(points), chunk_size):
+        stop = min(start + chunk_size, len(points))
+        chunk = points[start:stop]
+        chunk_norms = np.einsum("ij,ij->i", chunk, chunk)
+        sqdist = chunk_norms[:, None] + center_norms[None, :] - 2.0 * (chunk @ centers.T)
+        if inclusive:
+            blocked = sqdist <= radii2[None, :]
+        else:
+            blocked = sqdist < radii2[None, :]
+        keep[start:stop] = ~blocked.any(axis=1)
+
+    return keep
+
+
+def _point_outside_spheres(point, centers, radii2, inclusive=True):
+    """Single-point fast path for `_points_outside_spheres`."""
+    if centers.size == 0:
+        return True
+    diff = centers - point
+    d2 = np.einsum("ij,ij->i", diff, diff)
+    if inclusive:
+        return bool(np.all(d2 > radii2))
+    return bool(np.all(d2 >= radii2))
+
+
+def _check_buried(pcen, atom_idx, burco, burrad2_with_probe):
     """
     A dot is buried (interface-facing) if its probe centre is within
     (burrad + rp) of any atom in the opposing molecule.
     """
-    for coord, r in zip(burco[atom_idx], burrad_list[atom_idx]):
-        if _dis2(pcen, coord) <= (r + rp)**2:
-            return True
-    return False
+    centers = burco[atom_idx]
+    if centers.size == 0:
+        return False
+
+    diff = centers - pcen
+    d2 = np.einsum("ij,ij->i", diff, diff)
+    return bool(np.any(d2 <= burrad2_with_probe[atom_idx]))
+
+
+def _check_buried_many(pcen, atom_indices, burco, burrad2_with_probe):
+    """
+    Vectorized form of `_check_buried` for many probe centres.
+
+    Probe centres are grouped by their supporting atom. That keeps the logic
+    identical to the scalar helper, but avoids thousands of tiny Python calls
+    in the convex-surface pass.
+    """
+    pcen = np.asarray(pcen, dtype=float)
+    atom_indices = np.asarray(atom_indices, dtype=int)
+    buried = np.zeros(len(pcen), dtype=bool)
+    if len(pcen) == 0:
+        return buried
+
+    for atom_idx in np.unique(atom_indices):
+        mask = atom_indices == atom_idx
+        centers = burco[atom_idx]
+        if centers.size == 0:
+            continue
+        radii2 = burrad2_with_probe[atom_idx]
+
+        # Keep the same arithmetic as `_check_buried` (`diff dot diff`) rather
+        # than the expanded distance formula used by `_points_outside_spheres`.
+        # Some Connolly dots lie exactly on sphere boundaries, so tiny
+        # round-off changes can flip ACCESSIBLE/BURIED labels.
+        pts = pcen[mask]
+        point_buried = np.zeros(len(pts), dtype=bool)
+        for start in range(0, len(pts), 256):
+            stop = min(start + 256, len(pts))
+            diff = pts[start:stop, None, :] - centers[None, :, :]
+            d2 = np.einsum("ijk,ijk->ij", diff, diff)
+            point_buried[start:stop] = np.any(d2 <= radii2[None, :], axis=1)
+        buried[mask] = point_buried
+    return buried
+
+
+# ---------------------------------------------------------------------------
+# Surface append helper
+# ---------------------------------------------------------------------------
+
+def _append_points(out_dots, out_normals, out_flags, out_mol, dots, normals, buried_mask, mol_label):
+    if len(dots) == 0:
+        return
+    out_dots.append(np.asarray(dots, dtype=float))
+    out_normals.append(np.asarray(normals, dtype=float))
+    out_flags.append(np.where(buried_mask, BURIED_FLAG, ACCESSIBLE_FLAG).astype(int, copy=False))
+    out_mol.append(np.full(len(dots), int(mol_label), dtype=int))
 
 
 # ---------------------------------------------------------------------------
 # Main Connolly surface generator
 # ---------------------------------------------------------------------------
 
-def mds(probe_radius, atoms, radii, mol, density=DOT_DENSITY,
-        residue_names=None):
+def mds(probe_radius, atoms, radii, mol, density=DOT_DENSITY, residue_names=None):
     """
     Generate a Connolly molecular dot surface.
 
@@ -270,55 +421,64 @@ def mds(probe_radius, atoms, radii, mol, density=DOT_DENSITY,
     flags    : np.array (M,) int  BURIED_FLAG or ACCESSIBLE_FLAG
     dot_mol  : np.array (M,) int  molecule label for each dot
     """
-    rp     = float(probe_radius)
-    natom  = len(atoms)
-    atoms  = np.asarray(atoms, dtype=float)
-    radii  = np.asarray(radii, dtype=float)
-    mol    = np.asarray(mol, dtype=int)
+    rp = float(probe_radius)
+    atoms = np.asarray(atoms, dtype=float)
+    radii = np.asarray(radii, dtype=float)
+    mol = np.asarray(mol, dtype=int)
 
-    out_dots, out_normals, out_flags, out_mol = [], [], [], []
+    natom = len(atoms)
+    if natom == 0:
+        return _empty_points(), _empty_points(), np.empty(0, dtype=int), np.empty(0, dtype=int)
 
-    burco       = [[] for _ in range(natom)]
-    burrad_list = [[] for _ in range(natom)]
-    access      = [False] * natom
-    probes      = []  # (pijk, uijk, hijk, i1, i2, i3)
-    same_neighbors = [[] for _ in range(natom)]
-    candidate_neighbors = [[] for _ in range(natom)]
-    max_radius = float(np.max(radii)) if natom else 0.0
-    atom_tree = cKDTree(atoms) if natom else None
+    eradii = radii + rp
+    atom_tree = cKDTree(atoms)
+    max_radius = float(np.max(radii))
 
+    out_dots = []
+    out_normals = []
+    out_flags = []
+    out_mol = []
+
+    burco = [_empty_points() for _ in range(natom)]
+    burrad2_with_probe = [np.empty(0, dtype=float) for _ in range(natom)]
+    access = np.zeros(natom, dtype=bool)
+    probes = []
+    same_neighbors = []
+    candidate_neighbors = []
+
+    for i1 in range(natom):
+        reach = float(radii[i1] + max_radius + 2.0 * rp)
+        candidates = np.asarray(atom_tree.query_ball_point(atoms[i1], reach), dtype=int)
+        candidate_neighbors.append(candidates)
+
+        same_mask = (candidates != i1) & (mol[candidates] == mol[i1])
+        same = candidates[same_mask]
+        if same.size:
+            bridge2 = (radii[i1] + radii[same] + 2.0 * rp) ** 2
+            diff = atoms[same] - atoms[i1]
+            d2 = np.einsum("ij,ij->i", diff, diff)
+            within = d2 < bridge2
+            same = same[within]
+            if same.size:
+                same = same[np.argsort(d2[within])]
+        same_neighbors.append(same)
+
+        other_mask = (candidates != i1) & (mol[candidates] != mol[i1])
+        other = candidates[other_mask]
+        if other.size:
+            bridge2 = (radii[i1] + radii[other] + 2.0 * rp) ** 2
+            diff = atoms[other] - atoms[i1]
+            d2 = np.einsum("ij,ij->i", diff, diff)
+            other = other[d2 < bridge2]
+        if other.size:
+            burco[i1] = atoms[other].copy()
+            burrad2_with_probe[i1] = (radii[other] + rp) ** 2
+
+    # ── First loop: build probes and toroidal surface ────────────────────────
     for i1 in range(natom):
         ri = float(radii[i1])
+        eri = float(eradii[i1])
         m1 = int(mol[i1])
-        candidates = atom_tree.query_ball_point(atoms[i1], ri + max_radius + 2.0 * rp)
-        candidate_neighbors[i1] = candidates
-        for i2 in candidates:
-            if i1 == i2:
-                continue
-            if int(mol[i2]) != m1:
-                continue
-            d2 = _dis2(atoms[i1], atoms[i2])
-            bridge = ri + float(radii[i2]) + 2 * rp
-            if d2 < bridge * bridge:
-                same_neighbors[i1].append(i2)
-        same_neighbors[i1].sort(key=lambda j: _dis2(atoms[i1], atoms[j]))
-
-    # ── First loop: build neighbours, probe positions, toroidal surface ───────
-    for i1 in range(natom):
-        ri  = float(radii[i1])
-        eri = ri + rp
-        m1  = int(mol[i1])
-
-        for i2 in candidate_neighbors[i1]:
-            if i1 == i2:
-                continue
-            if int(mol[i2]) == m1:
-                continue
-            d2 = _dis2(atoms[i1], atoms[i2])
-            bridge = ri + float(radii[i2]) + 2 * rp
-            if d2 < bridge * bridge:
-                burco[i1].append(atoms[i2].copy())
-                burrad_list[i1].append(float(radii[i2]))
 
         same_nbrs = same_neighbors[i1]
         nnbr = len(same_nbrs)
@@ -326,185 +486,336 @@ def mds(probe_radius, atoms, radii, mol, density=DOT_DENSITY,
             access[i1] = True
 
         for i2 in same_nbrs:
-            if i2 <= i1: continue
-            rj  = float(radii[i2]); erj = rj + rp
+            if i2 <= i1:
+                continue
+
+            rj = float(radii[i2])
+            erj = float(eradii[i2])
             dij = _dis(atoms[i1], atoms[i2])
             uij = (atoms[i2] - atoms[i1]) / dij
-            asymm   = (eri*eri - erj*erj) / dij
+            asymm = (eri * eri - erj * erj) / dij
             between = abs(asymm) < dij
-            tij = 0.5*(atoms[i1]+atoms[i2]) + 0.5*asymm*uij
-            far = (eri+erj)**2 - dij**2
-            if far <= 0: continue
-            contain = dij**2 - (ri-rj)**2
-            if contain <= 0: continue
-            rij = 0.5*math.sqrt(far)*math.sqrt(contain)/dij
+            tij = 0.5 * (atoms[i1] + atoms[i2]) + 0.5 * asymm * uij
+
+            far = (eri + erj) ** 2 - dij ** 2
+            if far <= 0.0:
+                continue
+            contain = dij ** 2 - (ri - rj) ** 2
+            if contain <= 0.0:
+                continue
+            rij = 0.5 * math.sqrt(far) * math.sqrt(contain) / dij
 
             if nnbr <= 1:
                 access[i1] = access[i2] = True
             else:
                 for i3 in same_nbrs:
-                    if i3 <= i2: continue
-                    rk = float(radii[i3]); erk = rk + rp
-                    if _dis(atoms[i2], atoms[i3]) >= erj+erk: continue
-                    dik = _dis(atoms[i1], atoms[i3])
-                    if dik >= eri+erk: continue
-                    uik = (atoms[i3] - atoms[i1]) / dik
-                    dt  = max(-1., min(1., _dot(uij, uik)))
-                    wijk = math.acos(dt)
-                    if wijk <= 0: continue
-                    swijk = math.sin(wijk)
-                    if swijk <= 0: continue
-                    uijk = _cross(uij, uik) / swijk
-                    utb  = _cross(uijk, uij)
-                    asymm_ik = (eri*eri - erk*erk) / dik
-                    tik  = 0.5*(atoms[i1]+atoms[i3]) + 0.5*asymm_ik*uik
-                    dt_p = _dot(uik, tik - tij)
-                    bijk = tij + utb*(dt_p/swijk)
-                    h2   = eri*eri - _dis2(bijk, atoms[i1])
-                    if h2 <= 0:
-                        dt2  = _dis2(tij, atoms[i3])
-                        if dt2 < erk*erk - rij*rij: break
+                    if i3 <= i2:
                         continue
+
+                    rk = float(radii[i3])
+                    erk = float(eradii[i3])
+
+                    if _dis(atoms[i2], atoms[i3]) >= erj + erk:
+                        continue
+                    dik = _dis(atoms[i1], atoms[i3])
+                    if dik >= eri + erk:
+                        continue
+
+                    uik = (atoms[i3] - atoms[i1]) / dik
+                    dt = float(np.clip(_dot(uij, uik), -1.0, 1.0))
+                    wijk = math.acos(dt)
+                    if wijk <= 0.0:
+                        continue
+
+                    swijk = math.sin(wijk)
+                    if swijk <= 0.0:
+                        continue
+
+                    uijk = _cross(uij, uik) / swijk
+                    utb = _cross(uijk, uij)
+
+                    asymm_ik = (eri * eri - erk * erk) / dik
+                    tik = 0.5 * (atoms[i1] + atoms[i3]) + 0.5 * asymm_ik * uik
+                    dt_p = _dot(uik, tik - tij)
+                    bijk = tij + utb * (dt_p / swijk)
+
+                    h2 = eri * eri - _dis2(bijk, atoms[i1])
+                    if h2 <= 0.0:
+                        dt2 = _dis2(tij, atoms[i3])
+                        if dt2 < erk * erk - rij * rij:
+                            break
+                        continue
+
                     hijk = math.sqrt(h2)
-                    for isign in [+1, -1]:
-                        pijk = bijk + isign*hijk*uijk
-                        if any(_dis2(pijk, atoms[i4]) <= (float(radii[i4])+rp)**2
-                               for i4 in same_nbrs if i4 != i2 and i4 != i3):
+                    blockers = np.array([i4 for i4 in same_nbrs if i4 != i2 and i4 != i3], dtype=int)
+                    blocker_centers = atoms[blockers] if blockers.size else _empty_points()
+                    blocker_radii2 = (eradii[blockers] ** 2) if blockers.size else np.empty(0, dtype=float)
+
+                    for isign in (1, -1):
+                        pijk = bijk + isign * hijk * uijk
+                        if blockers.size and not _point_outside_spheres(
+                            pijk,
+                            blocker_centers,
+                            blocker_radii2,
+                        ):
                             continue
-                        pi1_, pi2_, pi3_ = (i1,i2,i3) if isign>0 else (i2,i1,i3)
-                        probes.append((pijk.copy(), isign*uijk.copy(),
-                                       hijk, pi1_, pi2_, pi3_))
+
+                        pi1_, pi2_, pi3_ = (i1, i2, i3) if isign > 0 else (i2, i1, i3)
+                        probes.append((pijk.copy(), isign * uijk.copy(), hijk, pi1_, pi2_, pi3_))
                         access[i1] = access[i2] = access[i3] = True
 
             # Toroidal surface
-            rci = rij*ri/eri; rcj = rij*rj/erj
-            rb  = max(0., rij-rp)
-            edens = ((rci+2*rb+rcj)/4/rij)**2 * density
-            circ_pnts, ts = _subcir(tij, rij, uij, edens)
-            for pij in circ_pnts:
-                pij = np.array(pij)
-                if any(_dis2(pij, atoms[i4]) <= (float(radii[i4])+rp)**2
-                       for i4 in same_nbrs if i4 != i2):
+            rci = rij * ri / eri
+            rcj = rij * rj / erj
+            rb = max(0.0, rij - rp)
+            edens = ((rci + 2.0 * rb + rcj) / (4.0 * rij)) ** 2 * density
+
+            circ_pnts, _ = _subcir(tij, rij, uij, edens)
+            if len(circ_pnts) == 0:
+                continue
+
+            blockers = np.array([i4 for i4 in same_nbrs if i4 != i2], dtype=int)
+            if blockers.size:
+                keep = _points_outside_spheres(circ_pnts, atoms[blockers], eradii[blockers] ** 2)
+                circ_pnts = circ_pnts[keep]
+            if len(circ_pnts) == 0:
+                continue
+
+            access[i1] = access[i2] = True
+
+            pi_vecs = (atoms[i1] - circ_pnts) / eri
+            pj_vecs = (atoms[i2] - circ_pnts) / erj
+            axes = np.cross(pi_vecs, pj_vecs)
+            axis_norms = np.linalg.norm(axes, axis=1)
+            valid_axes = axis_norms > 0.0
+            if not np.any(valid_axes):
+                continue
+
+            circ_pnts = circ_pnts[valid_axes]
+            pi_vecs = pi_vecs[valid_axes]
+            pj_vecs = pj_vecs[valid_axes]
+            axes = axes[valid_axes] / axis_norms[valid_axes][:, None]
+
+            dtq = rp * rp - rij * rij
+            pcusp = dtq > 0.0 and between
+            if pcusp:
+                dtq_sqrt = math.sqrt(dtq)
+                pqi = (tij - dtq_sqrt * uij - circ_pnts) / rp
+                pqj = (tij + dtq_sqrt * uij - circ_pnts) / rp
+            else:
+                sum_vecs = pi_vecs + pj_vecs
+                sum_norms = np.linalg.norm(sum_vecs, axis=1)
+                valid_sum = sum_norms > 0.0
+                if not np.any(valid_sum):
                     continue
-                access[i1] = access[i2] = True
-                pi_v = (atoms[i1]-pij)/eri; pj_v = (atoms[i2]-pij)/erj
-                try:  axis = _norm(_cross(pi_v, pj_v))
-                except ValueError: continue
-                dtq   = rp*rp - rij*rij; pcusp = dtq > 0 and between
-                if pcusp:
-                    dtq = math.sqrt(dtq)
-                    pqi = (tij - dtq*uij - pij)/rp
-                    pqj = (tij + dtq*uij - pij)/rp
-                else:
-                    try: pqi = _norm(pi_v + pj_v)
-                    except ValueError: continue
-                    pqj = pqi.copy()
-                for (start_v, end_v, atom_i) in [(pi_v, pqi, i1), (pqj, pj_v, i2)]:
-                    dt_ = max(-1., min(1., _dot(start_v, end_v)))
-                    if abs(dt_) >= 1.: continue
-                    arc, ps = _subarc(pij, rp, axis, density, start_v, end_v)
-                    for pt in arc:
-                        pt = np.array(pt)
-                        outnml = (pij - pt) / rp
-                        buried = _check_buried(pij, atom_i, burco, burrad_list, rp)
-                        out_dots.append(pt); out_normals.append(outnml)
-                        out_flags.append(BURIED_FLAG if buried else ACCESSIBLE_FLAG)
-                        out_mol.append(m1)
+
+                circ_pnts = circ_pnts[valid_sum]
+                pi_vecs = pi_vecs[valid_sum]
+                pj_vecs = pj_vecs[valid_sum]
+                axes = axes[valid_sum]
+                pqi = sum_vecs[valid_sum] / sum_norms[valid_sum][:, None]
+                pqj = pqi.copy()
+
+            for half_index, (start_vecs, end_vecs, atom_i) in enumerate((
+                (pi_vecs, pqi, i1),
+                (pqj, pj_vecs, i2),
+            )):
+                # SCASA / CCP4 sc.f build burco[j] only when the outer atom
+                # loop reaches j, so at this point burco[i2] is still empty
+                # and the i2 half of the torus is always accessible in the
+                # reference. Mirror that here so flag output matches sc.f.
+                check_burial = half_index == 0
+                for center, axis, start_v, end_v in zip(circ_pnts, axes, start_vecs, end_vecs):
+                    dt = float(np.clip(_dot(start_v, end_v), -1.0, 1.0))
+                    if abs(dt) >= 1.0:
+                        continue
+
+                    arc, _ = _subarc(center, rp, axis, density, start_v, end_v)
+                    if len(arc) == 0:
+                        continue
+
+                    normals = (center - arc) / rp
+                    is_buried = (
+                        _check_buried(center, atom_i, burco, burrad2_with_probe)
+                        if check_burial
+                        else False
+                    )
+                    buried = np.full(len(arc), is_buried, dtype=bool)
+                    _append_points(out_dots, out_normals, out_flags, out_mol, arc, normals, buried, m1)
 
     # ── Concave (re-entrant) surface ──────────────────────────────────────────
-    low_idx    = [k for k, p in enumerate(probes) if p[2] < rp]
-    low_coords = [probes[k][0] for k in low_idx]
+    if probes:
+        probe_coords = np.asarray([p[0] for p in probes], dtype=float)
+        probe_heights = np.asarray([p[2] for p in probes], dtype=float)
+        low_mask = probe_heights < rp
+        low_idx = np.where(low_mask)[0]
+        low_coords = probe_coords[low_mask]
+    else:
+        low_idx = np.empty(0, dtype=int)
+        low_coords = _empty_points()
 
     for iprb, (pijk, uijk, hijk, i1, i2, i3) in enumerate(probes):
         m1 = int(mol[i1])
-        near_low = [c for k,c in zip(low_idx, low_coords)
-                    if k != iprb and _dis2(pijk, c) < 4*rp*rp] if hijk < rp else []
-        vp = [_norm(atoms[i] - pijk) for i in [i1, i2, i3]]
-        cv = [_norm(_cross(vp[0],vp[1])),
-              _norm(_cross(vp[1],vp[2])),
-              _norm(_cross(vp[2],vp[0]))]
-        dm, mm = -1., 0
+
+        if hijk < rp and len(low_coords):
+            near_mask = np.einsum("ij,ij->i", low_coords - pijk, low_coords - pijk) < (4.0 * rp * rp)
+            near_mask &= low_idx != iprb
+            near_low = low_coords[near_mask]
+        else:
+            near_low = _empty_points()
+
+        vp = [_norm(atoms[i] - pijk) for i in (i1, i2, i3)]
+        cv = [
+            _norm(_cross(vp[0], vp[1])),
+            _norm(_cross(vp[1], vp[2])),
+            _norm(_cross(vp[2], vp[0])),
+        ]
+
+        dm = -1.0
+        mm = 0
         for m_idx in range(3):
             dt = _dot(uijk, vp[m_idx])
-            if dt > dm: dm, mm = dt, m_idx
+            if dt > dm:
+                dm = dt
+                mm = m_idx
+
         south = -uijk
-        try: axis = _norm(_cross(vp[mm], south))
-        except ValueError: continue
-        lats, cs = _subarc(np.zeros(3), rp, axis, density, vp[mm], south)
+        try:
+            axis = _norm(_cross(vp[mm], south))
+        except ValueError:
+            continue
+
+        lats, _ = _subarc(np.zeros(3), rp, axis, density, vp[mm], south)
         for lat in lats:
-            lat = np.array(lat); dt = _dot(lat, south)
-            cen = dt*south; rad2 = rp*rp - dt*dt
-            if rad2 <= 0: continue
-            circle_pnts, ps = _subcir(cen, math.sqrt(rad2), south, density)
-            for pt_raw in circle_pnts:
-                pt_raw = np.array(pt_raw)
-                if any(_dot(pt_raw, cv_v) >= 0 for cv_v in cv): continue
-                pt = pijk + pt_raw
-                if any(_dis2(pt, c) < rp*rp for c in near_low): continue
-                mc, dmin_ = 0, 2*rp
-                for m_idx, i in enumerate([i1, i2, i3]):
-                    d = _dis(pt, atoms[i]) - float(radii[i])
-                    if d < dmin_: dmin_, mc = d, i
-                outnml = (pijk - pt) / rp
-                buried = _check_buried(pijk, mc, burco, burrad_list, rp)
-                out_dots.append(pt); out_normals.append(outnml)
-                out_flags.append(BURIED_FLAG if buried else ACCESSIBLE_FLAG)
-                out_mol.append(m1)
+            dt = _dot(lat, south)
+            cen = dt * south
+            rad2 = rp * rp - dt * dt
+            if rad2 <= 0.0:
+                continue
+
+            circle_pnts, _ = _subcir(cen, math.sqrt(rad2), south, density)
+            if len(circle_pnts) == 0:
+                continue
+
+            cv_dot = circle_pnts @ np.vstack(cv).T
+            valid = ~(cv_dot >= 0.0).any(axis=1)
+            circle_pnts = circle_pnts[valid]
+            if len(circle_pnts) == 0:
+                continue
+
+            pts = pijk + circle_pnts
+            if len(near_low):
+                keep = _points_outside_spheres(
+                    pts,
+                    near_low,
+                    np.full(len(near_low), rp * rp, dtype=float),
+                    inclusive=False,
+                )
+                pts = pts[keep]
+                circle_pnts = circle_pnts[keep]
+            if len(pts) == 0:
+                continue
+
+            support_idx = np.empty(len(pts), dtype=int)
+            support_atoms = (i1, i2, i3)
+            for j, pt in enumerate(pts):
+                mc = 0
+                dmin = 2.0 * rp
+                for atom_idx in support_atoms:
+                    d = _dis(pt, atoms[atom_idx]) - float(radii[atom_idx])
+                    if d < dmin:
+                        dmin = d
+                        mc = atom_idx
+                support_idx[j] = mc
+
+            normals = (pijk - pts) / rp
+            buried = np.array(
+                [_check_buried(pijk, atom_idx, burco, burrad2_with_probe) for atom_idx in support_idx],
+                dtype=bool,
+            )
+            _append_points(out_dots, out_normals, out_flags, out_mol, pts, normals, buried, m1)
 
     # ── Convex (contact) surface ──────────────────────────────────────────────
     for i1 in range(natom):
-        if not access[i1]: continue
-        ri = float(radii[i1]); eri = ri+rp; m1 = int(mol[i1])
+        if not access[i1]:
+            continue
+
+        ri = float(radii[i1])
+        eri = float(eradii[i1])
+        m1 = int(mol[i1])
         same_nbrs = same_neighbors[i1]
-        if not same_nbrs:
-            north = np.array([0.,0.,1.]); south = np.array([0.,0.,-1.])
-            eqvec = np.array([1.,0.,0.])
+
+        if len(same_nbrs) == 0:
+            north = np.array([0.0, 0.0, 1.0], dtype=float)
+            south = np.array([0.0, 0.0, -1.0], dtype=float)
+            eqvec = np.array([1.0, 0.0, 0.0], dtype=float)
         else:
-            i2 = same_nbrs[0]
+            i2 = int(same_nbrs[0])
             north = _norm(atoms[i1] - atoms[i2])
-            v1 = np.array([north[1]**2+north[2]**2,
-                           north[0]**2+north[2]**2,
-                           north[0]**2+north[1]**2])
-            n_ = math.sqrt(float(np.dot(v1,v1)))
-            if n_ > 0: v1 /= n_
-            if abs(_dot(v1, north)) > 0.99: v1 = np.array([1.,0.,0.])
-            eqvec = _norm(_cross(north, v1))
-            vql   = _cross(eqvec, north)
-            rj = float(radii[i2]); erj = rj+rp
+            eqvec = _equatorial_vector(north)
+            vql = _cross(eqvec, north)
+
+            rj = float(radii[i2])
+            erj = float(eradii[i2])
             dij = _dis(atoms[i1], atoms[i2])
-            uij = (atoms[i2]-atoms[i1])/dij
-            asymm = (eri*eri-erj*erj)/dij
-            tij   = 0.5*(atoms[i1]+atoms[i2]) + 0.5*asymm*uij
-            far   = (eri+erj)**2 - dij**2
-            if far <= 0: continue
-            cont  = dij**2 - (ri-rj)**2
-            if cont <= 0: continue
-            rij   = 0.5*math.sqrt(far)*math.sqrt(cont)/dij
-            south = (tij + rij*vql - atoms[i1]) / eri
-        lats, cs = _subarc(np.zeros(3), ri, eqvec, density, north, south)
+            uij = (atoms[i2] - atoms[i1]) / dij
+            asymm = (eri * eri - erj * erj) / dij
+            tij = 0.5 * (atoms[i1] + atoms[i2]) + 0.5 * asymm * uij
+
+            far = (eri + erj) ** 2 - dij ** 2
+            if far <= 0.0:
+                continue
+            contain = dij ** 2 - (ri - rj) ** 2
+            if contain <= 0.0:
+                continue
+            rij = 0.5 * math.sqrt(far) * math.sqrt(contain) / dij
+            south = (tij + rij * vql - atoms[i1]) / eri
+
+        lats, _ = _subarc(np.zeros(3), ri, eqvec, density, north, south)
         for lat in lats:
-            lat = np.array(lat); dt = _dot(lat, north)
-            cen = atoms[i1] + dt*north; rad2 = ri*ri - dt*dt
-            if rad2 <= 0: continue
-            circle_pnts, ps = _subcir(cen, math.sqrt(rad2), north, density)
-            for pt_raw in circle_pnts:
-                pt_raw = np.array(pt_raw)
-                pcen = atoms[i1] + (eri/ri)*(pt_raw - atoms[i1])
-                if any(_dis2(pcen, atoms[i4]) <= (float(radii[i4])+rp)**2
-                       for i4 in same_nbrs[1:]):
-                    continue
-                outnml = _norm(pt_raw - atoms[i1])
-                buried = _check_buried(pcen, i1, burco, burrad_list, rp)
-                out_dots.append(pt_raw); out_normals.append(outnml)
-                out_flags.append(BURIED_FLAG if buried else ACCESSIBLE_FLAG)
-                out_mol.append(m1)
+            dt = _dot(lat, north)
+            cen = atoms[i1] + dt * north
+            rad2 = ri * ri - dt * dt
+            if rad2 <= 0.0:
+                continue
+
+            circle_pnts, _ = _subcir(cen, math.sqrt(rad2), north, density)
+            if len(circle_pnts) == 0:
+                continue
+
+            pcen = atoms[i1] + (eri / ri) * (circle_pnts - atoms[i1])
+
+            blockers = same_nbrs[1:]
+            if len(blockers):
+                keep = _points_outside_spheres(pcen, atoms[blockers], eradii[blockers] ** 2)
+                circle_pnts = circle_pnts[keep]
+                pcen = pcen[keep]
+            if len(circle_pnts) == 0:
+                continue
+
+            normals = circle_pnts - atoms[i1]
+            normals /= np.linalg.norm(normals, axis=1)[:, None]
+
+            buried = np.zeros(len(circle_pnts), dtype=bool)
+            if burco[i1].size:
+                buried[:] = _check_buried_many(
+                    pcen,
+                    np.full(len(circle_pnts), i1, dtype=int),
+                    burco,
+                    burrad2_with_probe,
+                )
+
+            _append_points(out_dots, out_normals, out_flags, out_mol, circle_pnts, normals, buried, m1)
 
     if not out_dots:
-        return (np.empty((0,3)), np.empty((0,3)),
-                np.empty(0, dtype=int), np.empty(0, dtype=int))
+        return _empty_points(), _empty_points(), np.empty(0, dtype=int), np.empty(0, dtype=int)
 
-    return (np.array(out_dots), np.array(out_normals),
-            np.array(out_flags, dtype=int), np.array(out_mol, dtype=int))
+    return (
+        np.concatenate(out_dots, axis=0),
+        np.concatenate(out_normals, axis=0),
+        np.concatenate(out_flags, axis=0).astype(int, copy=False),
+        np.concatenate(out_mol, axis=0).astype(int, copy=False),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -516,14 +827,25 @@ def trim(dots, flags, band):
     Remove buried dots within `band` Å of any accessible dot on the same surface.
     Returns boolean mask — True = dot survives.
     """
-    from scipy.spatial import cKDTree
+    dots = np.asarray(dots, dtype=float)
+    flags = np.asarray(flags)
+
     buried_mask = flags == BURIED_FLAG
-    acc_mask    = flags == ACCESSIBLE_FLAG
-    if not acc_mask.any():
-        return buried_mask.copy()
-    acc_tree = cKDTree(dots[acc_mask])
+    acc_mask = flags == ACCESSIBLE_FLAG
+
     keep = np.zeros(len(dots), dtype=bool)
-    for i in np.where(buried_mask)[0]:
-        if len(acc_tree.query_ball_point(dots[i], band)) == 0:
-            keep[i] = True
+    if not buried_mask.any():
+        return keep
+    if not acc_mask.any():
+        keep[buried_mask] = True
+        return keep
+
+    acc_tree = cKDTree(dots[acc_mask])
+    buried_idx = np.flatnonzero(buried_mask)
+    neighbour_lists = acc_tree.query_ball_point(dots[buried_mask], band)
+    keep[buried_idx] = np.fromiter(
+        (len(nbrs) == 0 for nbrs in neighbour_lists),
+        dtype=bool,
+        count=len(neighbour_lists),
+    )
     return keep
