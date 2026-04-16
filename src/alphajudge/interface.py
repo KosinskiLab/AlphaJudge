@@ -11,6 +11,7 @@ from .biophysics import (
     buried_surface_area as _pisa_buried_surface_area,
     disulfide_bonds as _pisa_disulfide_bonds,
     hydrogen_bonds as _pisa_hydrogen_bonds,
+    interface_solvation_energy as _pisa_interface_solvation_energy,
     salt_bridges as _pisa_salt_bridges,
     shape_complementarity as _scasa_sc,
 )
@@ -308,7 +309,7 @@ class Interface:
 
     @cached_property
     def int_solv_en(self) -> float:
-        return -0.0072 * self.int_area
+        return _pisa_interface_solvation_energy(self.chain1, self.chain2)
 
     def _get_pairs(self):
         res_pairs: Set[Tuple[Any, Any]] = set()

@@ -11,6 +11,7 @@ and SCASA (Lawrence & Colman shape complementarity via Connolly surface).
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable, List, Tuple
 
@@ -23,7 +24,7 @@ from .connolly import (
     get_radius,
     mds as _connolly_mds,
 )
-from .pisa_radii import PISA_STANDARD_AA_RADII
+from .pisa_radii import PISA_ASP_PARAMETERS, PISA_STANDARD_AA_MOLREF, PISA_STANDARD_AA_RADII
 from .srs_chemistry import SRS_ATOM_HB_TYPES, SRS_NEIGHBOURS, SRS_STANDARD_AA
 
 # ---------------------------------------------------------------------------
@@ -39,6 +40,11 @@ PISA_PROBE_RADIUS = 1.4  # Angstrom, default solvent probe in pisa_prosurf.cpp
 PISA_CODE_NO = 36        # default spherical code size in pisa_prosurf.cpp
 HB_MAX_HA_DIST2 = 2.5 * 2.5
 HB_MAX_COSINE = 0.0  # equivalent to all ccp4srs h-bond angle thresholds of 90 deg
+ASP_SPECIAL = -2
+ASP_CHARGED_N = 4
+ASP_CHARGED_O = 5
+ASP_NEUTRAL_NO = 3
+ASP_OTHER = 0
 
 _PISA_ELEMENT_RADII = {
     "H": 1.20,
@@ -110,8 +116,8 @@ def _pisa_radius(atom) -> float:
     return get_radius(resname, atom_name)
 
 
-def _collect_surface_atoms_with_residues(residues: Iterable) -> Tuple[np.ndarray, np.ndarray, List]:
-    coords, radii, atom_residues = [], [], []
+def _collect_surface_atoms_with_residues(residues: Iterable) -> Tuple[np.ndarray, np.ndarray, List, List]:
+    coords, radii, atom_residues, atoms = [], [], [], []
     for residue in residues:
         for atom in residue:
             if _atom_element(atom) == "H":
@@ -119,9 +125,10 @@ def _collect_surface_atoms_with_residues(residues: Iterable) -> Tuple[np.ndarray
             coords.append(atom.coord)
             radii.append(_pisa_radius(atom))
             atom_residues.append(residue)
+            atoms.append(atom)
     if not coords:
-        return np.empty((0, 3), dtype=float), np.empty(0, dtype=float), []
-    return np.asarray(coords, dtype=float), np.asarray(radii, dtype=float), atom_residues
+        return np.empty((0, 3), dtype=float), np.empty(0, dtype=float), [], []
+    return np.asarray(coords, dtype=float), np.asarray(radii, dtype=float), atom_residues, atoms
 
 
 def _mround(value: float) -> int:
@@ -159,7 +166,20 @@ def _pisa_spherical_code(code_no: int = PISA_CODE_NO) -> Tuple[np.ndarray, np.nd
     return np.asarray(points, dtype=float), np.asarray(areas, dtype=float)
 
 
-_PISA_INTERFACE_CACHE: dict[tuple, tuple[float, frozenset[int], frozenset[int]]] = {}
+@dataclass(frozen=True)
+class _PisaInterfaceResult:
+    area: float
+    residue_ids1: frozenset[int]
+    residue_ids2: frozenset[int]
+    atoms1: tuple
+    atom_sas1: tuple[float, ...]
+    atom_int_sas1: tuple[float, ...]
+    atoms2: tuple
+    atom_sas2: tuple[float, ...]
+    atom_int_sas2: tuple[float, ...]
+
+
+_PISA_INTERFACE_CACHE: dict[tuple, _PisaInterfaceResult] = {}
 
 
 def _interface_cache_key(residues1, residues2, probe_radius: float, code_no: int) -> tuple:
@@ -176,7 +196,7 @@ def _pisa_interface_result(
     residues2,
     probe_radius: float = PISA_PROBE_RADIUS,
     code_no: int = PISA_CODE_NO,
-) -> tuple[float, frozenset[int], frozenset[int]]:
+) -> _PisaInterfaceResult:
     """
     PISA ProSurf interface area plus residue selections.
 
@@ -192,10 +212,20 @@ def _pisa_interface_result(
     if cached is not None:
         return cached
 
-    coords1, radii1, atom_residues1 = _collect_surface_atoms_with_residues(residues1)
-    coords2, radii2, atom_residues2 = _collect_surface_atoms_with_residues(residues2)
+    coords1, radii1, atom_residues1, atoms1 = _collect_surface_atoms_with_residues(residues1)
+    coords2, radii2, atom_residues2, atoms2 = _collect_surface_atoms_with_residues(residues2)
     if len(coords1) == 0 or len(coords2) == 0:
-        result = (0.0, frozenset(), frozenset())
+        result = _PisaInterfaceResult(
+            0.0,
+            frozenset(),
+            frozenset(),
+            tuple(atoms1),
+            tuple(),
+            tuple(),
+            tuple(atoms2),
+            tuple(),
+            tuple(),
+        )
         _PISA_INTERFACE_CACHE[key] = result
         return result
 
@@ -217,10 +247,12 @@ def _pisa_interface_result(
         other_tree: cKDTree,
         other_max_radius: float,
         own_atom_residues: list,
-    ) -> tuple[float, frozenset[int]]:
+    ) -> tuple[float, frozenset[int], tuple[float, ...], tuple[float, ...]]:
         area = 0.0
         interface_residue_ids: set[int] = set()
         own_max_radius = float(np.max(own_radii))
+        atom_sas = [0.0] * len(own_coords)
+        atom_int_sas = [0.0] * len(own_coords)
         for i, coord in enumerate(own_coords):
             ri = float(own_radii[i])
             other_neighbours = other_tree.query_ball_point(coord, ri + other_max_radius)
@@ -257,20 +289,33 @@ def _pisa_interface_result(
                 if not other_mask.any():
                     break
 
+            atom_surface_area = float(np.sum(code_areas[own_mask]) * ri * ri)
             atom_interface_area = float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
+            atom_sas[i] = atom_surface_area
+            atom_int_sas[i] = atom_interface_area
             area += atom_interface_area
             if atom_interface_area > 0.0:
                 interface_residue_ids.add(id(own_atom_residues[i]))
-        return area, frozenset(interface_residue_ids)
+        return area, frozenset(interface_residue_ids), tuple(atom_sas), tuple(atom_int_sas)
 
-    int_area1, int_residue_ids1 = side_area(
+    int_area1, int_residue_ids1, atom_sas1, atom_int_sas1 = side_area(
         coords1, radii1, tree1, coords2, radii2, tree2, max_r2, atom_residues1
     )
-    int_area2, int_residue_ids2 = side_area(
+    int_area2, int_residue_ids2, atom_sas2, atom_int_sas2 = side_area(
         coords2, radii2, tree2, coords1, radii1, tree1, max_r1, atom_residues2
     )
 
-    result = (float((int_area1 + int_area2) / 2.0), int_residue_ids1, int_residue_ids2)
+    result = _PisaInterfaceResult(
+        float((int_area1 + int_area2) / 2.0),
+        int_residue_ids1,
+        int_residue_ids2,
+        tuple(atoms1),
+        atom_sas1,
+        atom_int_sas1,
+        tuple(atoms2),
+        atom_sas2,
+        atom_int_sas2,
+    )
     if len(_PISA_INTERFACE_CACHE) > 32:
         _PISA_INTERFACE_CACHE.clear()
     _PISA_INTERFACE_CACHE[key] = result
@@ -280,10 +325,10 @@ def _pisa_interface_result(
 def _pisa_interface_residues(residues1, residues2) -> tuple[list, list]:
     residues1 = list(residues1)
     residues2 = list(residues2)
-    _, ids1, ids2 = _pisa_interface_result(residues1, residues2)
+    result = _pisa_interface_result(residues1, residues2)
     return (
-        [residue for residue in residues1 if id(residue) in ids1],
-        [residue for residue in residues2 if id(residue) in ids2],
+        [residue for residue in residues1 if id(residue) in result.residue_ids1],
+        [residue for residue in residues2 if id(residue) in result.residue_ids2],
     )
 
 
@@ -301,8 +346,122 @@ def buried_surface_area(
     own molecule but covered by the opposing molecule are summed, and PISA's
     reported interface area is (area_side_1 + area_side_2) / 2.
     """
-    area, _, _ = _pisa_interface_result(residues1, residues2, probe_radius, code_no)
-    return area
+    result = _pisa_interface_result(residues1, residues2, probe_radius, code_no)
+    return result.area
+
+
+def _molref_for_atom(atom) -> tuple[float, float, float, int] | None:
+    residue = atom.get_parent()
+    resname = residue.get_resname().strip().upper()
+    atom_name = atom.id.strip().upper()
+    return PISA_STANDARD_AA_MOLREF.get(resname, {}).get(atom_name)
+
+
+def _state_sas_lookup(atoms, state_sas: np.ndarray) -> dict[tuple[int, str], float]:
+    return {
+        (id(atom.get_parent()), atom.id.strip().upper()): float(sas)
+        for atom, sas in zip(atoms, state_sas)
+    }
+
+
+def _asp_type_pair(atom, paired_names: tuple[str, ...], charged: int, neutral: int,
+                   state_sas: dict[tuple[int, str], float]) -> int:
+    current = state_sas.get((id(atom.get_parent()), atom.id.strip().upper()), 0.0)
+    paired = [
+        state_sas[(id(atom.get_parent()), name)]
+        for name in paired_names
+        if (id(atom.get_parent()), name) in state_sas
+    ]
+    if not paired:
+        return charged
+    if len(paired) == 1:
+        return charged if current > paired[0] else neutral
+    return charged if current == max([current] + paired) else neutral
+
+
+def _special_asp_type(atom, state_sas: dict[tuple[int, str], float]) -> int:
+    element = _atom_element(atom)
+    atom_name = atom.id.strip().upper()
+    resname = atom.get_parent().get_resname().strip().upper()
+
+    if element == "N":
+        if atom_name == "NE2":
+            if resname != "HIS":
+                return ASP_NEUTRAL_NO
+            return _asp_type_pair(atom, ("ND1",), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
+        if atom_name == "ND1":
+            return _asp_type_pair(atom, ("NE2",), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
+        if atom_name == "NE":
+            return _asp_type_pair(atom, ("NH1", "NH2"), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
+        if atom_name == "NH1":
+            return _asp_type_pair(atom, ("NE", "NH2"), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
+        if atom_name == "NH2":
+            return _asp_type_pair(atom, ("NE", "NH1"), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
+        return ASP_CHARGED_N
+
+    if element == "O":
+        if atom_name.endswith("1"):
+            return _asp_type_pair(atom, (atom_name[:-1] + "2",), ASP_CHARGED_O, ASP_NEUTRAL_NO, state_sas)
+        if atom_name.endswith("2"):
+            return _asp_type_pair(atom, (atom_name[:-1] + "1",), ASP_CHARGED_O, ASP_NEUTRAL_NO, state_sas)
+        return ASP_NEUTRAL_NO
+
+    return ASP_OTHER
+
+
+def _pisa_solvation_energy_for_state(atoms, state_sas: np.ndarray) -> tuple[float, tuple[float, ...]]:
+    state_lookup = _state_sas_lookup(atoms, state_sas)
+    asp_area = [0.0] * len(PISA_ASP_PARAMETERS)
+    energy = 0.0
+
+    for atom, sas in zip(atoms, state_sas):
+        molref = _molref_for_atom(atom)
+        if molref is None:
+            continue
+        _, ref_asa, atom_asp, asp_id = molref
+        if ref_asa < -0.5:
+            continue
+        asp_type = asp_id
+        if asp_type == ASP_SPECIAL:
+            asp_type = _special_asp_type(atom, state_lookup)
+        if asp_type < 0:
+            asp_type = ASP_OTHER
+
+        ref_area = float(sas) - ref_asa
+        if asp_type < len(asp_area):
+            asp_area[asp_type] += ref_area
+        if asp_type <= ASP_OTHER:
+            energy += atom_asp * float(sas)
+
+    for asp_type, area in enumerate(asp_area):
+        energy += area * PISA_ASP_PARAMETERS[asp_type]
+    return float(energy), tuple(asp_area)
+
+
+def _side_interface_solvation_energy(atoms, atom_sas, atom_int_sas) -> float:
+    atom_sas_arr = np.asarray(atom_sas, dtype=float)
+    atom_int_sas_arr = np.asarray(atom_int_sas, dtype=float)
+    if len(atom_sas_arr) == 0:
+        return 0.0
+    free_energy, _ = _pisa_solvation_energy_for_state(atoms, atom_sas_arr)
+    bound_sas = atom_sas_arr - atom_int_sas_arr
+    bound_sas[bound_sas < 1.0e-8] = 0.0
+    bound_energy, _ = _pisa_solvation_energy_for_state(atoms, bound_sas)
+    return float(bound_energy - free_energy)
+
+
+def interface_solvation_energy(
+    residues1,
+    residues2,
+    probe_radius: float = PISA_PROBE_RADIUS,
+    code_no: int = PISA_CODE_NO,
+) -> float:
+    """PISA-style interface solvation energy gain in kcal/mol."""
+    result = _pisa_interface_result(residues1, residues2, probe_radius, code_no)
+    return (
+        _side_interface_solvation_energy(result.atoms1, result.atom_sas1, result.atom_int_sas1)
+        + _side_interface_solvation_energy(result.atoms2, result.atom_sas2, result.atom_int_sas2)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +474,7 @@ def shape_complementarity(
     distance: float = 8.0,
     density: float = 15.0,
     weight: float = 0.5,
-    trim_cutoff: float = 1.4,
+    trim_cutoff: float = 1.6,
 ) -> float:
     """
     CCP4-SC shape complementarity via Connolly molecular surface.
@@ -328,20 +487,25 @@ def shape_complementarity(
     if coords1.size == 0 or coords2.size == 0:
         return 0.0
 
-    # Interface filter: keep atoms within `distance` of the other surface.
+    # SCASA filters side 1 against side 2, then side 2 against the filtered
+    # side 1. This slightly asymmetric ordering matches its CLI/reference path.
     t2 = cKDTree(coords2)
-    t1 = cKDTree(coords1)
     mask1 = np.zeros(len(coords1), dtype=bool)
-    mask2 = np.zeros(len(coords2), dtype=bool)
     for i, c in enumerate(coords1):
         if t2.query_ball_point(c, distance):
             mask1[i] = True
-    for i, c in enumerate(coords2):
-        if t1.query_ball_point(c, distance):
-            mask2[i] = True
 
     c1 = coords1[mask1]; n1_rn = [rn1[i] for i in np.where(mask1)[0]]
     n1_an = [an1[i] for i in np.where(mask1)[0]]
+    if c1.size == 0:
+        return 0.0
+
+    t1_filtered = cKDTree(c1)
+    mask2 = np.zeros(len(coords2), dtype=bool)
+    for i, c in enumerate(coords2):
+        if t1_filtered.query_ball_point(c, distance):
+            mask2[i] = True
+
     c2 = coords2[mask2]; n2_rn = [rn2[i] for i in np.where(mask2)[0]]
     n2_an = [an2[i] for i in np.where(mask2)[0]]
     if c1.size == 0 or c2.size == 0:
@@ -366,8 +530,9 @@ def shape_complementarity(
     if len(d1) == 0 or len(d2) == 0:
         return 0.0
 
-    # SCASA mirrors CCP4 SC's peripheral trim by keeping buried dots whose
-    # nearest opposing buried dot lies within the practical trim distance.
+    # This is the SCASA/CCP4-compatible edge trim used by the frozen
+    # references. Applying Connolly's same-surface trim directly removes too
+    # many buried dots on AlphaFold interfaces.
     _, i2 = cKDTree(d2).query(d1)
     _, i1 = cKDTree(d1).query(d2)
     dist1 = np.linalg.norm(d1 - d2[i2], axis=1)
