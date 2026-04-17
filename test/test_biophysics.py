@@ -34,6 +34,20 @@ END
     assert disulfide_bonds(residues_a, residues_b) == 1
 
 
+def test_pisa_interface_residue_filter_survives_cached_reparse():
+    pdb_text = """\
+ATOM      1  NE  ARG A   1       0.000   0.000   0.000  1.00 50.00           N
+ATOM      2  OD1 ASP B   1       3.000   0.000   0.000  1.00 50.00           O
+TER
+END
+"""
+    first_a, first_b = _parse_residues(pdb_text)
+    assert salt_bridges(first_a, first_b) == 1
+
+    second_a, second_b = _parse_residues(pdb_text)
+    assert salt_bridges(second_a, second_b) == 1
+
+
 def test_ccp4srs_style_hbond_requires_monomer_bond_geometry():
     residues_a, residues_b = _parse_residues(
         """\
