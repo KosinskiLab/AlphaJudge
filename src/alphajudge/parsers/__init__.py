@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Tuple, Any, Dict, Type
+from typing import Any, Callable
 from abc import ABC, abstractmethod
 import json
 import numpy as np
@@ -10,9 +10,9 @@ from ..confidence import Confidence
 
 @dataclass
 class Run:
-    order: List[str]
+    order: list[str]
     source: str
-    load_model: Callable[[str], Tuple[Any, Confidence]]
+    load_model: Callable[[str], tuple[Any, Confidence]]
 
 class BaseParser(ABC):
     name: str = "base"
@@ -56,7 +56,7 @@ class BaseParser(ABC):
         return chains, rim, cid
 
     @staticmethod
-    def _plddt(chains, rim) -> List[float]:
+    def _plddt(chains, rim) -> list[float]:
         n = len(rim); out = [float('nan')] * n
         for ch in chains:
             for res in ch:
@@ -79,10 +79,10 @@ class BaseParser(ABC):
 
 class ParserManager:
     def __init__(self):
-        self._order: List[str] = []
-        self._parsers: Dict[str, BaseParser] = {}
+        self._order: list[str] = []
+        self._parsers: dict[str, BaseParser] = {}
 
-    def register(self, parser_cls: Type[BaseParser]) -> None:
+    def register(self, parser_cls: type[BaseParser]) -> None:
         inst = parser_cls()
         self._parsers[inst.name] = inst
         if inst.name not in self._order:
@@ -92,14 +92,14 @@ class ParserManager:
         self._parsers.pop(name, None)
         if name in self._order: self._order.remove(name)
 
-    def enable_only(self, names: List[str]) -> None:
+    def enable_only(self, names: list[str]) -> None:
         self._order = [n for n in names if n in self._parsers]
 
-    def set_precedence(self, names: List[str]) -> None:
+    def set_precedence(self, names: list[str]) -> None:
         remaining = [n for n in self._order if n not in names]
         self._order = [n for n in names if n in self._parsers] + remaining
 
-    def list_parsers(self) -> List[str]:
+    def list_parsers(self) -> list[str]:
         return [n for n in self._order if n in self._parsers]
 
     def pick(self, d: Path) -> BaseParser:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from functools import cached_property
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import numpy as np
 from Bio.PDB import Chain, NeighborSearch
@@ -38,22 +38,22 @@ class Complex:
 
         self._res_index_map, self._chain_indices_by_id, self._chains = self._build_maps()
 
-        self._contact_ns_cache: Dict[Tuple[str, str], Tuple[list, list, np.ndarray, np.ndarray]] = {}
+        self._contact_ns_cache: dict[tuple[str, str], tuple[list, list, np.ndarray, np.ndarray]] = {}
 
-        self.interfaces: List[Interface] = []
+        self.interfaces: list[Interface] = []
         for i in range(len(self._chains)):
             for j in range(i + 1, len(self._chains)):
                 iface = Interface(self._chains[i], self._chains[j], self)
                 if iface.num_intf_residues > 0:
                     self.interfaces.append(iface)
 
-    def _build_maps(self) -> tuple[Dict[Tuple[str, Any], int], Dict[str, List[int]], List[Chain.Chain]]:
+    def _build_maps(self) -> tuple[dict[tuple[str, Any], int], dict[str, list[int]], list[Chain.Chain]]:
         model = next(self.structure.get_models())
         chains = list(model.get_chains())
 
-        res_index_map: Dict[Tuple[str, Any], int] = {}
-        chain_indices_by_id: Dict[str, List[int]] = {}
-        filtered_chains: List[Chain.Chain] = []
+        res_index_map: dict[tuple[str, Any], int] = {}
+        chain_indices_by_id: dict[str, list[int]] = {}
+        filtered_chains: list[Chain.Chain] = []
 
         idx = 0
         for chain in chains:
@@ -66,7 +66,7 @@ class Complex:
                 new_chain.add(residue.copy())
             filtered_chains.append(new_chain)
 
-            idxs: List[int] = []
+            idxs: list[int] = []
             for residue in new_chain:
                 res_index_map[(new_chain.id, residue.id)] = idx
                 idxs.append(idx)

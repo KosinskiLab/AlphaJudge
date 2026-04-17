@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import List, Optional, Any, Tuple
+from typing import Any
 import csv, numpy as np
 from . import BaseParser, Run
 from ..confidence import Confidence
@@ -44,17 +44,17 @@ class AF3Parser(BaseParser):
 
     # ---- AF3-specific helpers ----
     @staticmethod
-    def _read_csv_order(p: Path) -> List[str]:
+    def _read_csv_order(p: Path) -> list[str]:
         with p.open(newline="") as f:
             rows = [r for r in csv.DictReader(f) if r]
-        def pf(x: Optional[str]) -> float:
+        def pf(x: str | None) -> float:
             try: return float(x)  # type: ignore[arg-type]
             except Exception: return float("nan")
         rows.sort(key=lambda r: pf(r.get("ranking_score")), reverse=True)
         return [f"seed-{r['seed']}_sample-{r['sample']}" for r in rows if 'seed' in r and 'sample' in r]
 
     @staticmethod
-    def _normalize_pae_af3(matrix: dict, chains, cid) -> Tuple[List[List[float]], float]:
+    def _normalize_pae_af3(matrix: dict, chains, cid) -> tuple[list[list[float]], float]:
         total = sum(len(cid[c.id]) for c in chains)
         pae = np.full((total, total), 100.0, dtype=float)
         max_pae = float('nan')
@@ -81,7 +81,7 @@ class AF3Parser(BaseParser):
                 # Fallback to coarse chain-pair mapping using token_chain_ids.
                 ids = matrix["token_chain_ids"]
                 # map token groups → chain indices
-                seen: List[Any] = []
+                seen: list[Any] = []
                 for c in ids:
                     if c not in seen:
                         seen.append(c)

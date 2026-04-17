@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, List, Tuple
+from typing import Iterable
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -10,7 +10,7 @@ from scipy.spatial import cKDTree
 from .connolly import BURIED_FLAG, PROBE_RADIUS, get_radius, mds as _connolly_mds
 
 
-def _collect_atoms(residues: Iterable) -> Tuple[List, np.ndarray, List[str], List[str]]:
+def _collect_atoms(residues: Iterable) -> tuple[list, np.ndarray, list[str], list[str]]:
     atoms, coords, resnames, atom_names = [], [], [], []
     for r in residues:
         rn = r.get_resname().strip().upper()

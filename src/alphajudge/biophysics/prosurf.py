@@ -5,8 +5,6 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterable, List, Tuple
-
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -60,7 +58,7 @@ def _pisa_radius(atom) -> float:
 
 def _collect_surface_atoms_with_residues(
     residues: Iterable,
-) -> Tuple[np.ndarray, np.ndarray, List, List]:
+) -> tuple[np.ndarray, np.ndarray, list, list]:
     coords, radii, atom_residues, atoms = [], [], [], []
     for residue in residues:
         for atom in residue:
@@ -80,7 +78,7 @@ def _mround(value: float) -> int:
 
 
 @lru_cache(maxsize=8)
-def _pisa_spherical_code(code_no: int = PISA_CODE_NO) -> Tuple[np.ndarray, np.ndarray]:
+def _pisa_spherical_code(code_no: int = PISA_CODE_NO) -> tuple[np.ndarray, np.ndarray]:
     """Port of ProSurf::calcSphericalCode from CCP4 PISA."""
     min_code_no = 6
     code_no = max(min_code_no, int(code_no))
