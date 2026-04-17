@@ -111,8 +111,8 @@ def _pisa_spherical_code(code_no: int = PISA_CODE_NO) -> tuple[np.ndarray, np.nd
 @dataclass(frozen=True)
 class _PisaInterfaceResult:
     area: float
-    residue_ids1: frozenset[int]
-    residue_ids2: frozenset[int]
+    residue_keys1: frozenset[tuple]
+    residue_keys2: frozenset[tuple]
     atoms1: tuple
     atom_sas1: tuple[float, ...]
     atom_int_sas1: tuple[float, ...]
@@ -153,7 +153,7 @@ def _pisa_interface_result(
 
     ProSurf selects atoms with nonzero interface area into ``selHndInt1/2``.
     PISA later expands those atom selections to residues before calling
-    ccp4srs::CalcHBonds. Keeping the selected residue ids here lets area and
+    ccp4srs::CalcHBonds. Keeping stable selected residue keys here lets area and
     bond scoring share the same source of truth.
     """
     residues1 = tuple(residues1)
@@ -198,9 +198,10 @@ def _pisa_interface_result(
         other_tree: cKDTree,
         other_max_radius: float,
         own_atom_residues: list,
-    ) -> tuple[float, frozenset[int], tuple[float, ...], tuple[float, ...]]:
+    ) -> tuple[float, frozenset[tuple], tuple[float, ...], tuple[float, ...]]:
         area = 0.0
-        interface_residue_ids: set[int] = set()
+        interface_residue_keys: set[tuple] = set()
+        own_residue_keys = [_residue_fingerprint(residue) for residue in own_atom_residues]
         own_max_radius = float(np.max(own_radii))
         atom_sas = [0.0] * len(own_coords)
         atom_int_sas = [0.0] * len(own_coords)
@@ -252,20 +253,20 @@ def _pisa_interface_result(
             atom_int_sas[i] = atom_interface_area
             area += atom_interface_area
             if atom_interface_area > 0.0:
-                interface_residue_ids.add(id(own_atom_residues[i]))
-        return area, frozenset(interface_residue_ids), tuple(atom_sas), tuple(atom_int_sas)
+                interface_residue_keys.add(own_residue_keys[i])
+        return area, frozenset(interface_residue_keys), tuple(atom_sas), tuple(atom_int_sas)
 
-    int_area1, int_residue_ids1, atom_sas1, atom_int_sas1 = side_area(
+    int_area1, int_residue_keys1, atom_sas1, atom_int_sas1 = side_area(
         coords1, radii1, tree1, coords2, radii2, tree2, max_r2, atom_residues1
     )
-    int_area2, int_residue_ids2, atom_sas2, atom_int_sas2 = side_area(
+    int_area2, int_residue_keys2, atom_sas2, atom_int_sas2 = side_area(
         coords2, radii2, tree2, coords1, radii1, tree1, max_r1, atom_residues2
     )
 
     result = _PisaInterfaceResult(
         float((int_area1 + int_area2) / 2.0),
-        int_residue_ids1,
-        int_residue_ids2,
+        int_residue_keys1,
+        int_residue_keys2,
         tuple(atoms1),
         atom_sas1,
         atom_int_sas1,
@@ -284,8 +285,8 @@ def _pisa_interface_residues(residues1, residues2) -> tuple[list, list]:
     residues2 = list(residues2)
     result = _pisa_interface_result(residues1, residues2)
     return (
-        [residue for residue in residues1 if id(residue) in result.residue_ids1],
-        [residue for residue in residues2 if id(residue) in result.residue_ids2],
+        [residue for residue in residues1 if _residue_fingerprint(residue) in result.residue_keys1],
+        [residue for residue in residues2 if _residue_fingerprint(residue) in result.residue_keys2],
     )
 
 
