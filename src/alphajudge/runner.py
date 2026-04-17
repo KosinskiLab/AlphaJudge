@@ -62,7 +62,11 @@ def _save_pae_heatmap(
 
 
 def process(
-    directory: str, contact_thresh: float, pae_filter: float, models_to_analyse: str, ipsae_pae_cutoff: float
+    directory: str,
+    contact_thresh: float,
+    pae_filter: float,
+    models_to_analyse: str,
+    ipsae_pae_cutoff: float = 10.0,
 ) -> Path | None:
     d = Path(directory)
     parser = pick_parser(d)
