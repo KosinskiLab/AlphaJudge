@@ -1,7 +1,12 @@
-import argparse, logging
+from __future__ import annotations
+
+import argparse
+import logging
+
 from .runner import process_many
 
-def main():
+
+def main() -> None:
     p = argparse.ArgumentParser("AlphaJudge interface scoring")
     p.add_argument("paths", nargs="*", help="One or more run directories or roots")
     p.add_argument("--contact_thresh", type=float, default=8.0)

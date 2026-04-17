@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .scoring import (
     buried_surface_area,
     shape_complementarity,
