@@ -48,10 +48,8 @@ def test_pisa_area_and_bond_counts_against_ccp4_reference(reference: dict):
     assert disulfide_bonds(residues1, residues2) == pisa["ss"]
 
     # The runtime path mirrors ccp4srs::CalcHBonds from embedded SRS monomer
-    # chemistry and PISA's ProSurf interface-residue selection. CCP4's binary
-    # still has a few reporting/chemistry edge cases not exposed in the source,
-    # so the regression window is intentionally tight but not exact for HB.
-    assert hydrogen_bonds(residues1, residues2) == pytest.approx(pisa["hb"], abs=2)
+    # chemistry and PISA's ProSurf interface-residue selection.
+    assert hydrogen_bonds(residues1, residues2) == pisa["hb"]
 
 
 @pytest.mark.skipif(
