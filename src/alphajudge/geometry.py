@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-from typing import Dict, Set
-
 from Bio.PDB.Polypeptide import is_aa
 
 
-NA_RES: Set[str] = {
+NA_RES: set[str] = {
     "A", "C", "G", "U",
     "DA", "DC", "DG", "DT", "DU",
     "RA", "RC", "RG", "RU",
 }
 
-POLAR_RES: Set[str] = {"SER", "THR", "ASN", "GLN", "TYR", "CYS"}
-HYDROPHOBIC_RES: Set[str] = {"ALA", "VAL", "LEU", "ILE", "MET", "PHE", "TRP"}
-CHARGED_RES: Set[str] = {"ARG", "LYS", "ASP", "GLU", "HIS"}
+POLAR_RES: set[str] = {"SER", "THR", "ASN", "GLN", "TYR", "CYS"}
+HYDROPHOBIC_RES: set[str] = {"ALA", "VAL", "LEU", "ILE", "MET", "PHE", "TRP"}
+CHARGED_RES: set[str] = {"ARG", "LYS", "ASP", "GLU", "HIS"}
 
-CHARGED_ATOMS: Dict[str, Set[str]] = {
+CHARGED_ATOMS: dict[str, set[str]] = {
     "ARG": {"NE", "CZ", "NH1", "NH2"},
     "LYS": {"NZ"},
     "ASP": {"CG", "OD1", "OD2"},

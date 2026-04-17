@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from Bio.PDB import NeighborSearch
@@ -78,7 +78,7 @@ class Interface:
         return self._avg_pae
 
     @cached_property
-    def iptm_chainpair(self) -> Optional[float]:
+    def iptm_chainpair(self) -> float | None:
         """
         Per-interface ipTM from AF3 chain_pair_iptm when available.
         Returns None for AF2 (no per-interface ipTM).
@@ -215,7 +215,7 @@ class Interface:
         return _pisa_interface_solvation_energy(self.chain1, self.chain2)
 
     def _get_pairs(self):
-        res_pairs: Set[Tuple[Any, Any]] = set()
+        res_pairs: set[tuple[Any, Any]] = set()
         a1, a2, coords1, coords2 = self._contact_atom_data()
         if not len(a1) or not len(a2):
             return set(), set(), res_pairs
@@ -232,7 +232,7 @@ class Interface:
         r2 = {p[1] for p in res_pairs}
         return r1, r2, res_pairs
 
-    def _contact_atom_data(self) -> Tuple[list, list, np.ndarray, np.ndarray]:
+    def _contact_atom_data(self) -> tuple[list, list, np.ndarray, np.ndarray]:
         key = (self._cid1_id, self._cid2_id)
         cached = self.c._contact_ns_cache.get(key)
         if cached is None:
@@ -306,7 +306,7 @@ class Interface:
         b = calc(self._idx2, self._idx1)
         return max(a, b)
 
-    def _frac(self, names: Set[str]) -> float:
+    def _frac(self, names: set[str]) -> float:
         residues = self._res1 | self._res2
         if not residues:
             return 0.0

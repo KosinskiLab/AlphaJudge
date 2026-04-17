@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
-
 import numpy as np
 from scipy.spatial import cKDTree
 
@@ -46,7 +44,7 @@ def _select_coords(residues, predicate) -> np.ndarray:
     return np.asarray(out, dtype=float) if out else np.empty((0, 3))
 
 
-def _select_atom_coords(residues, predicate) -> Tuple[List, np.ndarray]:
+def _select_atom_coords(residues, predicate) -> tuple[list, np.ndarray]:
     atoms = []
     coords = []
     for r in residues:
@@ -78,7 +76,7 @@ def _residue_seqid(residue) -> str:
     return seqid + insertion if insertion else seqid
 
 
-def _atom_pair_key(atom1, atom2) -> Tuple[Tuple[str, str, str, str], Tuple[str, str, str, str]]:
+def _atom_pair_key(atom1, atom2) -> tuple[tuple[str, str, str, str], tuple[str, str, str, str]]:
     def one(atom):
         residue = atom.get_parent()
         chain = residue.get_parent()
@@ -231,7 +229,7 @@ def _donor_acceptor_contacts(residues1, residues2, max_dist: float):
 
 
 def _salt_bridge_pairs(residues1, residues2) -> set[
-    Tuple[Tuple[str, str, str, str], Tuple[str, str, str, str]]
+    tuple[tuple[str, str, str, str], tuple[str, str, str, str]]
 ]:
     pairs = set()
     for donor_atom, acceptor_atom, dist in _donor_acceptor_contacts(residues1, residues2, SB_MAX_DIST):
@@ -250,7 +248,7 @@ def hydrogen_bonds(residues1, residues2) -> int:
     """
     residues1, residues2 = _pisa_interface_residues(residues1, residues2)
     salt_pairs = _salt_bridge_pairs(residues1, residues2)
-    pairs: set[Tuple[Tuple[str, str, str, str], Tuple[str, str, str, str]]] = set()
+    pairs: set[tuple[tuple[str, str, str, str], tuple[str, str, str, str]]] = set()
 
     for donor_atom, acceptor_atom, dist in _donor_acceptor_contacts(residues1, residues2, HB_MAX_DIST):
         if not (HB_MIN_DIST <= dist <= HB_MAX_DIST):
