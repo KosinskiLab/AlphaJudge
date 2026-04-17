@@ -180,7 +180,7 @@ def _hydrogen_bond_pairs_for_contact(donor_atom, acceptor_atom) -> list[tuple[ob
     donor_hydrogens = [
         atom for atom in donor_bonds
         if (
-            atom.occupancy > 0.0
+            (atom.occupancy or 0.0) > 0.0
             and _atom_is_hydrogen_candidate(
                 atom.get_parent().get_resname().strip().upper(),
                 atom.id.strip().upper(),
