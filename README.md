@@ -1,10 +1,6 @@
 # AlphaJudge: I am the score!
 
 AlphaJudge evaluates AlphaFold-predicted protein complexes by merging AI-derived confidences (ipTM, pTM, iptm+ptm/confidence_score, pLDDT, PAE) with fast, self-contained interface biophysics (contacts, H-bonds, salt bridges, buried area, solvation proxy, shape complementarity) into a tidy CSV for downstream analysis.
-> ⚠️ **Disclaimer**  
-> Interface biophysical scores in AlphaJudge have not yet been validated
-> against CCP4/PISA and are intended for relative ranking, not quantitative
-> biophysical interpretation.
 
 
 ![AlphaJudge icon](images/icon.png)
@@ -22,7 +18,7 @@ AlphaJudge parses AF2 and AF3 outputs and summarizes per-model / per-interface m
 | category | metrics (examples) | notes |
 | --- | --- | --- |
 | **AlphaFold internal** | ipTM, pTM, iptm+ptm/confidence_score, avg interface PAE, avg interface pLDDT | unified for AF2/AF3 |
-| **physical & geometric** | buried area, contact pairs, H-bonds, salt bridges, interface composition | self-contained |
+| **physical & geometric** | buried area, contact pairs, H-bonds, salt bridges, interface composition, shape complementarity | self-contained |
 | **derived scores** | pDockQ, pDockQ2, mpDockQ, ipSAE, LIS, interface score | implemented here |
 
 Use cases: rank poses, sanity-check AF confidences, or export features for ML.
@@ -69,7 +65,7 @@ or pip editable install in existing environment
 ```bash
 pip install -e .
 ```
-Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`, `matplotlib` (installed automatically with `pip install .`).
+Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`, `scipy`, `matplotlib` (installed automatically with `pip install .`). Test extras (`pytest`, `pytest-cov`, `pytest-xdist`, `pytest-timeout`) are available via `pip install -e ".[test]"`.
 
 ---
 
@@ -83,6 +79,7 @@ alphajudge PATH [PATH ...] \
   --models_to_analyse {best,all} \
   --contact_thresh 8.0 \
   --pae_filter 100.0 \
+  --ipsae_pae_cutoff 10.0 \
   [-r|--recursive] \
   [-o|--summary SUMMARY.csv] \
   [--cores]
@@ -91,6 +88,7 @@ alphajudge PATH [PATH ...] \
 - **PATH**: One or more run directories or roots to search
 - **--contact_thresh**: Contact cutoff in Å (default: 8.0)
 - **--pae_filter**: Skip interfaces with avg interface PAE above this (default: 100.0)
+- **--ipsae_pae_cutoff**: PAE cutoff used by ipSAE (default: 10.0)
 - **--models_to_analyse**: `best` or `all` (default: best)
 - **-r / --recursive**: Recursively discover runs under each PATH
 - **-o / --summary**: Write an aggregated CSV across all processed runs
@@ -182,10 +180,11 @@ Exact header is asserted in tests to be consistent across AF2 and AF3 runs.
 ## Testing
 
 ```bash
+pip install -e ".[test]"
 pytest -q
 ```
 
-Tests exercise both AF2 and AF3 parsers and validate the CSV fields against bundled fixtures in `test_data/`.
+Tests exercise both AF2 and AF3 parsers and validate the CSV fields against bundled fixtures in `test_data/`. The slow CCP4 SC regression suite is opt-in and can be enabled with `ALPHAJUDGE_RUN_SLOW_SC_REFERENCE=1`; CI always runs it across Python 3.10–3.13.
 
 ---
 
