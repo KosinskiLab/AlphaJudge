@@ -126,10 +126,19 @@ class _PisaInterfaceResult:
 _PISA_INTERFACE_CACHE: dict[tuple, _PisaInterfaceResult] = {}
 
 
+def _residue_fingerprint(residue) -> tuple:
+    """Stable identity for a residue across GC — id() alone is reused by CPython."""
+    first_atom = next(iter(residue), None)
+    if first_atom is None:
+        return (residue.full_id, None)
+    coord = first_atom.coord
+    return (residue.full_id, (float(coord[0]), float(coord[1]), float(coord[2])))
+
+
 def _interface_cache_key(residues1, residues2, probe_radius: float, code_no: int) -> tuple:
     return (
-        tuple(id(residue) for residue in residues1),
-        tuple(id(residue) for residue in residues2),
+        tuple(_residue_fingerprint(residue) for residue in residues1),
+        tuple(_residue_fingerprint(residue) for residue in residues2),
         float(probe_radius),
         int(code_no),
     )
