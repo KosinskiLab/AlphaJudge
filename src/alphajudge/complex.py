@@ -13,6 +13,8 @@ from .docking_scores import MPDOCKQ
 from .geometry import is_pae_token_residue, representative_atom
 from .interface import Interface
 
+logger = logging.getLogger(__name__)
+
 
 class Complex:
     """
@@ -73,7 +75,7 @@ class Complex:
 
         pae_n = len(self.conf.pae_matrix)
         if idx != pae_n:
-            logging.warning(
+            logger.warning(
                 f"token residues counted = {idx}, but PAE is {pae_n}x{pae_n}. "
                 f"Indexing may be misaligned for this structure."
             )

@@ -15,6 +15,8 @@ import numpy as np
 from .parsers import pick_parser
 from .complex import Complex
 
+logger = logging.getLogger(__name__)
+
 
 def _save_pae_heatmap(
     pae_matrix,
@@ -31,7 +33,7 @@ def _save_pae_heatmap(
     try:
         mtx = np.array(pae_matrix, dtype=float)
         if mtx.size == 0:
-            logging.warning(f"empty PAE matrix; skipping heatmap for {out_file}")
+            logger.warning(f"empty PAE matrix; skipping heatmap for {out_file}")
             return
 
         # Ensure parent exists (safe no-op if already exists)
@@ -54,9 +56,9 @@ def _save_pae_heatmap(
         fig.tight_layout()
         fig.savefig(out_file, dpi=300)
         plt.close(fig)
-        logging.info(f"wrote {out_file}")
+        logger.info(f"wrote {out_file}")
     except Exception as e:
-        logging.error(f"Could not create PAE heatmap {out_file}: {e}")
+        logger.error(f"Could not create PAE heatmap {out_file}: {e}")
 
 
 def process(
@@ -145,9 +147,9 @@ def process(
                 confidence.pae_matrix, pae_png, chain_boundaries=chain_boundaries
             )
 
-            logging.info(f"processed model: {m} via {parser.name}")
+            logger.info(f"processed model: {m} via {parser.name}")
         except Exception as e:
-            logging.error(f"error processing model {m}: {e}")
+            logger.error(f"error processing model {m}: {e}")
 
     out = d / "interfaces.csv"
     with out.open("w", newline="") as f:
@@ -157,7 +159,7 @@ def process(
             w.writerows(rows)
         else:
             f.write("")
-    logging.info(f"wrote {out}")
+    logger.info(f"wrote {out}")
     return out
 
 
@@ -209,15 +211,15 @@ def _process_one_run(
         try:
             rows = _read_csv_rows(existing_csv)
             if rows:
-                logging.info(f"reused existing {existing_csv} for aggregation")
+                logger.info(f"reused existing {existing_csv} for aggregation")
                 return (d_str, rows)
-            logging.info(f"existing {existing_csv} is empty; recomputing")
+            logger.info(f"existing {existing_csv} is empty; recomputing")
         except Exception as e:
-            logging.warning(f"could not reuse {existing_csv}; recomputing: {e}")
+            logger.warning(f"could not reuse {existing_csv}; recomputing: {e}")
 
     # If no summary requested but interfaces.csv exists, skip recompute
     if not want_summary and existing_csv.exists():
-        logging.info(f"reused existing {existing_csv}; skipping recompute")
+        logger.info(f"reused existing {existing_csv}; skipping recompute")
         return (d_str, [])
 
     out_path = process(d_str, contact_thresh, pae_filter, models_to_analyse, ipsae_pae_cutoff)  
@@ -226,7 +228,7 @@ def _process_one_run(
         try:
             return (d_str, _read_csv_rows(Path(out_path)))
         except Exception as e:
-            logging.error(f"failed reading {out_path} for aggregation: {e}")
+            logger.error(f"failed reading {out_path} for aggregation: {e}")
 
     return (d_str, [])
 
@@ -252,7 +254,7 @@ def process_many(
       - 0 or <0 = use os.cpu_count()
     """
     if not paths:
-        logging.warning("no input paths provided")
+        logger.warning("no input paths provided")
         return None
 
     # Resolve set of run directories to process
@@ -260,7 +262,7 @@ def process_many(
     for p in paths:
         rp = Path(p).resolve()
         if not rp.exists():
-            logging.warning(f"path does not exist: {rp}")
+            logger.warning(f"path does not exist: {rp}")
             continue
 
         if recursive and rp.is_dir():
@@ -272,7 +274,7 @@ def process_many(
             pick_parser(rp)
             run_dirs.append(rp)
         except Exception:
-            logging.warning(
+            logger.warning(
                 f"no supported run detected at {rp} (use --recursive to search within)"
             )
 
@@ -286,7 +288,7 @@ def process_many(
             unique_run_dirs.append(d)
 
     if not unique_run_dirs:
-        logging.warning("no runnable directories found")
+        logger.warning("no runnable directories found")
         return None
 
     # Normalize cores
@@ -296,7 +298,7 @@ def process_many(
         cores = len(unique_run_dirs)
 
     aggregated_rows: list[dict] = []
-    logging.info(f"Processing {len(unique_run_dirs)} runs with {cores} cores")
+    logger.info(f"Processing {len(unique_run_dirs)} runs with {cores} cores")
     # Serial
     if cores == 1:
         for d in unique_run_dirs:
@@ -312,7 +314,7 @@ def process_many(
                 if summary_csv and rows:
                     aggregated_rows.extend(rows)
             except Exception as e:
-                logging.error(f"failed processing {d}: {e}")
+                logger.error(f"failed processing {d}: {e}")
 
     # Parallel
     else:
@@ -336,11 +338,11 @@ def process_many(
                     if summary_csv and rows:
                         aggregated_rows.extend(rows)
                 except Exception as e:
-                    logging.error(f"worker failed: {e}")
+                    logger.error(f"worker failed: {e}")
 
     if summary_csv:
         if not aggregated_rows:
-            logging.info("no rows to write to summary; skipping creation")
+            logger.info("no rows to write to summary; skipping creation")
             return None
 
         # Compute union of all keys to accommodate AF2/AF3 variations
@@ -373,7 +375,7 @@ def process_many(
             for row in aggregated_rows:
                 w.writerow({k: row.get(k, "") for k in fieldnames})
 
-        logging.info(
+        logger.info(
             f"wrote summary {summary_path} ({len(aggregated_rows)} rows from {len(unique_run_dirs)} runs)"
         )
         return summary_path

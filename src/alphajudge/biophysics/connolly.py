@@ -16,8 +16,11 @@ Reference:
     Lawrence, M.C. & Colman, P.M. (1993) J. Mol. Biol. 234:946-950
 """
 
+from __future__ import annotations
+
 import math
 from functools import lru_cache
+from typing import Sequence
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -123,7 +126,7 @@ _SC_RADII_TABLE = [
 ]
 
 
-def _sc_match_atom(atom_name, pattern):
+def _sc_match_atom(atom_name: str, pattern: str) -> bool:
     """
     Match atom_name against pattern, where trailing '*' is a prefix wildcard.
     Mirrors the Fortran match() function.
@@ -137,7 +140,7 @@ def _sc_match_atom(atom_name, pattern):
 
 
 @lru_cache(maxsize=None)
-def get_radius(residue_name, atom_name):
+def get_radius(residue_name: str, atom_name: str) -> float:
     """
     Look up the CCP4 sc_radii radius for a (residue, atom) pair. Later entries
     in `_SC_RADII_TABLE` overwrite earlier ones, matching the Fortran priority.
@@ -156,11 +159,11 @@ def get_radius(residue_name, atom_name):
 # Vector helpers
 # ---------------------------------------------------------------------------
 
-def _dot(a, b):
+def _dot(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b))
 
 
-def _cross(a, b):
+def _cross(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     # np.cross has high dispatch overhead for the many scalar 3-vector calls in
     # the Connolly loops. Keep this helper explicit and local to the 3D case.
     return np.array(
@@ -173,23 +176,23 @@ def _cross(a, b):
     )
 
 
-def _dis2(a, b):
+def _dis2(a: np.ndarray, b: np.ndarray) -> float:
     d = a - b
     return float(np.dot(d, d))
 
 
-def _dis(a, b):
+def _dis(a: np.ndarray, b: np.ndarray) -> float:
     return math.sqrt(max(0.0, _dis2(a, b)))
 
 
-def _norm(a):
+def _norm(a: np.ndarray) -> np.ndarray:
     n = math.sqrt(float(np.dot(a, a)))
     if n <= 0.0:
         raise ValueError("zero vector in _norm")
     return a / n
 
 
-def _disptl(cen, axis, pnt):
+def _disptl(cen: np.ndarray, axis: np.ndarray, pnt: np.ndarray) -> float:
     vec = pnt - cen
     dt = _dot(vec, axis)
     return math.sqrt(max(0.0, float(np.dot(vec, vec)) - dt * dt))
@@ -199,11 +202,18 @@ def _disptl(cen, axis, pnt):
 # Sampling helpers
 # ---------------------------------------------------------------------------
 
-def _empty_points():
+def _empty_points() -> np.ndarray:
     return np.empty((0, 3), dtype=float)
 
 
-def _subdiv(cen, rad, x, y, angle, density):
+def _subdiv(
+    cen: np.ndarray,
+    rad: float,
+    x: np.ndarray,
+    y: np.ndarray,
+    angle: float,
+    density: float,
+) -> tuple[np.ndarray, float]:
     """
     Sample points along an arc in the plane spanned by orthonormal x/y.
 
@@ -233,7 +243,14 @@ def _subdiv(cen, rad, x, y, angle, density):
     return points, (rad * angle / n_points)
 
 
-def _subarc(cen, rad, axis, density, x, v):
+def _subarc(
+    cen: np.ndarray,
+    rad: float,
+    axis: np.ndarray,
+    density: float,
+    x: np.ndarray,
+    v: np.ndarray,
+) -> tuple[np.ndarray, float]:
     y = _cross(axis, x)
     angle = math.atan2(_dot(v, y), _dot(v, x))
     if angle < 0.0:
@@ -241,7 +258,7 @@ def _subarc(cen, rad, axis, density, x, v):
     return _subdiv(cen, rad, x, y, angle, density)
 
 
-def _axis_seed(axis):
+def _axis_seed(axis: np.ndarray) -> np.ndarray:
     axis = np.asarray(axis, dtype=float)
     v1 = np.array(
         [
@@ -259,7 +276,7 @@ def _axis_seed(axis):
     return v1
 
 
-def _basis_from_axis(axis):
+def _basis_from_axis(axis: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     axis = np.asarray(axis, dtype=float)
     v1 = _axis_seed(axis)
     v2 = _norm(_cross(axis, v1))
@@ -268,11 +285,16 @@ def _basis_from_axis(axis):
     return x, y
 
 
-def _equatorial_vector(axis):
+def _equatorial_vector(axis: np.ndarray) -> np.ndarray:
     return _norm(_cross(axis, _axis_seed(axis)))
 
 
-def _subcir(cen, rad, axis, density):
+def _subcir(
+    cen: np.ndarray,
+    rad: float,
+    axis: np.ndarray,
+    density: float,
+) -> tuple[np.ndarray, float]:
     x, y = _basis_from_axis(axis)
     return _subdiv(cen, rad, x, y, 2.0 * math.pi, density)
 
@@ -281,7 +303,13 @@ def _subcir(cen, rad, axis, density):
 # Occlusion / burial helpers
 # ---------------------------------------------------------------------------
 
-def _points_outside_spheres(points, centers, radii2, chunk_size=256, inclusive=True):
+def _points_outside_spheres(
+    points: np.ndarray,
+    centers: np.ndarray,
+    radii2: np.ndarray,
+    chunk_size: int = 256,
+    inclusive: bool = True,
+) -> np.ndarray:
     """
     Return a mask selecting points that are outside all blocker spheres.
 
@@ -322,7 +350,12 @@ def _points_outside_spheres(points, centers, radii2, chunk_size=256, inclusive=T
     return keep
 
 
-def _point_outside_spheres(point, centers, radii2, inclusive=True):
+def _point_outside_spheres(
+    point: np.ndarray,
+    centers: np.ndarray,
+    radii2: np.ndarray,
+    inclusive: bool = True,
+) -> bool:
     """Single-point fast path for `_points_outside_spheres`."""
     if centers.size == 0:
         return True
@@ -333,7 +366,12 @@ def _point_outside_spheres(point, centers, radii2, inclusive=True):
     return bool(np.all(d2 >= radii2))
 
 
-def _check_buried(pcen, atom_idx, burco, burrad2_with_probe):
+def _check_buried(
+    pcen: np.ndarray,
+    atom_idx: int,
+    burco: list[np.ndarray],
+    burrad2_with_probe: list[np.ndarray],
+) -> bool:
     """
     A dot is buried (interface-facing) if its probe centre is within
     (burrad + rp) of any atom in the opposing molecule.
@@ -347,7 +385,12 @@ def _check_buried(pcen, atom_idx, burco, burrad2_with_probe):
     return bool(np.any(d2 <= burrad2_with_probe[atom_idx]))
 
 
-def _check_buried_many(pcen, atom_indices, burco, burrad2_with_probe):
+def _check_buried_many(
+    pcen: np.ndarray,
+    atom_indices: np.ndarray,
+    burco: list[np.ndarray],
+    burrad2_with_probe: list[np.ndarray],
+) -> np.ndarray:
     """
     Vectorized form of `_check_buried` for many probe centres.
 
@@ -387,7 +430,16 @@ def _check_buried_many(pcen, atom_indices, burco, burrad2_with_probe):
 # Surface append helper
 # ---------------------------------------------------------------------------
 
-def _append_points(out_dots, out_normals, out_flags, out_mol, dots, normals, buried_mask, mol_label):
+def _append_points(
+    out_dots: list[np.ndarray],
+    out_normals: list[np.ndarray],
+    out_flags: list[np.ndarray],
+    out_mol: list[np.ndarray],
+    dots: np.ndarray,
+    normals: np.ndarray,
+    buried_mask: np.ndarray,
+    mol_label: int,
+) -> None:
     if len(dots) == 0:
         return
     out_dots.append(np.asarray(dots, dtype=float))
@@ -400,7 +452,14 @@ def _append_points(out_dots, out_normals, out_flags, out_mol, dots, normals, bur
 # Main Connolly surface generator
 # ---------------------------------------------------------------------------
 
-def mds(probe_radius, atoms, radii, mol, density=DOT_DENSITY, residue_names=None):
+def mds(
+    probe_radius: float,
+    atoms: np.ndarray,
+    radii: np.ndarray,
+    mol: np.ndarray,
+    density: float = DOT_DENSITY,
+    residue_names: Sequence[str] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Generate a Connolly molecular dot surface.
 
@@ -434,17 +493,17 @@ def mds(probe_radius, atoms, radii, mol, density=DOT_DENSITY, residue_names=None
     atom_tree = cKDTree(atoms)
     max_radius = float(np.max(radii))
 
-    out_dots = []
-    out_normals = []
-    out_flags = []
-    out_mol = []
+    out_dots: list[np.ndarray] = []
+    out_normals: list[np.ndarray] = []
+    out_flags: list[np.ndarray] = []
+    out_mol: list[np.ndarray] = []
 
-    burco = [_empty_points() for _ in range(natom)]
-    burrad2_with_probe = [np.empty(0, dtype=float) for _ in range(natom)]
+    burco: list[np.ndarray] = [_empty_points() for _ in range(natom)]
+    burrad2_with_probe: list[np.ndarray] = [np.empty(0, dtype=float) for _ in range(natom)]
     access = np.zeros(natom, dtype=bool)
-    probes = []
-    same_neighbors = []
-    candidate_neighbors = []
+    probes: list[tuple[np.ndarray, np.ndarray, float, int, int, int]] = []
+    same_neighbors: list[np.ndarray] = []
+    candidate_neighbors: list[np.ndarray] = []
 
     for i1 in range(natom):
         reach = float(radii[i1] + max_radius + 2.0 * rp)
@@ -822,7 +881,7 @@ def mds(probe_radius, atoms, radii, mol, density=DOT_DENSITY, residue_names=None
 # Trim band (mirrors Fortran trim subroutine exactly)
 # ---------------------------------------------------------------------------
 
-def trim(dots, flags, band):
+def trim(dots: np.ndarray, flags: np.ndarray, band: float) -> np.ndarray:
     """
     Remove buried dots within `band` Å of any accessible dot on the same surface.
     Returns boolean mask — True = dot survives.
