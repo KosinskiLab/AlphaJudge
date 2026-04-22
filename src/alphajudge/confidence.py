@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class Confidence:
-    pae_matrix: list[list[float]]
+    pae_matrix: np.ndarray  # Keep as numpy array for memory efficiency (7-10x reduction)
     max_pae: float
     iptm: float | None
     ptm: float | None

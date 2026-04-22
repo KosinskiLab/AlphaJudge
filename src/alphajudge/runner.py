@@ -31,7 +31,8 @@ def _save_pae_heatmap(
     provided in `chain_boundaries` (typically between different chains).
     """
     try:
-        mtx = np.array(pae_matrix, dtype=float)
+        # pae_matrix is already a numpy array for memory efficiency
+        mtx = pae_matrix if isinstance(pae_matrix, np.ndarray) else np.array(pae_matrix, dtype=float)
         if mtx.size == 0:
             logger.warning(f"empty PAE matrix; skipping heatmap for {out_file}")
             return

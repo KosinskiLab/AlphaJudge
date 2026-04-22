@@ -35,7 +35,8 @@ class Interface:
         self.chain2 = list(chain2)
 
         if not self.chain1 or not self.chain2:
-            self._pae = np.asarray(self.c.conf.pae_matrix)
+            # pae_matrix is already a numpy array for memory efficiency
+            self._pae = self.c.conf.pae_matrix
             self._rim = self.c._res_index_map
             self._cid = self.c._chain_indices_by_id
             self._cid1_id = ""
@@ -48,7 +49,8 @@ class Interface:
             self._avg_pae = 0.0
             return
 
-        self._pae = np.asarray(self.c.conf.pae_matrix)
+        # pae_matrix is already a numpy array for memory efficiency
+        self._pae = self.c.conf.pae_matrix
         self._rim = self.c._res_index_map
         self._cid = self.c._chain_indices_by_id
 
