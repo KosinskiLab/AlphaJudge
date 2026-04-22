@@ -71,6 +71,7 @@ def process(
     *,
     per_run_csv_name: str = "interfaces.csv",
     skip_pae_png: bool = False,
+    skip_biophysical_scores: bool = False,
 ) -> Path | None:
     d = Path(directory)
     parser = pick_parser(d)
@@ -100,41 +101,47 @@ def process(
                     f"{iface.chain1[0].get_parent().id}_{iface.chain2[0].get_parent().id}"
                 )
                 iptm_val = iface.iptm_chainpair if iface.iptm_chainpair is not None else confidence.iptm
-                rows.append(
-                    {
-                        "jobs": job,
-                        "model_used": m,
-                        "interface": label,
-                        "iptm_ptm": float(confidence.iptm_ptm)
-                        if confidence.iptm_ptm is not None
-                        else float("nan"),
-                        "iptm": float(iptm_val) if iptm_val is not None else float("nan"),
-                        "ptm": float(confidence.ptm)
-                        if confidence.ptm is not None
-                        else float("nan"),
-                        "confidence_score": float(confidence.confidence_score)
-                        if confidence.confidence_score is not None
-                        else float("nan"),
-                        "pDockQ/mpDockQ": global_score,
-                        "average_interface_pae": iface.average_interface_pae,
-                        "interface_average_plddt": iface.average_interface_plddt,
-                        "interface_num_intf_residues": iface.num_intf_residues,
-                        "interface_polar": iface.polar,
-                        "interface_hydrophobic": iface.hydrophobic,
-                        "interface_charged": iface.charged,
-                        "interface_contact_pairs": iface.contact_pairs,
-                        "interface_score": iface.score_complex,
-                        "interface_pDockQ2": pd2,
-                        "interface_ipSAE": iface.ipsae(),
-                        "interface_LIS": iface.lis(),
+                
+                row_data = {
+                    "jobs": job,
+                    "model_used": m,
+                    "interface": label,
+                    "iptm_ptm": float(confidence.iptm_ptm)
+                    if confidence.iptm_ptm is not None
+                    else float("nan"),
+                    "iptm": float(iptm_val) if iptm_val is not None else float("nan"),
+                    "ptm": float(confidence.ptm)
+                    if confidence.ptm is not None
+                    else float("nan"),
+                    "confidence_score": float(confidence.confidence_score)
+                    if confidence.confidence_score is not None
+                    else float("nan"),
+                    "pDockQ/mpDockQ": global_score,
+                    "average_interface_pae": iface.average_interface_pae,
+                    "interface_average_plddt": iface.average_interface_plddt,
+                    "interface_num_intf_residues": iface.num_intf_residues,
+                    "interface_polar": iface.polar,
+                    "interface_hydrophobic": iface.hydrophobic,
+                    "interface_charged": iface.charged,
+                    "interface_contact_pairs": iface.contact_pairs,
+                    "interface_score": iface.score_complex,
+                    "interface_pDockQ2": pd2,
+                    "interface_ipSAE": iface.ipsae(),
+                    "interface_LIS": iface.lis(),
+                }
+                
+                # Add expensive metrics only if not skipped
+                if not skip_biophysical_scores:
+                    row_data.update({
                         "interface_hb": iface.hb,
                         "interface_sb": iface.sb,
                         "interface_ss": iface.ss,
                         "interface_sc": iface.sc,
                         "interface_area": iface.int_area,
                         "interface_solv_en": iface.int_solv_en,
-                    }
-                )
+                    })
+                
+                rows.append(row_data)
 
             # Compute chain boundaries for separator lines on PAE heatmap
             chain_boundaries: list[float] = []
@@ -209,6 +216,7 @@ def _process_one_run(
     force_recompute: bool,
     per_run_csv_name: str,
     skip_pae_png: bool,
+    skip_biophysical_scores: bool,
 ) -> tuple[str, list[dict]]:
     """
     Worker: process a single run dir (or reuse interfaces.csv) and optionally return rows for aggregation.
@@ -243,6 +251,7 @@ def _process_one_run(
         ipsae_pae_cutoff,
         per_run_csv_name=per_run_csv_name,
         skip_pae_png=skip_pae_png,
+        skip_biophysical_scores=skip_biophysical_scores,
     )
 
     if want_summary and out_path is not None:
@@ -266,6 +275,7 @@ def process_many(
     force_recompute: bool = False,
     per_run_csv_name: str = "interfaces.csv",
     skip_pae_png: bool = False,
+    skip_biophysical_scores: bool = False,
 ) -> Path | None:
     """
     Process one or more directories. Optionally recurse into nested directories
@@ -337,6 +347,7 @@ def process_many(
                     force_recompute,
                     per_run_csv_name,
                     skip_pae_png,
+                    skip_biophysical_scores,
                 )
                 if summary_csv and rows:
                     aggregated_rows.extend(rows)
@@ -359,6 +370,7 @@ def process_many(
                     force_recompute,
                     per_run_csv_name,
                     skip_pae_png,
+                    skip_biophysical_scores,
                 )
                 for d in unique_run_dirs
             ]
