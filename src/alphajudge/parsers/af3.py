@@ -54,7 +54,7 @@ class AF3Parser(BaseParser):
         return [f"seed-{r['seed']}_sample-{r['sample']}" for r in rows if 'seed' in r and 'sample' in r]
 
     @staticmethod
-    def _normalize_pae_af3(matrix: dict, chains, cid) -> tuple[list[list[float]], float]:
+    def _normalize_pae_af3(matrix: dict, chains, cid) -> tuple[np.ndarray, float]:
         total = sum(len(cid[c.id]) for c in chains)
         pae = np.full((total, total), 100.0, dtype=float)
         max_pae = float('nan')
@@ -109,4 +109,4 @@ class AF3Parser(BaseParser):
         else:
             raise ValueError("unknown AF3 confidences schema")
 
-        return pae.tolist(), float(max_pae)
+        return pae, float(max_pae)

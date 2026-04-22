@@ -45,7 +45,7 @@ class AF2Parser(BaseParser):
 
             plddt = self._plddt(chains, rim)
             return struct, Confidence(
-                pae_matrix=pae.tolist(), max_pae=max_pae,
+                pae_matrix=pae, max_pae=max_pae,
                 iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=conf,
                 plddt_residue=plddt,
             )
