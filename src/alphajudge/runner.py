@@ -67,6 +67,9 @@ def process(
     pae_filter: float,
     models_to_analyse: str,
     ipsae_pae_cutoff: float = 10.0,
+    *,
+    per_run_csv_name: str = "interfaces.csv",
+    skip_pae_png: bool = False,
 ) -> Path | None:
     d = Path(directory)
     parser = pick_parser(d)
@@ -146,16 +149,18 @@ def process(
             except Exception:
                 chain_boundaries = []
 
-            pae_png = d / f"pae_{m}.png"
-            _save_pae_heatmap(
-                confidence.pae_matrix, pae_png, chain_boundaries=chain_boundaries
-            )
+            if not skip_pae_png:
+                pae_png = d / f"pae_{m}.png"
+                _save_pae_heatmap(
+                    confidence.pae_matrix, pae_png, chain_boundaries=chain_boundaries
+                )
 
             logger.info(f"processed model: {m} via {parser.name}")
         except Exception as e:
             logger.error(f"error processing model {m}: {e}")
 
-    out = d / "interfaces.csv"
+    out = d / per_run_csv_name
+    out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="") as f:
         if rows:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -200,18 +205,21 @@ def _process_one_run(
     models_to_analyse: str,
     summary_csv: str | None,
     ipsae_pae_cutoff: float,
-    ) -> tuple[str, list[dict]]:
+    force_recompute: bool,
+    per_run_csv_name: str,
+    skip_pae_png: bool,
+) -> tuple[str, list[dict]]:
     """
     Worker: process a single run dir (or reuse interfaces.csv) and optionally return rows for aggregation.
     Returns (run_dir, rows_for_summary).
     """
     d = Path(d_str)
-    existing_csv = d / "interfaces.csv"
+    existing_csv = d / per_run_csv_name
 
     want_summary = summary_csv is not None
 
     # When building a summary, prefer reusing precomputed interfaces.csv
-    if want_summary and existing_csv.exists():
+    if want_summary and existing_csv.exists() and not force_recompute:
         try:
             rows = _read_csv_rows(existing_csv)
             if rows:
@@ -222,11 +230,19 @@ def _process_one_run(
             logger.warning(f"could not reuse {existing_csv}; recomputing: {e}")
 
     # If no summary requested but interfaces.csv exists, skip recompute
-    if not want_summary and existing_csv.exists():
+    if not want_summary and existing_csv.exists() and not force_recompute:
         logger.info(f"reused existing {existing_csv}; skipping recompute")
         return (d_str, [])
 
-    out_path = process(d_str, contact_thresh, pae_filter, models_to_analyse, ipsae_pae_cutoff)  
+    out_path = process(
+        d_str,
+        contact_thresh,
+        pae_filter,
+        models_to_analyse,
+        ipsae_pae_cutoff,
+        per_run_csv_name=per_run_csv_name,
+        skip_pae_png=skip_pae_png,
+    )
 
     if want_summary and out_path is not None:
         try:
@@ -246,6 +262,9 @@ def process_many(
     summary_csv: str | None = None,
     cores: int = 1,
     ipsae_pae_cutoff: float = 10.0,
+    force_recompute: bool = False,
+    per_run_csv_name: str = "interfaces.csv",
+    skip_pae_png: bool = False,
 ) -> Path | None:
     """
     Process one or more directories. Optionally recurse into nested directories
@@ -314,6 +333,9 @@ def process_many(
                     models_to_analyse,
                     summary_csv,
                     ipsae_pae_cutoff,
+                    force_recompute,
+                    per_run_csv_name,
+                    skip_pae_png,
                 )
                 if summary_csv and rows:
                     aggregated_rows.extend(rows)
@@ -333,6 +355,9 @@ def process_many(
                     models_to_analyse,
                     summary_csv,
                     ipsae_pae_cutoff,
+                    force_recompute,
+                    per_run_csv_name,
+                    skip_pae_png,
                 )
                 for d in unique_run_dirs
             ]

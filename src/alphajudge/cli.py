@@ -16,6 +16,21 @@ def main() -> None:
     p.add_argument("-r","--recursive", action="store_true", help="Recursively search for runs under given PATHS")
     p.add_argument("-o","--summary", help="Write aggregated CSV across runs to this path")
     p.add_argument(
+        "--force_recompute",
+        action="store_true",
+        help="Ignore existing per-run CSVs and recompute scores",
+    )
+    p.add_argument(
+        "--skip_pae_png",
+        action="store_true",
+        help="Do not write per-model PAE heatmap PNG files",
+    )
+    p.add_argument(
+        "--per_run_csv_name",
+        default="interfaces.csv",
+        help="Filename to write inside each processed run directory",
+    )
+    p.add_argument(
         "--cores",
         type=int,
         default=1,
@@ -33,6 +48,13 @@ def main() -> None:
             summary_csv=args.summary,
             cores=args.cores,
             ipsae_pae_cutoff=args.ipsae_pae_cutoff,
+            force_recompute=args.force_recompute,
+            per_run_csv_name=args.per_run_csv_name,
+            skip_pae_png=args.skip_pae_png,
         )
     else:
         p.error("Provide PATHS")
+
+
+if __name__ == "__main__":
+    main()
