@@ -26,6 +26,11 @@ def main() -> None:
         help="Do not write per-model PAE heatmap PNG files",
     )
     p.add_argument(
+        "--skip_biophysical_scores",
+        action="store_true",
+        help="Skip expensive biophysical calculations (hydrogen bonds, salt bridges, disulfides, shape complementarity, buried surface area, solvation energy) to save time",
+    )
+    p.add_argument(
         "--per_run_csv_name",
         default="interfaces.csv",
         help="Filename to write inside each processed run directory",
@@ -51,6 +56,7 @@ def main() -> None:
             force_recompute=args.force_recompute,
             per_run_csv_name=args.per_run_csv_name,
             skip_pae_png=args.skip_pae_png,
+            skip_biophysical_scores=args.skip_biophysical_scores,
         )
     else:
         p.error("Provide PATHS")
