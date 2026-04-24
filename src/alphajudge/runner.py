@@ -14,7 +14,7 @@ import numpy as np
 
 from .parsers import pick_parser
 from .complex import Complex
-from .biophysics.voroif_gnn import VoroIFGNNWrapper
+from .ml.voroif_gnn import VoroIFGNNWrapper
 
 logger = logging.getLogger(__name__)
 
