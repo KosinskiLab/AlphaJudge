@@ -16,7 +16,8 @@ class AF3Parser(BaseParser):
 
         def load_model(model: str):
             model_dir = d / model
-            struct = self._load_structure(self._guess_struct(d, model))
+            struct_path = self._guess_struct(d, model)
+            struct = self._load_structure(struct_path)
             chains, rim, cid = self._maps(struct)
 
             summary = self._read_json(model_dir / "summary_confidences.json")
@@ -39,7 +40,7 @@ class AF3Parser(BaseParser):
                 pae_matrix=pae, max_pae=max_pae,
                 iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=ranking_score,
                 plddt_residue=plddt, chain_pair_iptm=chain_pair_iptm,
-            )
+            ), Path(struct_path)
         return Run(order=order, source="af3", load_model=load_model)
 
     # ---- AF3-specific helpers ----

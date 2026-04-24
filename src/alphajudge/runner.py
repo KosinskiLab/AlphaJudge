@@ -14,6 +14,7 @@ import numpy as np
 
 from .parsers import pick_parser
 from .complex import Complex
+from .biophysics.voroif_gnn import VoroIFGNNWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,9 @@ def process(
     *,
     per_run_csv_name: str = "interfaces.csv",
     skip_pae_png: bool = False,
+    voroif_gnn_path: str | Path | None = None,
+    voroif_conda_path: str | Path | None = None,
+    voroif_conda_env: str | None = None,
 ) -> Path | None:
     d = Path(directory)
     parser = pick_parser(d)
@@ -77,11 +81,23 @@ def process(
     models = [run.order[0]] if models_to_analyse == "best" else run.order
     job = d.resolve().name
 
+    voroif_wrapper = None
+    if voroif_gnn_path:
+        voroif_wrapper = VoroIFGNNWrapper(
+            app_path=voroif_gnn_path,
+            conda_path=voroif_conda_path or "~/miniforge3/envs/voroif-gnn-v2-env",
+            conda_env=voroif_conda_env or "voroif-gnn-v2-env",
+        )
+
     rows: list[dict] = []
     for m in models:
         try:
-            structure, confidence = run.load_model(m)
+            structure, confidence, model_path = run.load_model(m)
             comp = Complex(structure, confidence, contact_thresh, pae_filter, ipsae_pae_cutoff)
+
+            voroif_scores = {}
+            if voroif_wrapper:
+                voroif_scores = voroif_wrapper.run(model_path)
 
             global_score = (
                 comp.mpDockQ
@@ -132,6 +148,7 @@ def process(
                         "interface_sc": iface.sc,
                         "interface_area": iface.int_area,
                         "interface_solv_en": iface.int_solv_en,
+                        **{f"voroif_{k}": v for k, v in voroif_scores.items()},
                     }
                 )
 
@@ -208,6 +225,9 @@ def _process_one_run(
     force_recompute: bool,
     per_run_csv_name: str,
     skip_pae_png: bool,
+    voroif_gnn_path: str | Path | None = None,
+    voroif_conda_path: str | Path | None = None,
+    voroif_conda_env: str | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Worker: process a single run dir (or reuse interfaces.csv) and optionally return rows for aggregation.
@@ -242,6 +262,9 @@ def _process_one_run(
         ipsae_pae_cutoff,
         per_run_csv_name=per_run_csv_name,
         skip_pae_png=skip_pae_png,
+        voroif_gnn_path=voroif_gnn_path,
+        voroif_conda_path=voroif_conda_path,
+        voroif_conda_env=voroif_conda_env,
     )
 
     if want_summary and out_path is not None:
@@ -265,6 +288,9 @@ def process_many(
     force_recompute: bool = False,
     per_run_csv_name: str = "interfaces.csv",
     skip_pae_png: bool = False,
+    voroif_gnn_path: str | Path | None = None,
+    voroif_conda_path: str | Path | None = None,
+    voroif_conda_env: str | None = None,
 ) -> Path | None:
     """
     Process one or more directories. Optionally recurse into nested directories
@@ -336,6 +362,9 @@ def process_many(
                     force_recompute,
                     per_run_csv_name,
                     skip_pae_png,
+                    voroif_gnn_path=voroif_gnn_path,
+                    voroif_conda_path=voroif_conda_path,
+                    voroif_conda_env=voroif_conda_env,
                 )
                 if summary_csv and rows:
                     aggregated_rows.extend(rows)
@@ -358,6 +387,9 @@ def process_many(
                     force_recompute,
                     per_run_csv_name,
                     skip_pae_png,
+                    voroif_gnn_path=voroif_gnn_path,
+                    voroif_conda_path=voroif_conda_path,
+                    voroif_conda_env=voroif_conda_env,
                 )
                 for d in unique_run_dirs
             ]

@@ -75,7 +75,7 @@ The package exposes an `alphajudge` entry point.
 
 ```bash
 # Basic synopsis
-alphajudge PATH [PATH ...] \
+alphajudge PATH \
   --models_to_analyse {best,all} \
   --contact_thresh 8.0 \
   --pae_filter 100.0 \
@@ -83,6 +83,9 @@ alphajudge PATH [PATH ...] \
   [-r|--recursive] \
   [-o|--summary SUMMARY.csv] \
   [--cores]
+  [--voroif_gnn_path PATH]
+  [--voroif_conda_path PATH]
+  [--voroif_conda_env voroif-gnn-v2-env]
 ```
 
 - **PATH**: One or more run directories or roots to search
@@ -93,6 +96,9 @@ alphajudge PATH [PATH ...] \
 - **-r / --recursive**: Recursively discover runs under each PATH
 - **-o / --summary**: Write an aggregated CSV across all processed runs
 - **--cores**: Number of processes to use across run directories (0 = all available cores)
+- **--voroif_gnn_path: VoroIF-GNN-v2-app directory, if provided, VoroIF scores are computed
+- **--voroif_conda_path: Path to the conda env voroif-gnn-v2-env (default: '~/miniforge3/envs/voroif-gnn-v2-env')
+- **--voroif_conda_env: env name (default: 'voroif-gnn-v2-env')
 
 Outputs:
 - Always writes `interfaces.csv` inside each processed run directory.

@@ -36,6 +36,21 @@ def main() -> None:
         default=1,
         help="Number of processes to use across run directories (0 = all available cores)",
     )
+    p.add_argument(
+        "--voroif_gnn_path",
+        default=None,
+        help="Path to the voroif-gnn-v2-app directory (if provided, VoroIF scores are computed)",
+    )
+    p.add_argument(
+        "--voroif_conda_path",
+        default=None,
+        help="Path to the conda installation or environment for voroif-gnn-v2-env",
+    )
+    p.add_argument(
+        "--voroif_conda_env",
+        default=None,
+        help="Name of the conda environment for voroif-gnn-v2",
+    )
     args = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
     if args.paths:
@@ -51,6 +66,9 @@ def main() -> None:
             force_recompute=args.force_recompute,
             per_run_csv_name=args.per_run_csv_name,
             skip_pae_png=args.skip_pae_png,
+            voroif_gnn_path=args.voroif_gnn_path,
+            voroif_conda_path=args.voroif_conda_path,
+            voroif_conda_env=args.voroif_conda_env,
         )
     else:
         p.error("Provide PATHS")

@@ -15,9 +15,10 @@ class AF2Parser(BaseParser):
         order = rj["order"]
 
         def load_model(model: str):
-            struct = self._load_structure(self._guess_struct(d, model))
+            struct_path = self._guess_struct(d, model)
+            struct = self._load_structure(struct_path)
             chains, rim, _ = self._maps(struct)
-
+            
             # AF2: full residue×residue matrix in pae_{model}.json
             pae_payload = self._read_json(d / f"pae_{model}.json")
             pae = np.array(pae_payload[0]["predicted_aligned_error"], dtype=float)
@@ -48,5 +49,5 @@ class AF2Parser(BaseParser):
                 pae_matrix=pae.tolist(), max_pae=max_pae,
                 iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=conf,
                 plddt_residue=plddt,
-            )
+            ), Path(struct_path)
         return Run(order=order, source="af2", load_model=load_model)

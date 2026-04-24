@@ -12,7 +12,7 @@ from ..confidence import Confidence
 class Run:
     order: list[str]
     source: str
-    load_model: Callable[[str], tuple[Any, Confidence]]
+    load_model: Callable[[str], tuple[Any, Confidence, Path]]
 
 class BaseParser(ABC):
     name: str = "base"
