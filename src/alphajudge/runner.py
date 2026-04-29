@@ -126,6 +126,7 @@ def process(
                         "interface_sb": iface.sb,
                         "interface_ss": iface.ss,
                         "interface_sc": iface.sc,
+                        "interface_zernike_sc": iface.zernike_sc,
                         "interface_area": iface.int_area,
                         "interface_solv_en": iface.int_solv_en,
                     })

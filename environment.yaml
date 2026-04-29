@@ -10,5 +10,5 @@ dependencies:
   - pytest
   - pytest-xdist
   - pip:
+    - git+https://github.com/maurerv/pyzernike
     - -e .
-

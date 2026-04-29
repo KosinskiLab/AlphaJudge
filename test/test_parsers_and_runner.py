@@ -45,6 +45,7 @@ EXPECTED_OUTPUT_COLUMNS = {
     "interface_sb",
     "interface_ss",
     "interface_sc",
+    "interface_zernike_sc",
     "interface_area",
     "interface_solv_en",
 }

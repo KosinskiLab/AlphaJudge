@@ -1,6 +1,6 @@
 # AlphaJudge: I am the score!
 
-AlphaJudge evaluates AlphaFold-predicted protein complexes by merging AI-derived confidences (ipTM, pTM, iptm+ptm/confidence_score, pLDDT, PAE) with fast, self-contained interface biophysics (contacts, H-bonds, salt bridges, buried area, solvation proxy, shape complementarity) into a tidy CSV for downstream analysis.
+AlphaJudge evaluates AlphaFold-predicted protein complexes by merging AI-derived confidences (ipTM, pTM, iptm+ptm/confidence_score, pLDDT, PAE) with fast, self-contained interface biophysics (contacts, H-bonds, salt bridges, buried area, solvation proxy, shape complementarity, Zernike similarity) into a tidy CSV for downstream analysis.
 
 
 ![AlphaJudge icon](images/icon.png)
@@ -18,7 +18,7 @@ AlphaJudge parses AF2, AF3, and Boltz-2 outputs and summarizes per-model / per-i
 | category | metrics (examples) | notes |
 | --- | --- | --- |
 | **AlphaFold internal** | ipTM, pTM, iptm+ptm/confidence_score, avg interface PAE, avg interface pLDDT | unified for AF2/AF3 |
-| **physical & geometric** | buried area, contact pairs, H-bonds, salt bridges, interface composition, shape complementarity | self-contained |
+| **physical & geometric** | buried area, contact pairs, H-bonds, salt bridges, interface composition, shape complementarity, Zernike similarity | self-contained |
 | **derived scores** | pDockQ, pDockQ2, mpDockQ, ipSAE, LIS, interface score | implemented here |
 
 Use cases: rank poses, sanity-check AF confidences, or export features for ML.
@@ -65,7 +65,7 @@ or pip editable install in existing environment
 ```bash
 pip install -e .
 ```
-Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`, `scipy`, `matplotlib` (installed automatically with `pip install .`). Test extras (`pytest`, `pytest-cov`, `pytest-xdist`, `pytest-timeout`) are available via `pip install -e ".[test]"`.
+Requirements: Python ≥3.10; runtime deps are `biopython`, `numpy`, `scipy`, `matplotlib`, and `pyzernike` (pulled from GitHub during `pip install .`). Test extras (`pytest`, `pytest-cov`, `pytest-xdist`, `pytest-timeout`) are available via `pip install -e ".[test]"`.
 
 ---
 
@@ -169,7 +169,7 @@ process_many(
 )
 ```
 
-Key outputs per interface include: `average_interface_pae`, `interface_average_plddt`, `interface_contact_pairs`, `interface_area`, `interface_hb`, `interface_sb`, `interface_sc`, `interface_solv_en`, `interface_ipSAE`, `interface_LIS`, `interface_pDockQ2`, and per-run `pDockQ/mpDockQ`.
+Key outputs per interface include: `average_interface_pae`, `interface_average_plddt`, `interface_contact_pairs`, `interface_area`, `interface_hb`, `interface_sb`, `interface_sc`, `interface_zernike_sc`, `interface_solv_en`, `interface_ipSAE`, `interface_LIS`, `interface_pDockQ2`, and per-run `pDockQ/mpDockQ`.
 
 ---
 
@@ -196,7 +196,7 @@ AlphaJudge writes `interfaces.csv` with one row per interface (and includes the 
 - **pDockQ/mpDockQ**: global dockQ-like score (mpDockQ if multimer; pDockQ if dimer)
 - **average_interface_pae, interface_average_plddt, interface_num_intf_residues**
 - **interface_contact_pairs, interface_score, interface_pDockQ2, interface_ipSAE, interface_LIS**
-- **interface_hb, interface_sb, interface_sc, interface_area, interface_solv_en**
+- **interface_hb, interface_sb, interface_sc, interface_zernike_sc, interface_area, interface_solv_en**
 
 Exact header is asserted in tests to be consistent across AF2 and AF3 runs.
 

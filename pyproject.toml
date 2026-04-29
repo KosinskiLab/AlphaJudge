@@ -13,6 +13,7 @@ dependencies = [
     "numpy",
     "scipy",
     "matplotlib",
+    "pyzernike @ git+https://github.com/maurerv/pyzernike",
 ]
 license = { text = "MIT" }
 
