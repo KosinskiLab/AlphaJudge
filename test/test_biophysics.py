@@ -18,6 +18,8 @@ from alphajudge.biophysics import (
 from alphajudge.biophysics.sc import interface_surface_dots
 from alphajudge.biophysics.zernike import (
     GAUSSIAN_WEIGHTED_SCORE,
+    GAP_ZERNIKE_BANDPASS_SCORE,
+    GAP_ZERNIKE_NONUNIFORM_SCORE,
     GAP_ZERNIKE_RATIO_SCORE,
     GAP_ZERNIKE_WEIGHTED_SCORE,
     HARD_CUTOFF_SCORE,
@@ -276,7 +278,13 @@ END
     )
     far_b = _transform_residues(residues_b, shift=(30.0, 0.0, 0.0))
 
-    for score_mode in (SHARED_GRID_OVERLAP_SCORE, GAP_ZERNIKE_RATIO_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE):
+    for score_mode in (
+        SHARED_GRID_OVERLAP_SCORE,
+        GAP_ZERNIKE_RATIO_SCORE,
+        GAP_ZERNIKE_WEIGHTED_SCORE,
+        GAP_ZERNIKE_NONUNIFORM_SCORE,
+        GAP_ZERNIKE_BANDPASS_SCORE,
+    ):
         ab = zernike_shape_complementarity(
             residues_a,
             residues_b,
