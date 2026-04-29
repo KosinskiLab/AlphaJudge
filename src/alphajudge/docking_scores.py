@@ -5,7 +5,10 @@ from dataclasses import dataclass
 
 
 def _sigmoid(x: float, L: float, x0: float, k: float, b: float) -> float:
-    return L / (1 + math.exp(-k * (x - x0))) + b
+    try:
+        return L / (1 + math.exp(-k * (x - x0))) + b
+    except OverflowError:
+        return b  # exp → inf means the logistic term → 0
 
 
 @dataclass(frozen=True)

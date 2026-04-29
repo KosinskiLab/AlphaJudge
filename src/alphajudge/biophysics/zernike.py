@@ -26,6 +26,19 @@ JOINT_SURFACE_GAUSSIAN = "joint_surface_gaussian"
 HARD_CUTOFF_SCORE = "hard_cutoff"
 GAUSSIAN_WEIGHTED_SCORE = "gaussian_weighted"
 JOINT_LOW_ORDER_RATIO_SCORE = "joint_low_order_ratio"
+SHARED_GRID_OVERLAP_SCORE = "shared_grid_overlap"
+GAP_ZERNIKE_RATIO_SCORE = "gap_zernike_ratio"
+GAP_ZERNIKE_WEIGHTED_SCORE = "gap_zernike_weighted"
+
+GAP_SCORE_MODES = {
+    GAP_ZERNIKE_RATIO_SCORE,
+    GAP_ZERNIKE_WEIGHTED_SCORE,
+}
+GRID_SCORE_MODES = {
+    SHARED_GRID_OVERLAP_SCORE,
+    GAP_ZERNIKE_RATIO_SCORE,
+    GAP_ZERNIKE_WEIGHTED_SCORE,
+}
 
 JOINT_REPRESENTATIONS = {
     JOINT_RESIDUE_BEAD_GAUSSIAN,
@@ -72,6 +85,9 @@ _SHORT_SCORE_TAGS = {
     HARD_CUTOFF_SCORE: "hard",
     GAUSSIAN_WEIGHTED_SCORE: "weighted",
     JOINT_LOW_ORDER_RATIO_SCORE: "jointratio",
+    SHARED_GRID_OVERLAP_SCORE: "overlap",
+    GAP_ZERNIKE_RATIO_SCORE: "gapratio",
+    GAP_ZERNIKE_WEIGHTED_SCORE: "gapweighted",
 }
 
 
@@ -112,7 +128,7 @@ class ZernikeSpec:
                 parts.append(f"pr{_tag_float(self.surface_probe_radius)}")
         if self.score_mode != HARD_CUTOFF_SCORE:
             parts.append(f"m{_SHORT_SCORE_TAGS[self.score_mode]}")
-        if self.score_mode == GAUSSIAN_WEIGHTED_SCORE:
+        if self.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}:
             parts.append(f"n{_tag_float(self.order_decay_n0)}")
         fit_to = fit_order_value(self)
         if fit_to != int(self.order):
@@ -144,7 +160,9 @@ def zernike_source_representation(representation: str) -> str:
     return representation
 
 
-def zernike_candidate_family(representation: str) -> str:
+def zernike_candidate_family(representation: str, score_mode: str | None = None) -> str:
+    if score_mode in GRID_SCORE_MODES:
+        return "grid_gap"
     return "joint_volume" if representation in JOINT_REPRESENTATIONS else "per_side"
 
 
@@ -472,6 +490,65 @@ def zernike_similarity_from_coefficients(coeff1: np.ndarray, coeff2: np.ndarray)
     return float(np.clip(similarity, -1.0, 1.0))
 
 
+def zernike_l2_normalized_grid(grid: np.ndarray) -> np.ndarray:
+    """Return a non-negative L2-normalized grid, or all zeros for empty input."""
+    arr = np.maximum(np.asarray(grid, dtype=np.float32), 0.0)
+    norm = float(np.linalg.norm(arr.ravel()))
+    if norm <= 0.0:
+        return np.zeros_like(arr, dtype=np.float32)
+    return (arr / np.float32(norm)).astype(np.float32, copy=False)
+
+
+def zernike_shared_grid_overlap(grid1: np.ndarray, grid2: np.ndarray) -> float:
+    """L2-normalized density overlap in the shared interface box."""
+    norm1 = zernike_l2_normalized_grid(grid1)
+    norm2 = zernike_l2_normalized_grid(grid2)
+    if float(np.sum(norm1)) <= 0.0 or float(np.sum(norm2)) <= 0.0:
+        return 0.0
+    overlap = float(np.dot(norm1.ravel(), norm2.ravel()))
+    return float(np.clip(overlap, 0.0, 1.0))
+
+
+def zernike_gap_grid(grid1: np.ndarray, grid2: np.ndarray) -> np.ndarray:
+    """Build a soft shared-contact density from two L2-normalized side grids."""
+    norm1 = zernike_l2_normalized_grid(grid1)
+    norm2 = zernike_l2_normalized_grid(grid2)
+    if float(np.sum(norm1)) <= 0.0 or float(np.sum(norm2)) <= 0.0:
+        return np.zeros_like(norm1, dtype=np.float32)
+    return np.sqrt(norm1 * norm2).astype(np.float32, copy=False)
+
+
+def zernike_low_order_energy_ratio(coeff: np.ndarray, order: int, fit_order: int | None = None) -> float:
+    fit_to = fit_order_value(int(order), fit_order)
+    prefix = zernike_descriptor_prefix_length(int(order))
+    full_prefix = zernike_descriptor_prefix_length(fit_to)
+    full_coeff = np.asarray(coeff[:full_prefix], dtype=float)
+    denom = float(np.dot(full_coeff, full_coeff))
+    if denom <= 0.0:
+        return 0.0
+    low_coeff = np.asarray(coeff[:prefix], dtype=float)
+    numer = float(np.dot(low_coeff, low_coeff))
+    return float(np.clip(numer / denom, 0.0, 1.0))
+
+
+def zernike_weighted_energy_ratio(
+    coeff: np.ndarray,
+    order: int,
+    fit_order: int | None = None,
+    order_decay_n0: float = DEFAULT_ORDER_DECAY_N0,
+) -> float:
+    fit_to = fit_order_value(int(order), fit_order)
+    full_prefix = zernike_descriptor_prefix_length(fit_to)
+    full_coeff = np.asarray(coeff[:full_prefix], dtype=float)
+    denom = float(np.dot(full_coeff, full_coeff))
+    if denom <= 0.0:
+        return 0.0
+    weights = zernike_order_weights(fit_to, float(order_decay_n0))
+    weighted = full_coeff * weights
+    numer = float(np.dot(weighted, weighted))
+    return float(np.clip(numer / denom, 0.0, 1.0))
+
+
 def zernike_joint_grid(grid1: np.ndarray, grid2: np.ndarray) -> np.ndarray:
     joint = np.asarray(grid1, dtype=np.float32) + np.asarray(grid2, dtype=np.float32)
     mass = float(np.sum(joint))
@@ -494,6 +571,20 @@ def zernike_coefficient_bundle_from_grids(
     else:
         joint_coeff = zernike_coefficients(joint_grid, fit_to)
     return coeff1, coeff2, joint_coeff
+
+
+def zernike_gap_coefficient_bundle_from_grids(
+    grid1: np.ndarray,
+    grid2: np.ndarray,
+    fit_order: int,
+) -> tuple[np.ndarray, float]:
+    overlap = zernike_shared_grid_overlap(grid1, grid2)
+    gap_grid = zernike_gap_grid(grid1, grid2)
+    if float(np.sum(gap_grid)) <= 0.0:
+        gap_coeff = np.zeros(zernike_descriptor_prefix_length(int(fit_order)), dtype=float)
+    else:
+        gap_coeff = zernike_coefficients(gap_grid, int(fit_order))
+    return gap_coeff, overlap
 
 
 def zernike_score_from_coefficients(
@@ -520,14 +611,35 @@ def zernike_score_from_coefficients(
         return zernike_similarity_from_coefficients(coeff1[:prefix] * weights, coeff2[:prefix] * weights)
 
     if score_mode == JOINT_LOW_ORDER_RATIO_SCORE:
-        full_prefix = zernike_descriptor_prefix_length(fit_to)
-        denom = float(np.dot(coeff1[:full_prefix], coeff1[:full_prefix]))
-        if denom <= 0.0:
-            return 0.0
-        numer = float(np.dot(coeff1[:prefix], coeff1[:prefix]))
-        return float(np.clip(numer / denom, 0.0, 1.0))
+        return zernike_low_order_energy_ratio(coeff1, int(order), fit_to)
 
     raise ValueError(f"Unknown Zernike score mode {score_mode!r}")
+
+
+def zernike_score_from_gap_coefficients(
+    gap_coeff: np.ndarray,
+    grid_overlap: float,
+    *,
+    order: int,
+    score_mode: str,
+    fit_order: int | None = None,
+    order_decay_n0: float = DEFAULT_ORDER_DECAY_N0,
+) -> float:
+    overlap = float(np.clip(float(grid_overlap), 0.0, 1.0))
+    if score_mode == SHARED_GRID_OVERLAP_SCORE:
+        return overlap
+    if score_mode == GAP_ZERNIKE_RATIO_SCORE:
+        ratio = zernike_low_order_energy_ratio(gap_coeff, int(order), fit_order)
+        return float(np.clip(overlap * ratio, 0.0, 1.0))
+    if score_mode == GAP_ZERNIKE_WEIGHTED_SCORE:
+        ratio = zernike_weighted_energy_ratio(
+            gap_coeff,
+            int(order),
+            fit_order,
+            order_decay_n0=float(order_decay_n0),
+        )
+        return float(np.clip(overlap * ratio, 0.0, 1.0))
+    raise ValueError(f"Unknown Zernike gap score mode {score_mode!r}")
 
 
 def zernike_descriptors_from_grids(
@@ -554,6 +666,17 @@ def zernike_score_from_grids(
     order_decay_n0: float = DEFAULT_ORDER_DECAY_N0,
 ) -> float:
     fit_to = fit_order_value(int(order), fit_order)
+    if score_mode in GRID_SCORE_MODES:
+        gap_coeff, grid_overlap = zernike_gap_coefficient_bundle_from_grids(grid1, grid2, fit_to)
+        return zernike_score_from_gap_coefficients(
+            gap_coeff,
+            grid_overlap,
+            order=order,
+            score_mode=score_mode,
+            fit_order=fit_to,
+            order_decay_n0=order_decay_n0,
+        )
+
     coeff1, coeff2, joint_coeff = zernike_coefficient_bundle_from_grids(grid1, grid2, fit_to)
     if score_mode == JOINT_LOW_ORDER_RATIO_SCORE:
         return zernike_score_from_coefficients(
@@ -688,6 +811,10 @@ __all__ = [
     "DEFAULT_SURFACE_TRIM_CUTOFF",
     "GAUSSIAN_REPRESENTATIONS",
     "GAUSSIAN_WEIGHTED_SCORE",
+    "GAP_SCORE_MODES",
+    "GAP_ZERNIKE_RATIO_SCORE",
+    "GAP_ZERNIKE_WEIGHTED_SCORE",
+    "GRID_SCORE_MODES",
     "HARD_CUTOFF_SCORE",
     "JOINT_LOW_ORDER_RATIO_SCORE",
     "JOINT_REPRESENTATIONS",
@@ -699,6 +826,7 @@ __all__ = [
     "SURFACE_GAUSSIAN",
     "SURFACE_PROXIMITY_GAUSSIAN",
     "SURFACE_REPRESENTATIONS",
+    "SHARED_GRID_OVERLAP_SCORE",
     "WeightedPointCloud",
     "ZernikeSpec",
     "fit_order_value",
@@ -709,15 +837,22 @@ __all__ = [
     "zernike_descriptor_prefix_length",
     "zernike_descriptors",
     "zernike_descriptors_from_grids",
+    "zernike_gap_coefficient_bundle_from_grids",
+    "zernike_gap_grid",
     "zernike_grids",
     "zernike_grids_from_point_clouds",
     "zernike_joint_grid",
     "zernike_order_weights",
     "zernike_point_clouds",
     "zernike_score_from_coefficients",
+    "zernike_score_from_gap_coefficients",
     "zernike_score_from_grids",
     "zernike_shape_complementarity",
+    "zernike_shared_grid_overlap",
     "zernike_similarity_from_coefficients",
     "zernike_similarity_from_grids",
     "zernike_source_representation",
+    "zernike_weighted_energy_ratio",
+    "zernike_l2_normalized_grid",
+    "zernike_low_order_energy_ratio",
 ]
