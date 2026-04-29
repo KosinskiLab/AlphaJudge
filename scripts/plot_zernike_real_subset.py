@@ -16,12 +16,12 @@ from matplotlib.colors import LinearSegmentedColormap
 from alphajudge.biophysics.zernike import (
     ATOM_GAUSSIAN,
     GAUSSIAN_WEIGHTED_SCORE,
-    GAP_ZERNIKE_RATIO_SCORE,
     GAP_ZERNIKE_WEIGHTED_SCORE,
     HARD_CUTOFF_SCORE,
     JOINT_LOW_ORDER_RATIO_SCORE,
     JOINT_RESIDUE_BEAD_GAUSSIAN,
     RESIDUE_BEAD_GAUSSIAN,
+    SHARED_GRID_OVERLAP_SCORE,
     ZernikeSpec,
     zernike_shape_complementarity,
 )
@@ -57,17 +57,17 @@ CANDIDATES = OrderedDict(
             },
         ),
         (
-            "atom_gap_ratio",
+            "atom_gap_overlap",
             {
                 "label": "Atom Gap",
                 "kind": "zernike",
-                "panel_title": "Atom Gap Ratio\n24^3, N=6, sigma=2.0",
+                "panel_title": "Atom Gap Overlap\n32^3, sigma=1.5",
                 "spec": ZernikeSpec(
                     representation=ATOM_GAUSSIAN,
-                    grid_size=24,
-                    order=6,
-                    sigma=2.0,
-                    score_mode=GAP_ZERNIKE_RATIO_SCORE,
+                    grid_size=32,
+                    order=0,
+                    sigma=1.5,
+                    score_mode=SHARED_GRID_OVERLAP_SCORE,
                     fit_order=12,
                 ),
             },
