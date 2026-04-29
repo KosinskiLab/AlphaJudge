@@ -11,6 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from Bio.PDB import MMCIFParser, PDBParser
+from matplotlib.colors import LinearSegmentedColormap
 
 from alphajudge.biophysics.zernike import (
     ATOM_GAUSSIAN,
@@ -94,6 +95,24 @@ NEG_COLOR = "#B04E37"
 FACE_BG = "#F6F4EF"
 GRID = "#D7DDD8"
 TEXT = "#21332D"
+MUTED = "#5B6D65"
+
+
+def subset_auroc(rows: list[dict], field: str) -> float:
+    pos = [float(row[field]) for row in rows if row["label"] == "positive"]
+    neg = [float(row[field]) for row in rows if row["label"] == "negative"]
+    if not pos or not neg:
+        return float("nan")
+    wins = 0.0
+    total = 0
+    for p_score in pos:
+        for n_score in neg:
+            total += 1
+            if p_score > n_score:
+                wins += 1.0
+            elif p_score == n_score:
+                wins += 0.5
+    return wins / total
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -237,68 +256,113 @@ def plot_rows(rows: list[dict], out_path: Path, *, organism: str, backend: str, 
         }
     )
 
-    ylabels = []
-    for row in rows:
-        prefix = "POS" if row["label"] == "positive" else "NEG"
-        ylabels.append(f"{prefix}  {row['pair']}")
-    y = np.arange(len(rows))
-    colors = [POS_COLOR if row["label"] == "positive" else NEG_COLOR for row in rows]
+    candidate_keys = list(CANDIDATES)
+    candidate_labels = [CANDIDATES[key]["label"] for key in candidate_keys]
+    row_labels = [
+        f"{'POS' if row['label'] == 'positive' else 'NEG'}  {row['pair']}"
+        for row in rows
+    ]
 
-    fig, axes = plt.subplots(
-        1,
-        len(CANDIDATES),
-        figsize=(16, max(7, 0.55 * len(rows) + 2.6)),
-        sharey=True,
-        constrained_layout=True,
+    raw = np.asarray(
+        [[float(row[key]) for key in candidate_keys] for row in rows],
+        dtype=float,
     )
+    normalized = np.zeros_like(raw)
+    for col_idx in range(raw.shape[1]):
+        col = raw[:, col_idx]
+        lo = float(np.min(col))
+        hi = float(np.max(col))
+        normalized[:, col_idx] = 0.5 if hi == lo else (col - lo) / (hi - lo)
 
-    for idx, (key, config) in enumerate(CANDIDATES.items()):
-        ax = axes[idx]
-        x = [float(row[key]) for row in rows]
-        ax.scatter(x, y, s=70, c=colors, edgecolors="white", linewidths=0.8, zorder=3)
-        ax.set_title(config["panel_title"], fontsize=12, fontweight="bold", pad=12)
-        ax.grid(axis="x", color=GRID, linewidth=1.0, alpha=0.9)
-        ax.set_axisbelow(True)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        if x:
-            lo = min(x)
-            hi = max(x)
-            span = max(hi - lo, 1e-6)
-            pad = 0.12 * span
-            left = max(0.0, lo - pad)
-            right = hi + pad
-            if key != "interface_sc":
-                right = min(1.02, right)
-            ax.set_xlim(left, right)
-        ax.set_xlabel("score", fontsize=11)
-        if idx == 0:
-            ax.set_yticks(y, ylabels, fontsize=10)
-        else:
-            ax.tick_params(axis="y", length=0)
+    aucs = [subset_auroc(rows, key) for key in candidate_keys]
+    fig = plt.figure(figsize=(14.5, max(9.2, 0.44 * len(rows) + 4.8)))
+    grid = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[0.92, 3.35])
+    ax_auc = fig.add_subplot(grid[0, 0])
+    ax_heat = fig.add_subplot(grid[1, 0])
+    fig.subplots_adjust(left=0.22, right=0.93, top=0.84, bottom=0.12, hspace=0.48)
 
-    if rows:
-        split = sum(1 for row in rows if row["label"] == "positive") - 0.5
-        if split >= 0:
-            for ax in axes:
-                ax.axhline(split, color=GRID, linewidth=1.6, linestyle=(0, (4, 4)))
-                ax.invert_yaxis()
+    bar_y = np.arange(len(candidate_keys))
+    bar_colors = ["#314D45", "#2E7D4D", "#789C55", "#8D7A45"]
+    ax_auc.barh(bar_y, aucs, color=bar_colors, height=0.58)
+    ax_auc.axvline(0.5, color="#9EA9A2", linewidth=1.4, linestyle=(0, (4, 4)))
+    ax_auc.text(0.505, -0.62, "random", color=MUTED, fontsize=9, ha="left", va="center")
+    ax_auc.set_xlim(0.0, 1.0)
+    ax_auc.set_yticks(bar_y, candidate_labels, fontsize=11)
+    ax_auc.invert_yaxis()
+    ax_auc.set_xlabel("subset AUROC", fontsize=11)
+    ax_auc.set_title("Separation summary: subset AUROC, higher is better", fontsize=13, fontweight="bold", pad=10)
+    ax_auc.grid(axis="x", color=GRID, linewidth=1.0)
+    ax_auc.set_axisbelow(True)
+    for y_pos, auc in zip(bar_y, aucs):
+        ax_auc.text(
+            min(auc + 0.035, 0.96),
+            y_pos,
+            f"{auc:.2f}",
+            va="center",
+            ha="left",
+            fontsize=11,
+            fontweight="bold",
+            color=TEXT,
+        )
+    for spine in ("top", "right", "left"):
+        ax_auc.spines[spine].set_visible(False)
+    ax_auc.tick_params(axis="y", length=0)
+
+    cmap = LinearSegmentedColormap.from_list("interaction_like", ["#F3EFE8", "#BBD7BC", "#2E7D4D"])
+    image = ax_heat.imshow(normalized, aspect="auto", cmap=cmap, vmin=0.0, vmax=1.0)
+    ax_heat.set_xticks(np.arange(len(candidate_keys)), candidate_labels, fontsize=11)
+    ax_heat.set_yticks(np.arange(len(row_labels)), row_labels, fontsize=10)
+    ax_heat.tick_params(axis="both", length=0)
+    ax_heat.set_title(
+        "Scores by complex: higher/darker within each score = more interaction-like; POS high, NEG low",
+        fontsize=13,
+        fontweight="bold",
+        pad=16,
+    )
+    ax_heat.set_xticks(np.arange(-0.5, len(candidate_keys), 1), minor=True)
+    ax_heat.set_yticks(np.arange(-0.5, len(rows), 1), minor=True)
+    ax_heat.grid(which="minor", color=FACE_BG, linewidth=2.4)
+    ax_heat.tick_params(which="minor", bottom=False, left=False)
+
+    split = sum(1 for row in rows if row["label"] == "positive") - 0.5
+    if split >= 0:
+        ax_heat.axhline(split, color="#FFFFFF", linewidth=5)
+
+    for i in range(raw.shape[0]):
+        for j in range(raw.shape[1]):
+            value = raw[i, j]
+            label = f"{value:.3f}" if value < 0.2 else f"{value:.2f}"
+            ax_heat.text(
+                j,
+                i,
+                label,
+                ha="center",
+                va="center",
+                fontsize=9,
+                color="#0F241D" if normalized[i, j] < 0.72 else "white",
+                fontweight="bold" if normalized[i, j] > 0.72 else "normal",
+            )
+
+    for idx, row in enumerate(rows):
+        ax_heat.get_yticklabels()[idx].set_color(POS_COLOR if row["label"] == "positive" else NEG_COLOR)
+        ax_heat.get_yticklabels()[idx].set_fontweight("bold")
+    for spine in ax_heat.spines.values():
+        spine.set_visible(False)
+
+    cbar = fig.colorbar(image, ax=ax_heat, fraction=0.03, pad=0.025)
+    cbar.set_ticks([0.0, 1.0])
+    cbar.set_ticklabels(["low", "high"])
+    cbar.ax.tick_params(labelsize=9, length=0)
+    cbar.outline.set_visible(False)
 
     fig.suptitle(
-        f"Real benchmark subset on {organism} {backend.upper()} structures",
+        (
+            f"Real {organism} {backend.upper()} subset: can Zernike rescue low-SC positives?\n"
+            f"{per_class} lowest-SC positives + {per_class} highest-SC negatives"
+        ),
         fontsize=18,
         fontweight="bold",
-        y=1.02,
-    )
-    fig.text(
-        0.5,
-        0.02,
-        (
-            f"{per_class} lowest-SC positives and {per_class} highest-SC negatives from best_interfaces.csv; "
-            "complex names shown on the y-axis."
-        ),
-        ha="center",
-        fontsize=10.5,
+        y=0.965,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
