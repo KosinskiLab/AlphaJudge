@@ -1,14 +1,19 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
-import csv, numpy as np
+import csv
+import logging
+import numpy as np
 from . import BaseParser, Run
 from ..confidence import Confidence
+
+logger = logging.getLogger(__name__)
 
 class AF3Parser(BaseParser):
     name = "af3"
 
-    def detect(self, d: Path) -> bool:
+    @staticmethod
+    def detect(d: Path) -> bool:
         return (d / "ranking_scores.csv").exists()
 
     def parse_run(self, d: Path) -> Run:
@@ -62,7 +67,14 @@ class AF3Parser(BaseParser):
         if "predicted_aligned_error" in matrix:
             # some AF3 builds still store a full matrix in confidences.json
             m = np.array(matrix["predicted_aligned_error"], dtype=float)
-            if m.size: pae[:, :] = m
+            if m.size:
+                if m.shape == pae.shape:
+                    pae[:, :] = m
+                else:
+                    logger.warning(
+                        f"predicted_aligned_error shape {m.shape} != expected {pae.shape}; "
+                        "skipping PAE assignment."
+                    )
             max_pae = float(matrix.get("max_predicted_aligned_error", np.nan))
             if not np.isfinite(max_pae):
                 max_pae = float(np.nanmax(m)) if m.size else float('nan')
@@ -107,6 +119,9 @@ class AF3Parser(BaseParser):
                     if ri and rj:
                         pae[np.ix_(ri, rj)] = 100.0 if val is None else val
         else:
-            raise ValueError("unknown AF3 confidences schema")
+            logger.warning(
+                "No recognised PAE keys in confidences.json/summary_confidences.json; "
+                "using default PAE=100 for all residue pairs."
+            )
 
         return pae.tolist(), float(max_pae)

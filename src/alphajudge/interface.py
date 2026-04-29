@@ -35,10 +35,12 @@ class Interface:
         self.chain1 = list(chain1)
         self.chain2 = list(chain2)
 
+        # Always set shared refs first
+        self._pae = np.asarray(self.c.conf.pae_matrix)
+        self._rim = self.c._res_index_map
+        self._cid = self.c._chain_indices_by_id
+
         if not self.chain1 or not self.chain2:
-            self._pae = np.asarray(self.c.conf.pae_matrix)
-            self._rim = self.c._res_index_map
-            self._cid = self.c._chain_indices_by_id
             self._cid1_id = ""
             self._cid2_id = ""
             self._idx1 = np.array([], dtype=int)
@@ -48,10 +50,6 @@ class Interface:
             self._avg_plddt = 0.0
             self._avg_pae = 0.0
             return
-
-        self._pae = np.asarray(self.c.conf.pae_matrix)
-        self._rim = self.c._res_index_map
-        self._cid = self.c._chain_indices_by_id
 
         self._cid1_id = self.chain1[0].get_parent().id
         self._cid2_id = self.chain2[0].get_parent().id
@@ -173,15 +171,15 @@ class Interface:
         b = _lis_dir(self._idx2, self._idx1)
         return float(0.5 * (a + b))
 
-    @property
+    @cached_property
     def polar(self) -> float:
         return self._frac(POLAR_RES)
 
-    @property
+    @cached_property
     def hydrophobic(self) -> float:
         return self._frac(HYDROPHOBIC_RES)
 
-    @property
+    @cached_property
     def charged(self) -> float:
         return self._frac(CHARGED_RES)
 
@@ -238,7 +236,7 @@ class Interface:
         return r1, r2, res_pairs
 
     def _contact_atom_data(self) -> tuple[list, list, np.ndarray, np.ndarray]:
-        key = (self._cid1_id, self._cid2_id)
+        key = tuple(sorted((self._cid1_id, self._cid2_id)))
         cached = self.c._contact_ns_cache.get(key)
         if cached is None:
             a1, a2 = [], []
@@ -292,24 +290,24 @@ class Interface:
                 return 0.0
 
             min_d0 = 2.0 if self._has_na else 1.0
+            sub = self._pae[np.ix_(idx_src, idx_dst)]   # (n_src, n_dst)
+            valid = sub < cutoff                          # (n_src, n_dst)
+            n_valid = valid.sum(axis=1)                   # (n_src,)
+            has_valid = n_valid > 0
+            if not has_valid.any():
+                return 0.0
 
-            best, found = 0.0, False
-            for i in idx_src:
-                row = self._pae[i, idx_dst]
-                valid = row < cutoff
-                if not np.any(valid):
-                    continue
-                n = int(np.count_nonzero(valid))
-                length = max(27.0, float(n))
-                d0 = max(min_d0, 1.24 * (length - 15.0) ** (1.0 / 3.0) - 1.8)
-                ptm = 1.0 / (1.0 + (row[valid] / d0) ** 2)
-                best = max(best, float(np.mean(ptm)))
-                found = True
-            return best if found else 0.0
+            length = np.maximum(27.0, n_valid.astype(float))
+            d0 = np.maximum(min_d0, 1.24 * (length - 15.0) ** (1.0 / 3.0) - 1.8)
+            ptm_all = 1.0 / (1.0 + (sub / d0[:, None]) ** 2)
+            row_scores = np.where(
+                has_valid,
+                np.where(valid, ptm_all, 0.0).sum(axis=1) / np.maximum(n_valid, 1),
+                0.0,
+            )
+            return float(row_scores.max())
 
-        a = calc(self._idx1, self._idx2)
-        b = calc(self._idx2, self._idx1)
-        return max(a, b)
+        return max(calc(self._idx1, self._idx2), calc(self._idx2, self._idx1))
 
     def _frac(self, names: set[str]) -> float:
         residues = self._res1 | self._res2

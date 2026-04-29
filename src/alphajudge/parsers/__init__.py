@@ -17,8 +17,9 @@ class Run:
 class BaseParser(ABC):
     name: str = "base"
 
+    @staticmethod
     @abstractmethod
-    def detect(self, d: Path) -> bool: ...
+    def detect(d: Path) -> bool: ...
     @abstractmethod
     def parse_run(self, d: Path) -> Run: ...
 

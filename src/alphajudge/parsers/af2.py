@@ -7,12 +7,15 @@ from ..confidence import Confidence
 class AF2Parser(BaseParser):
     name = "af2"
 
-    def detect(self, d: Path) -> bool:
+    @staticmethod
+    def detect(d: Path) -> bool:
         return (d / "ranking_debug.json").exists()
 
     def parse_run(self, d: Path) -> Run:
         rj = self._read_json(d / "ranking_debug.json")
-        order = rj["order"]
+        order = rj.get("order")
+        if not order:
+            raise ValueError(f"ranking_debug.json missing or has no 'order' key in {d}")
 
         def load_model(model: str):
             struct = self._load_structure(self._guess_struct(d, model))
@@ -40,8 +43,11 @@ class AF2Parser(BaseParser):
                     iptm_ptm = 0.8 * iptm + 0.2 * ptm
                 conf = iptm_ptm
             else:
-                iptm, ptm = 0.0, self._safe_float(rj["ptm"][model])
-                iptm_ptm = ptm; conf = ptm
+                # Dimer: no iptm concept; use None so the CSV shows NaN, not 0
+                iptm = None
+                ptm = self._safe_float(rj.get("ptm", {}).get(model))
+                iptm_ptm = ptm
+                conf = ptm
 
             plddt = self._plddt(chains, rim)
             return struct, Confidence(

@@ -160,15 +160,16 @@ def process(
         except Exception as e:
             logger.error(f"error processing model {m}: {e}")
 
+    if not rows:
+        logger.warning(f"no interface rows produced for {d}; skipping CSV write")
+        return None
+
     out = d / per_run_csv_name
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="") as f:
-        if rows:
-            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            w.writeheader()
-            w.writerows(rows)
-        else:
-            f.write("")
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
     logger.info(f"wrote {out}")
     return out
 
@@ -177,10 +178,8 @@ def _discover_run_dirs(root: Path) -> list[Path]:
     """Walk a directory tree and collect directories that look like supported runs."""
     results: list[Path] = []
 
-    # include root too (rglob doesn't include it)
-    candidates = [root] if root.is_dir() else []
-    if root.is_dir():
-        candidates.extend([p for p in root.rglob("*") if p.is_dir()])
+    # os.walk yields (dirpath, subdirs, files) — dirs only, no stat per file
+    candidates = [Path(dp) for dp, _, _ in os.walk(root)] if root.is_dir() else []
 
     for d in candidates:
         try:

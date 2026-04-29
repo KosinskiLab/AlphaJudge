@@ -6,11 +6,11 @@ from functools import cached_property
 from typing import Any
 
 import numpy as np
-from Bio.PDB import Chain, NeighborSearch
+from Bio.PDB import Chain
 
 from .confidence import Confidence
 from .docking_scores import MPDOCKQ
-from .geometry import is_pae_token_residue, representative_atom
+from .geometry import is_pae_token_residue
 from .interface import Interface
 
 logger = logging.getLogger(__name__)
@@ -101,32 +101,7 @@ class Complex:
 
     @cached_property
     def contact_pairs_global(self) -> int:
-        reps = []
-        for chain in self._chains:
-            for residue in chain:
-                try:
-                    reps.append((representative_atom(residue), residue))
-                except Exception:
-                    continue
-        if not reps:
-            return 0
-
-        ns = NeighborSearch([atom for atom, _ in reps])
-        seen, count = set(), 0
-        for atom1, residue1 in reps:
-            for atom2 in ns.search(atom1.coord, self.contact_thresh):
-                if atom2 is atom1:
-                    continue
-                residue2 = atom2.get_parent()
-                chain1 = residue1.get_parent().id
-                chain2 = residue2.get_parent().id
-                if chain1 == chain2:
-                    continue
-                key = tuple(sorted([(chain1, residue1.id), (chain2, residue2.id)]))
-                if key not in seen:
-                    seen.add(key)
-                    count += 1
-        return count
+        return sum(iface.contact_pairs for iface in self.interfaces)
 
     @cached_property
     def mpDockQ(self) -> float:
