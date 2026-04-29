@@ -25,10 +25,12 @@ from alphajudge.biophysics.zernike import (
     HARD_CUTOFF_SCORE,
     JOINT_LOW_ORDER_RATIO_SCORE,
     JOINT_RESIDUE_BEAD_GAUSSIAN,
+    NORMAL_GAP_FIELD_SCORE,
     RESIDUE_BEAD_GAUSSIAN,
     SHARED_GRID_OVERLAP_SCORE,
     SURFACE_BINARY,
     SURFACE_GAUSSIAN,
+    SURFACE_NORMAL_GAP,
     zernike_grids,
     zernike_score_from_grids,
 )
@@ -412,6 +414,95 @@ END
     )
 
     assert contacting > separated
+
+
+def test_normal_gap_zernike_is_bounded_symmetric_and_zero_without_contacts():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CB  ALA A   1       1.300   0.300   0.100  1.00 50.00           C
+ATOM      3  CA  SER B   1       2.700   0.100   0.100  1.00 50.00           C
+ATOM      4  CB  SER B   1       3.800   0.700   0.300  1.00 50.00           C
+TER
+END
+"""
+    )
+    far_b = _transform_residues(residues_b, shift=(25.0, 0.0, 0.0))
+
+    ab = zernike_shape_complementarity(
+        residues_a,
+        residues_b,
+        representation=SURFACE_NORMAL_GAP,
+        score_mode=NORMAL_GAP_FIELD_SCORE,
+        grid_size=16,
+        order=4,
+        sigma=1.5,
+        surface_density=3.0,
+        surface_probe_radius=2.3,
+        surface_trim_cutoff=3.0,
+        fit_order=8,
+    )
+    ba = zernike_shape_complementarity(
+        residues_b,
+        residues_a,
+        representation=SURFACE_NORMAL_GAP,
+        score_mode=NORMAL_GAP_FIELD_SCORE,
+        grid_size=16,
+        order=4,
+        sigma=1.5,
+        surface_density=3.0,
+        surface_probe_radius=2.3,
+        surface_trim_cutoff=3.0,
+        fit_order=8,
+    )
+    no_contact = zernike_shape_complementarity(
+        residues_a,
+        far_b,
+        representation=SURFACE_NORMAL_GAP,
+        score_mode=NORMAL_GAP_FIELD_SCORE,
+        grid_size=16,
+        order=4,
+        sigma=1.5,
+        surface_density=3.0,
+        surface_probe_radius=2.3,
+        surface_trim_cutoff=3.0,
+        fit_order=8,
+    )
+
+    assert 0.0 <= ab <= 1.0
+    assert ab == pytest.approx(ba, abs=1e-6)
+    assert no_contact == 0.0
+
+
+def test_normal_gap_zernike_is_translation_stable():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CB  ALA A   1       1.300   0.300   0.100  1.00 50.00           C
+ATOM      3  CA  SER B   1       2.700   0.100   0.100  1.00 50.00           C
+ATOM      4  CB  SER B   1       3.800   0.700   0.300  1.00 50.00           C
+TER
+END
+"""
+    )
+    translated_a = _transform_residues(residues_a, shift=(11.0, -3.0, 4.0))
+    translated_b = _transform_residues(residues_b, shift=(11.0, -3.0, 4.0))
+
+    kwargs = {
+        "representation": SURFACE_NORMAL_GAP,
+        "score_mode": NORMAL_GAP_FIELD_SCORE,
+        "grid_size": 16,
+        "order": 4,
+        "sigma": 1.5,
+        "surface_density": 3.0,
+        "surface_probe_radius": 2.3,
+        "surface_trim_cutoff": 3.0,
+        "fit_order": 8,
+    }
+    baseline = zernike_shape_complementarity(residues_a, residues_b, **kwargs)
+    translated = zernike_shape_complementarity(translated_a, translated_b, **kwargs)
+
+    assert translated == pytest.approx(baseline, abs=1e-6)
 
 
 def test_zernike_fit_order_reuses_lower_order_for_hard_and_weighted_scores():

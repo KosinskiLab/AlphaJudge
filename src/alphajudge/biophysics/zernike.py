@@ -20,6 +20,7 @@ RESIDUE_BEAD_GAUSSIAN = "residue_bead_gaussian"
 SURFACE_BINARY = "surface_binary"
 SURFACE_GAUSSIAN = "surface_gaussian"
 SURFACE_PROXIMITY_GAUSSIAN = "surface_proximity_gaussian"
+SURFACE_NORMAL_GAP = "surface_normal_gap"
 JOINT_RESIDUE_BEAD_GAUSSIAN = "joint_residue_bead_gaussian"
 JOINT_SURFACE_GAUSSIAN = "joint_surface_gaussian"
 
@@ -31,6 +32,11 @@ GAP_ZERNIKE_RATIO_SCORE = "gap_zernike_ratio"
 GAP_ZERNIKE_WEIGHTED_SCORE = "gap_zernike_weighted"
 GAP_ZERNIKE_NONUNIFORM_SCORE = "gap_zernike_nonuniform"
 GAP_ZERNIKE_BANDPASS_SCORE = "gap_zernike_bandpass"
+NORMAL_GAP_FIELD_SCORE = "normal_gap_field"
+
+NORMAL_GAP_SCORE_MODES = {
+    NORMAL_GAP_FIELD_SCORE,
+}
 
 GAP_SCORE_MODES = {
     GAP_ZERNIKE_RATIO_SCORE,
@@ -55,6 +61,7 @@ GAUSSIAN_REPRESENTATIONS = {
     RESIDUE_BEAD_GAUSSIAN,
     SURFACE_GAUSSIAN,
     SURFACE_PROXIMITY_GAUSSIAN,
+    SURFACE_NORMAL_GAP,
     JOINT_RESIDUE_BEAD_GAUSSIAN,
     JOINT_SURFACE_GAUSSIAN,
 }
@@ -62,7 +69,11 @@ SURFACE_REPRESENTATIONS = {
     SURFACE_BINARY,
     SURFACE_GAUSSIAN,
     SURFACE_PROXIMITY_GAUSSIAN,
+    SURFACE_NORMAL_GAP,
     JOINT_SURFACE_GAUSSIAN,
+}
+NORMAL_GAP_REPRESENTATIONS = {
+    SURFACE_NORMAL_GAP,
 }
 PER_SIDE_REPRESENTATIONS = {
     ATOM_GAUSSIAN,
@@ -86,6 +97,10 @@ DEFAULT_SURFACE_TRIM_CUTOFF = 1.6
 DEFAULT_SURFACE_PROBE_RADIUS = PROBE_RADIUS
 DEFAULT_PROXIMITY_LENGTH_SCALE = 2.5
 DEFAULT_ORDER_DECAY_N0 = 4.0
+DEFAULT_NORMAL_GAP_GOOD_SCALE = 1.0
+DEFAULT_NORMAL_GAP_FAR_SCALE = 2.5
+DEFAULT_NORMAL_GAP_CLASH_WEIGHT = 0.75
+DEFAULT_NORMAL_GAP_FAR_WEIGHT = 0.5
 
 _SHORT_SCORE_TAGS = {
     HARD_CUTOFF_SCORE: "hard",
@@ -96,6 +111,7 @@ _SHORT_SCORE_TAGS = {
     GAP_ZERNIKE_WEIGHTED_SCORE: "gapweighted",
     GAP_ZERNIKE_NONUNIFORM_SCORE: "gapnonuniform",
     GAP_ZERNIKE_BANDPASS_SCORE: "gapband",
+    NORMAL_GAP_FIELD_SCORE: "normalgap",
 }
 
 
@@ -103,6 +119,27 @@ _SHORT_SCORE_TAGS = {
 class WeightedPointCloud:
     points: np.ndarray
     weights: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class NormalGapFieldBundle:
+    good_grid: np.ndarray
+    clash_grid: np.ndarray
+    far_grid: np.ndarray
+    good_mass: float
+    clash_mass: float
+    far_mass: float
+
+
+@dataclass(frozen=True, slots=True)
+class NormalGapCoefficientBundle:
+    good_coeff: np.ndarray
+    clash_coeff: np.ndarray
+    far_coeff: np.ndarray
+    good_mass: float
+    clash_mass: float
+    far_mass: float
+    fit_order: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +157,10 @@ class ZernikeSpec:
     score_mode: str = DEFAULT_SCORE_MODE
     fit_order: int | None = None
     order_decay_n0: float = DEFAULT_ORDER_DECAY_N0
+    normal_gap_good_scale: float = DEFAULT_NORMAL_GAP_GOOD_SCALE
+    normal_gap_far_scale: float = DEFAULT_NORMAL_GAP_FAR_SCALE
+    normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT
+    normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT
 
     def candidate_id(self) -> str:
         parts = [self.representation, f"g{self.grid_size}", f"o{self.order}"]
@@ -127,6 +168,13 @@ class ZernikeSpec:
             parts.append(f"s{_tag_float(self.sigma)}")
         if self.representation in SURFACE_REPRESENTATIONS:
             parts.append(f"d{_tag_float(self.surface_density)}")
+            if not math.isclose(
+                float(self.surface_trim_cutoff),
+                float(DEFAULT_SURFACE_TRIM_CUTOFF),
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            ):
+                parts.append(f"tr{_tag_float(self.surface_trim_cutoff)}")
             if not math.isclose(
                 float(self.surface_probe_radius),
                 float(DEFAULT_SURFACE_PROBE_RADIUS),
@@ -138,6 +186,15 @@ class ZernikeSpec:
             parts.append(f"m{_SHORT_SCORE_TAGS[self.score_mode]}")
         if self.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}:
             parts.append(f"n{_tag_float(self.order_decay_n0)}")
+        if self.score_mode in NORMAL_GAP_SCORE_MODES:
+            if not math.isclose(float(self.normal_gap_good_scale), DEFAULT_NORMAL_GAP_GOOD_SCALE):
+                parts.append(f"gs{_tag_float(self.normal_gap_good_scale)}")
+            if not math.isclose(float(self.normal_gap_far_scale), DEFAULT_NORMAL_GAP_FAR_SCALE):
+                parts.append(f"fs{_tag_float(self.normal_gap_far_scale)}")
+            if not math.isclose(float(self.normal_gap_clash_weight), DEFAULT_NORMAL_GAP_CLASH_WEIGHT):
+                parts.append(f"cw{_tag_float(self.normal_gap_clash_weight)}")
+            if not math.isclose(float(self.normal_gap_far_weight), DEFAULT_NORMAL_GAP_FAR_WEIGHT):
+                parts.append(f"fw{_tag_float(self.normal_gap_far_weight)}")
         fit_to = fit_order_value(self)
         if fit_to != int(self.order):
             parts.append(f"f{fit_to}")
@@ -169,6 +226,8 @@ def zernike_source_representation(representation: str) -> str:
 
 
 def zernike_candidate_family(representation: str, score_mode: str | None = None) -> str:
+    if representation in NORMAL_GAP_REPRESENTATIONS or score_mode in NORMAL_GAP_SCORE_MODES:
+        return "normal_gap"
     if score_mode in GRID_SCORE_MODES:
         return "grid_gap"
     return "joint_volume" if representation in JOINT_REPRESENTATIONS else "per_side"
@@ -338,6 +397,128 @@ def _density_grid(
 
     volume[~_unit_ball_mask(grid_size)] = 0.0
     return volume
+
+
+def _normal_gap_midpoint_clouds(
+    dots_a: np.ndarray,
+    normals_a: np.ndarray,
+    dots_b: np.ndarray,
+    normals_b: np.ndarray,
+    *,
+    good_scale: float,
+    far_scale: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if dots_a.size == 0 or dots_b.size == 0:
+        empty_points = np.empty((0, 3), dtype=float)
+        empty_weights = np.empty(0, dtype=float)
+        return empty_points, empty_weights, empty_weights, empty_weights
+
+    dist, nearest = cKDTree(dots_b).query(dots_a)
+    opposite = dots_b[nearest]
+    opposite_normals = normals_b[nearest]
+    midpoints = 0.5 * (dots_a + opposite)
+
+    normal_complement = np.clip(
+        -np.einsum("ij,ij->i", normals_a, opposite_normals),
+        0.0,
+        1.0,
+    )
+    good_scale = max(float(good_scale), 1e-6)
+    far_scale = max(float(far_scale), 1e-6)
+    close = np.exp(-((dist / good_scale) ** 2))
+    far = 1.0 - np.exp(-((dist / far_scale) ** 2))
+
+    good_weights = normal_complement * close
+    # Close surface samples with poor opposing normals are likely side-chain
+    # clashes or tangential/nonspecific contacts after smoothing.
+    clash_weights = (1.0 - normal_complement) * close
+    # Opposite-facing but distant samples represent an interface gap.
+    far_weights = normal_complement * far
+    return midpoints, good_weights, clash_weights, far_weights
+
+
+def zernike_normal_gap_field_bundle(
+    residues1,
+    residues2,
+    *,
+    distance: float = DEFAULT_DISTANCE,
+    grid_size: int = DEFAULT_GRID_SIZE,
+    sigma: float = DEFAULT_SIGMA,
+    padding: float = DEFAULT_PADDING,
+    surface_density: float = DEFAULT_SURFACE_DENSITY,
+    surface_trim_cutoff: float = DEFAULT_SURFACE_TRIM_CUTOFF,
+    surface_probe_radius: float = DEFAULT_SURFACE_PROBE_RADIUS,
+    normal_gap_good_scale: float = DEFAULT_NORMAL_GAP_GOOD_SCALE,
+    normal_gap_far_scale: float = DEFAULT_NORMAL_GAP_FAR_SCALE,
+) -> NormalGapFieldBundle:
+    """Build smoothed Connolly midpoint fields for good contact, clash, and gap."""
+    d1, n1, d2, n2 = interface_surface_dots(
+        residues1,
+        residues2,
+        distance=float(distance),
+        density=float(surface_density),
+        trim_cutoff=float(surface_trim_cutoff),
+        probe_radius=float(surface_probe_radius),
+    )
+    if d1.size == 0 or d2.size == 0:
+        raise ValueError("No interface surface dots found for normal-gap Zernike descriptor.")
+
+    centroid, radius = _shared_normalization(
+        WeightedPointCloud(d1, np.ones(len(d1), dtype=float)),
+        WeightedPointCloud(d2, np.ones(len(d2), dtype=float)),
+        float(padding),
+    )
+
+    mid12, good12, clash12, far12 = _normal_gap_midpoint_clouds(
+        d1,
+        n1,
+        d2,
+        n2,
+        good_scale=float(normal_gap_good_scale),
+        far_scale=float(normal_gap_far_scale),
+    )
+    mid21, good21, clash21, far21 = _normal_gap_midpoint_clouds(
+        d2,
+        n2,
+        d1,
+        n1,
+        good_scale=float(normal_gap_good_scale),
+        far_scale=float(normal_gap_far_scale),
+    )
+    midpoints = np.vstack([mid12, mid21])
+    good_weights = np.concatenate([good12, good21])
+    clash_weights = np.concatenate([clash12, clash21])
+    far_weights = np.concatenate([far12, far21])
+
+    good_grid = _density_grid(
+        WeightedPointCloud(midpoints, good_weights),
+        centroid,
+        radius,
+        int(grid_size),
+        float(sigma),
+    )
+    clash_grid = _density_grid(
+        WeightedPointCloud(midpoints, clash_weights),
+        centroid,
+        radius,
+        int(grid_size),
+        float(sigma),
+    )
+    far_grid = _density_grid(
+        WeightedPointCloud(midpoints, far_weights),
+        centroid,
+        radius,
+        int(grid_size),
+        float(sigma),
+    )
+    return NormalGapFieldBundle(
+        good_grid=good_grid,
+        clash_grid=clash_grid,
+        far_grid=far_grid,
+        good_mass=float(np.sum(good_weights)),
+        clash_mass=float(np.sum(clash_weights)),
+        far_mass=float(np.sum(far_weights)),
+    )
 
 
 def _surface_point_clouds(
@@ -676,6 +857,110 @@ def zernike_score_from_gap_coefficients(
     raise ValueError(f"Unknown Zernike gap score mode {score_mode!r}")
 
 
+def zernike_score_from_normal_gap_fields(
+    bundle: NormalGapFieldBundle,
+    *,
+    order: int,
+    fit_order: int | None = None,
+    normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT,
+    normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT,
+) -> float:
+    """Score normal-aware contact after low-pass Zernike filtering of all fields."""
+    coeffs = zernike_normal_gap_coefficient_bundle(
+        bundle,
+        fit_order_value(int(order), fit_order),
+    )
+    return zernike_score_from_normal_gap_coefficients(
+        coeffs,
+        order=order,
+        fit_order=fit_order,
+        normal_gap_clash_weight=normal_gap_clash_weight,
+        normal_gap_far_weight=normal_gap_far_weight,
+    )
+
+
+def zernike_normal_gap_coefficient_bundle(
+    bundle: NormalGapFieldBundle,
+    fit_order: int,
+) -> NormalGapCoefficientBundle:
+    """Fit Zernike coefficients for good-contact, clash, and far-gap fields."""
+    fit_to = int(fit_order)
+    length = zernike_descriptor_prefix_length(fit_to)
+
+    def _coeff_or_zero(grid: np.ndarray) -> np.ndarray:
+        if float(np.sum(grid)) <= 0.0:
+            return np.zeros(length, dtype=float)
+        return zernike_coefficients(grid, fit_to)
+
+    return NormalGapCoefficientBundle(
+        good_coeff=_coeff_or_zero(bundle.good_grid),
+        clash_coeff=_coeff_or_zero(bundle.clash_grid),
+        far_coeff=_coeff_or_zero(bundle.far_grid),
+        good_mass=float(bundle.good_mass),
+        clash_mass=float(bundle.clash_mass),
+        far_mass=float(bundle.far_mass),
+        fit_order=fit_to,
+    )
+
+
+def _normal_gap_field_signal(
+    coeff: np.ndarray,
+    mass: float,
+    *,
+    order: int,
+    fit_order: int,
+) -> float:
+    if max(float(mass), 0.0) <= 0.0:
+        return 0.0
+    if int(order) >= 2:
+        structured_ratio = zernike_band_energy_ratio(coeff, 2, int(order), fit_order)
+    else:
+        structured_ratio = zernike_low_order_energy_ratio(coeff, int(order), fit_order)
+    return max(float(mass), 0.0) * structured_ratio
+
+
+def zernike_score_from_normal_gap_coefficients(
+    coeffs: NormalGapCoefficientBundle,
+    *,
+    order: int,
+    fit_order: int | None = None,
+    normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT,
+    normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT,
+) -> float:
+    """Score good-contact signal against Zernike-smoothed clash and far-gap fields."""
+    requested_fit = fit_order_value(int(order), fit_order if fit_order is not None else coeffs.fit_order)
+    fit_to = min(requested_fit, int(coeffs.fit_order))
+    score_order = min(int(order), fit_to)
+    good_signal = _normal_gap_field_signal(
+        coeffs.good_coeff,
+        coeffs.good_mass,
+        order=score_order,
+        fit_order=fit_to,
+    )
+    if good_signal <= 0.0:
+        return 0.0
+    clash_signal = _normal_gap_field_signal(
+        coeffs.clash_coeff,
+        coeffs.clash_mass,
+        order=score_order,
+        fit_order=fit_to,
+    )
+    far_signal = _normal_gap_field_signal(
+        coeffs.far_coeff,
+        coeffs.far_mass,
+        order=score_order,
+        fit_order=fit_to,
+    )
+    denom = (
+        good_signal
+        + max(float(normal_gap_clash_weight), 0.0) * clash_signal
+        + max(float(normal_gap_far_weight), 0.0) * far_signal
+    )
+    if denom <= 0.0:
+        return 0.0
+    return float(np.clip(good_signal / denom, 0.0, 1.0))
+
+
 def zernike_descriptors_from_grids(
     grid1: np.ndarray,
     grid2: np.ndarray,
@@ -797,6 +1082,10 @@ def zernike_shape_complementarity(
     score_mode: str = DEFAULT_SCORE_MODE,
     fit_order: int | None = None,
     order_decay_n0: float = DEFAULT_ORDER_DECAY_N0,
+    normal_gap_good_scale: float = DEFAULT_NORMAL_GAP_GOOD_SCALE,
+    normal_gap_far_scale: float = DEFAULT_NORMAL_GAP_FAR_SCALE,
+    normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT,
+    normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT,
 ) -> float:
     """
     Compare low-pass 3D Zernike interface descriptors.
@@ -804,6 +1093,28 @@ def zernike_shape_complementarity(
     Returns 0.0 when no interface can be voxelized robustly.
     """
     try:
+        if representation in NORMAL_GAP_REPRESENTATIONS or score_mode in NORMAL_GAP_SCORE_MODES:
+            bundle = zernike_normal_gap_field_bundle(
+                residues1,
+                residues2,
+                distance=distance,
+                grid_size=grid_size,
+                sigma=sigma,
+                padding=padding,
+                surface_density=surface_density,
+                surface_trim_cutoff=surface_trim_cutoff,
+                surface_probe_radius=surface_probe_radius,
+                normal_gap_good_scale=normal_gap_good_scale,
+                normal_gap_far_scale=normal_gap_far_scale,
+            )
+            return zernike_score_from_normal_gap_fields(
+                bundle,
+                order=order,
+                fit_order=fit_order,
+                normal_gap_clash_weight=normal_gap_clash_weight,
+                normal_gap_far_weight=normal_gap_far_weight,
+            )
+
         grid1, grid2 = zernike_grids(
             residues1,
             residues2,
@@ -835,6 +1146,10 @@ __all__ = [
     "DEFAULT_GRID_SIZE",
     "DEFAULT_ORDER",
     "DEFAULT_ORDER_DECAY_N0",
+    "DEFAULT_NORMAL_GAP_CLASH_WEIGHT",
+    "DEFAULT_NORMAL_GAP_FAR_SCALE",
+    "DEFAULT_NORMAL_GAP_FAR_WEIGHT",
+    "DEFAULT_NORMAL_GAP_GOOD_SCALE",
     "DEFAULT_PADDING",
     "DEFAULT_PROXIMITY_LENGTH_SCALE",
     "DEFAULT_REPRESENTATION",
@@ -856,13 +1171,19 @@ __all__ = [
     "JOINT_REPRESENTATIONS",
     "JOINT_RESIDUE_BEAD_GAUSSIAN",
     "JOINT_SURFACE_GAUSSIAN",
+    "NORMAL_GAP_FIELD_SCORE",
+    "NORMAL_GAP_REPRESENTATIONS",
+    "NORMAL_GAP_SCORE_MODES",
     "PER_SIDE_REPRESENTATIONS",
     "RESIDUE_BEAD_GAUSSIAN",
     "SURFACE_BINARY",
     "SURFACE_GAUSSIAN",
+    "SURFACE_NORMAL_GAP",
     "SURFACE_PROXIMITY_GAUSSIAN",
     "SURFACE_REPRESENTATIONS",
     "SHARED_GRID_OVERLAP_SCORE",
+    "NormalGapCoefficientBundle",
+    "NormalGapFieldBundle",
     "WeightedPointCloud",
     "ZernikeSpec",
     "fit_order_value",
@@ -879,11 +1200,15 @@ __all__ = [
     "zernike_grids",
     "zernike_grids_from_point_clouds",
     "zernike_joint_grid",
+    "zernike_normal_gap_coefficient_bundle",
+    "zernike_normal_gap_field_bundle",
     "zernike_order_weights",
     "zernike_point_clouds",
     "zernike_score_from_coefficients",
     "zernike_score_from_gap_coefficients",
     "zernike_score_from_grids",
+    "zernike_score_from_normal_gap_coefficients",
+    "zernike_score_from_normal_gap_fields",
     "zernike_shape_complementarity",
     "zernike_shared_grid_overlap",
     "zernike_similarity_from_coefficients",
