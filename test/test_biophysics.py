@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import StringIO
 
+import pytest
 from Bio.PDB import PDBParser
 
 from alphajudge.biophysics import (
@@ -9,6 +10,7 @@ from alphajudge.biophysics import (
     disulfide_bonds,
     hydrogen_bonds,
     salt_bridges,
+    zernike_shape_complementarity,
 )
 
 
@@ -74,3 +76,39 @@ END
     )
 
     assert buried_surface_area(residues_a, residues_b) > 0.0
+
+
+def test_zernike_shape_complementarity_is_symmetric_and_bounded():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CB  ALA A   1       1.500   0.500   0.200  1.00 50.00           C
+ATOM      3  CA  LEU A   2       0.000   2.000   0.500  1.00 50.00           C
+ATOM      4  CB  LEU A   2       1.200   2.600   0.800  1.00 50.00           C
+ATOM      5  CA  GLY B   1       3.000   0.200   0.000  1.00 50.00           C
+ATOM      6  O   GLY B   1       3.800   0.700   0.100  1.00 50.00           O
+ATOM      7  CA  SER B   2       3.200   2.100   0.600  1.00 50.00           C
+ATOM      8  OG  SER B   2       4.000   2.700   1.000  1.00 50.00           O
+TER
+END
+"""
+    )
+
+    ab = zernike_shape_complementarity(residues_a, residues_b, grid_size=16, order=4, sigma=1.0)
+    ba = zernike_shape_complementarity(residues_b, residues_a, grid_size=16, order=4, sigma=1.0)
+
+    assert ab == pytest.approx(ba, abs=1e-6)
+    assert 0.0 <= ab <= 1.0
+
+
+def test_zernike_shape_complementarity_returns_zero_without_contacts():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CA  GLY B   1      20.000   0.000   0.000  1.00 50.00           C
+TER
+END
+"""
+    )
+
+    assert zernike_shape_complementarity(residues_a, residues_b, grid_size=16, order=4) == 0.0

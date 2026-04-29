@@ -14,6 +14,7 @@ from .biophysics import (
     interface_solvation_energy as _pisa_interface_solvation_energy,
     salt_bridges as _pisa_salt_bridges,
     shape_complementarity as _scasa_sc,
+    zernike_shape_complementarity as _zernike_sc,
 )
 from .docking_scores import D0, PDOCKQ, PDOCKQ2
 from .geometry import (
@@ -205,6 +206,10 @@ class Interface:
     @cached_property
     def sc(self) -> float:
         return _scasa_sc(self.chain1, self.chain2)
+
+    @cached_property
+    def zernike_sc(self) -> float:
+        return _zernike_sc(self.chain1, self.chain2, distance=self.c.contact_thresh)
 
     @cached_property
     def int_area(self) -> float:

@@ -7,6 +7,7 @@ from .scoring import (
     interface_solvation_energy,
     salt_bridges,
     disulfide_bonds,
+    zernike_shape_complementarity,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "interface_solvation_energy",
     "salt_bridges",
     "disulfide_bonds",
+    "zernike_shape_complementarity",
 ]
