@@ -39,8 +39,12 @@ from alphajudge.biophysics.zernike import (
     JOINT_LOW_ORDER_RATIO_SCORE,
     JOINT_REPRESENTATIONS,
     JOINT_RESIDUE_BEAD_GAUSSIAN,
+    NORMAL_GAP_FIELD_SCORE,
+    NORMAL_GAP_REPRESENTATIONS,
+    NORMAL_GAP_SCORE_MODES,
     RESIDUE_BEAD_GAUSSIAN,
     SURFACE_GAUSSIAN,
+    SURFACE_NORMAL_GAP,
     SURFACE_REPRESENTATIONS,
     SHARED_GRID_OVERLAP_SCORE,
     WeightedPointCloud,
@@ -50,9 +54,12 @@ from alphajudge.biophysics.zernike import (
     zernike_coefficient_bundle_from_grids,
     zernike_gap_coefficient_bundle_from_grids,
     zernike_grids_from_point_clouds,
+    zernike_normal_gap_coefficient_bundle,
+    zernike_normal_gap_field_bundle,
     zernike_point_clouds,
     zernike_score_from_coefficients,
     zernike_score_from_gap_coefficients,
+    zernike_score_from_normal_gap_coefficients,
     zernike_source_representation,
 )
 
@@ -395,6 +402,8 @@ def candidate_groups(candidates: Iterable[ZernikeSpec]) -> dict[tuple, list[Zern
             float(spec.surface_trim_cutoff) if source in SURFACE_REPRESENTATIONS else None,
             float(spec.surface_probe_radius) if source in SURFACE_REPRESENTATIONS else None,
             float(spec.proximity_length_scale) if source == "surface_proximity_gaussian" else None,
+            float(spec.normal_gap_good_scale) if source in NORMAL_GAP_REPRESENTATIONS else None,
+            float(spec.normal_gap_far_scale) if source in NORMAL_GAP_REPRESENTATIONS else None,
             fit_order_value(spec),
         )
         groups[key].append(spec)
@@ -456,6 +465,24 @@ def tuned_atom_gap_penalty_specs() -> list[ZernikeSpec]:
             order=8,
             score_mode=GAP_ZERNIKE_BANDPASS_SCORE,
         ),
+    ]
+
+
+def tuned_surface_normal_gap_specs() -> list[ZernikeSpec]:
+    common = {
+        "representation": SURFACE_NORMAL_GAP,
+        "grid_size": 32,
+        "sigma": 1.5,
+        "surface_density": 3.0,
+        "surface_probe_radius": 2.3,
+        "surface_trim_cutoff": 3.0,
+        "score_mode": NORMAL_GAP_FIELD_SCORE,
+        "fit_order": MAX_SWEEP_ORDER,
+    }
+    return [
+        ZernikeSpec(**common, order=4),
+        ZernikeSpec(**common, order=6),
+        ZernikeSpec(**common, order=8),
     ]
 
 
@@ -538,6 +565,7 @@ def build_full_candidates() -> list[ZernikeSpec]:
     candidates: list[ZernikeSpec] = build_cosine_diagnostic_candidates()
     candidates.append(_tuned_atom_gap_overlap_spec())
     candidates.extend(tuned_atom_gap_penalty_specs())
+    candidates.extend(tuned_surface_normal_gap_specs())
     for grid_size in (24, 32):
         for sigma in (2.0, 3.0):
             _append_gap_candidates(candidates, representation=ATOM_GAUSSIAN, grid_size=grid_size, sigma=sigma)
@@ -565,6 +593,7 @@ def build_smoke_candidates() -> list[ZernikeSpec]:
         _atom_cosine_baseline_spec(),
         _tuned_atom_gap_overlap_spec(),
         *tuned_atom_gap_penalty_specs(),
+        *tuned_surface_normal_gap_specs(),
         ZernikeSpec(
             representation=RESIDUE_BEAD_GAUSSIAN,
             grid_size=24,
@@ -939,6 +968,10 @@ def baseline_sc_results(rows: list[dict]) -> list[dict]:
                 "score_mode": "baseline",
                 "fit_order": "",
                 "order_decay_n0": "",
+                "normal_gap_good_scale": "",
+                "normal_gap_far_scale": "",
+                "normal_gap_clash_weight": "",
+                "normal_gap_far_weight": "",
                 "candidate_score": safe_float(row.get("interface_sc", float("nan"))),
                 "candidate_status": "baseline",
             }
@@ -977,6 +1010,18 @@ def _candidate_result_row(row: dict, spec: ZernikeSpec, score: float, status: st
             "fit_order": fit_order_value(spec),
             "order_decay_n0": spec.order_decay_n0
             if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
+            else "",
+            "normal_gap_good_scale": spec.normal_gap_good_scale
+            if spec.score_mode in NORMAL_GAP_SCORE_MODES
+            else "",
+            "normal_gap_far_scale": spec.normal_gap_far_scale
+            if spec.score_mode in NORMAL_GAP_SCORE_MODES
+            else "",
+            "normal_gap_clash_weight": spec.normal_gap_clash_weight
+            if spec.score_mode in NORMAL_GAP_SCORE_MODES
+            else "",
+            "normal_gap_far_weight": spec.normal_gap_far_weight
+            if spec.score_mode in NORMAL_GAP_SCORE_MODES
             else "",
             "candidate_score": score,
             "candidate_status": status,
@@ -1035,18 +1080,49 @@ def _evaluate_row_candidate_groups(
     for spec_group in grouped_candidates:
         anchor = spec_group[0]
         try:
-            coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap = coeff_cache.get_or_build(row, anchor)
-            for spec in spec_group:
-                score = _score_spec_from_coefficients(
-                    spec,
-                    coeff1,
-                    coeff2,
-                    joint_coeff,
-                    gap_coeff,
-                    grid_overlap,
+            if anchor.representation in NORMAL_GAP_REPRESENTATIONS or anchor.score_mode in NORMAL_GAP_SCORE_MODES:
+                residues1, residues2 = load_interface_residues(str(row["model_file"]), str(row["interface"]))
+                fields = zernike_normal_gap_field_bundle(
+                    residues1,
+                    residues2,
+                    distance=anchor.distance,
+                    grid_size=anchor.grid_size,
+                    sigma=anchor.sigma,
+                    padding=anchor.padding,
+                    surface_density=anchor.surface_density,
+                    surface_trim_cutoff=anchor.surface_trim_cutoff,
+                    surface_probe_radius=anchor.surface_probe_radius,
+                    normal_gap_good_scale=anchor.normal_gap_good_scale,
+                    normal_gap_far_scale=anchor.normal_gap_far_scale,
                 )
+                coeffs = zernike_normal_gap_coefficient_bundle(fields, fit_order_value(anchor))
+                scores = {
+                    spec.candidate_id(): zernike_score_from_normal_gap_coefficients(
+                        coeffs,
+                        order=spec.order,
+                        fit_order=fit_order_value(spec),
+                        normal_gap_clash_weight=spec.normal_gap_clash_weight,
+                        normal_gap_far_weight=spec.normal_gap_far_weight,
+                    )
+                    for spec in spec_group
+                }
+            else:
+                coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap = coeff_cache.get_or_build(row, anchor)
+                scores = {
+                    spec.candidate_id(): _score_spec_from_coefficients(
+                        spec,
+                        coeff1,
+                        coeff2,
+                        joint_coeff,
+                        gap_coeff,
+                        grid_overlap,
+                    )
+                    for spec in spec_group
+                }
+
+            for spec in spec_group:
                 rows_by_candidate[spec.candidate_id()].append(
-                    _candidate_result_row(row, spec, score, "success")
+                    _candidate_result_row(row, spec, scores[spec.candidate_id()], "success")
                 )
                 status_counts["success"] += 1
         except Exception as exc:
@@ -1266,7 +1342,7 @@ def score_distribution_summary(rows: list[dict], field: str = "candidate_score")
 
 
 def is_production_candidate(spec: ZernikeSpec) -> bool:
-    return spec.score_mode in GRID_SCORE_MODES
+    return spec.score_mode in GRID_SCORE_MODES or spec.score_mode in NORMAL_GAP_SCORE_MODES
 
 
 def grouped_by(rows: list[dict], keys: tuple[str, ...]) -> dict[tuple, list[dict]]:
@@ -1409,6 +1485,10 @@ def zernike_shape_from_spec(residues1, residues2, spec: ZernikeSpec) -> float:
         score_mode=spec.score_mode,
         fit_order=spec.fit_order,
         order_decay_n0=spec.order_decay_n0,
+        normal_gap_good_scale=spec.normal_gap_good_scale,
+        normal_gap_far_scale=spec.normal_gap_far_scale,
+        normal_gap_clash_weight=spec.normal_gap_clash_weight,
+        normal_gap_far_weight=spec.normal_gap_far_weight,
     )
 
 
