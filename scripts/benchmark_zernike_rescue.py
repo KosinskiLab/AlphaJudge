@@ -47,6 +47,7 @@ from alphajudge.biophysics.zernike import (
     SURFACE_NORMAL_GAP,
     SURFACE_REPRESENTATIONS,
     SHARED_GRID_OVERLAP_SCORE,
+    NormalGapCoefficientBundle,
     WeightedPointCloud,
     ZernikeSpec,
     fit_order_value,
@@ -241,6 +242,26 @@ def _coeff_payload(row: dict, spec: ZernikeSpec) -> dict:
     return payload
 
 
+def _normal_gap_coeff_payload(row: dict, spec: ZernikeSpec) -> dict:
+    payload = {
+        "model_file": str(Path(str(row["model_file"])).resolve()),
+        "interface": str(row["interface"]),
+        "representation": zernike_source_representation(spec.representation),
+        "distance": float(spec.distance),
+        "grid_size": int(spec.grid_size),
+        "sigma": float(spec.sigma),
+        "padding": float(spec.padding),
+        "surface_density": float(spec.surface_density),
+        "surface_trim_cutoff": float(spec.surface_trim_cutoff),
+        "surface_probe_radius": float(spec.surface_probe_radius),
+        "normal_gap_good_scale": float(spec.normal_gap_good_scale),
+        "normal_gap_far_scale": float(spec.normal_gap_far_scale),
+        "fit_order": fit_order_value(spec),
+        "coefficient_builder": "normal_gap_zernike_coeff_bundle_v1",
+    }
+    return payload
+
+
 class PointCloudCache:
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir
@@ -375,6 +396,63 @@ class CoefficientCache:
         )
         self.misses += 1
         return coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap
+
+
+class NormalGapCoefficientCache:
+    def __init__(self, cache_dir: Path):
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.hits = 0
+        self.misses = 0
+
+    def _cache_path(self, row: dict, spec: ZernikeSpec) -> Path:
+        return self.cache_dir / f"{hash_payload(_normal_gap_coeff_payload(row, spec))}.npz"
+
+    def get_or_build(self, row: dict, spec: ZernikeSpec) -> NormalGapCoefficientBundle:
+        path = self._cache_path(row, spec)
+        if path.exists():
+            try:
+                with np.load(path) as payload:
+                    self.hits += 1
+                    return NormalGapCoefficientBundle(
+                        good_coeff=np.asarray(payload["good_coeff"], dtype=float),
+                        clash_coeff=np.asarray(payload["clash_coeff"], dtype=float),
+                        far_coeff=np.asarray(payload["far_coeff"], dtype=float),
+                        good_mass=float(payload["good_mass"]),
+                        clash_mass=float(payload["clash_mass"]),
+                        far_mass=float(payload["far_mass"]),
+                        fit_order=int(payload["fit_order"]),
+                    )
+            except Exception:
+                unlink_if_exists(path)
+
+        residues1, residues2 = load_interface_residues(str(row["model_file"]), str(row["interface"]))
+        fields = zernike_normal_gap_field_bundle(
+            residues1,
+            residues2,
+            distance=spec.distance,
+            grid_size=spec.grid_size,
+            sigma=spec.sigma,
+            padding=spec.padding,
+            surface_density=spec.surface_density,
+            surface_trim_cutoff=spec.surface_trim_cutoff,
+            surface_probe_radius=spec.surface_probe_radius,
+            normal_gap_good_scale=spec.normal_gap_good_scale,
+            normal_gap_far_scale=spec.normal_gap_far_scale,
+        )
+        coeffs = zernike_normal_gap_coefficient_bundle(fields, fit_order_value(spec))
+        atomic_savez_compressed(
+            path,
+            good_coeff=coeffs.good_coeff,
+            clash_coeff=coeffs.clash_coeff,
+            far_coeff=coeffs.far_coeff,
+            good_mass=np.asarray(coeffs.good_mass, dtype=float),
+            clash_mass=np.asarray(coeffs.clash_mass, dtype=float),
+            far_mass=np.asarray(coeffs.far_mass, dtype=float),
+            fit_order=np.asarray(coeffs.fit_order, dtype=int),
+        )
+        self.misses += 1
+        return coeffs
 
 
 def coerce_best_row(row: dict[str, str]) -> dict:
@@ -1074,6 +1152,7 @@ def _evaluate_row_candidate_groups(
     point_cloud_cache = PointCloudCache(cache_dir / "point_clouds")
     grid_cache = GridCache(cache_dir / "grids", point_cloud_cache)
     coeff_cache = CoefficientCache(cache_dir / "coefficients", grid_cache)
+    normal_gap_cache = NormalGapCoefficientCache(cache_dir / "normal_gap_coefficients")
     rows_by_candidate: dict[str, list[dict]] = defaultdict(list)
     status_counts: dict[str, int] = defaultdict(int)
 
@@ -1081,21 +1160,7 @@ def _evaluate_row_candidate_groups(
         anchor = spec_group[0]
         try:
             if anchor.representation in NORMAL_GAP_REPRESENTATIONS or anchor.score_mode in NORMAL_GAP_SCORE_MODES:
-                residues1, residues2 = load_interface_residues(str(row["model_file"]), str(row["interface"]))
-                fields = zernike_normal_gap_field_bundle(
-                    residues1,
-                    residues2,
-                    distance=anchor.distance,
-                    grid_size=anchor.grid_size,
-                    sigma=anchor.sigma,
-                    padding=anchor.padding,
-                    surface_density=anchor.surface_density,
-                    surface_trim_cutoff=anchor.surface_trim_cutoff,
-                    surface_probe_radius=anchor.surface_probe_radius,
-                    normal_gap_good_scale=anchor.normal_gap_good_scale,
-                    normal_gap_far_scale=anchor.normal_gap_far_scale,
-                )
-                coeffs = zernike_normal_gap_coefficient_bundle(fields, fit_order_value(anchor))
+                coeffs = normal_gap_cache.get_or_build(row, anchor)
                 scores = {
                     spec.candidate_id(): zernike_score_from_normal_gap_coefficients(
                         coeffs,
@@ -1139,6 +1204,8 @@ def _evaluate_row_candidate_groups(
         "grid_cache_misses": grid_cache.misses,
         "coefficient_cache_hits": coeff_cache.hits,
         "coefficient_cache_misses": coeff_cache.misses,
+        "normal_gap_coefficient_cache_hits": normal_gap_cache.hits,
+        "normal_gap_coefficient_cache_misses": normal_gap_cache.misses,
         "status_counts": dict(sorted(status_counts.items())),
     }
     return dict(rows_by_candidate), cache_meta

@@ -186,6 +186,7 @@ END
     assert first.returncode == 0, first.stderr
     meta1 = json.loads((out_dir / "run_metadata.json").read_text())
     assert meta1["grid_cache_misses"] > 0
+    assert meta1["normal_gap_coefficient_cache_misses"] > 0
     assert meta1["worker_count"] == 2
 
     second = subprocess.run(cmd, capture_output=True, text=True, check=False)
@@ -195,6 +196,7 @@ END
         meta2["point_cloud_cache_hits"] > meta1["point_cloud_cache_hits"]
         or meta2["grid_cache_hits"] > meta1["grid_cache_hits"]
         or meta2["coefficient_cache_hits"] > meta1["coefficient_cache_hits"]
+        or meta2["normal_gap_coefficient_cache_hits"] > meta1["normal_gap_coefficient_cache_hits"]
     )
 
     summary_rows = list(csv.DictReader((out_dir / "candidate_summary.csv").open()))
