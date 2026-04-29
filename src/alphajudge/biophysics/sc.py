@@ -29,6 +29,7 @@ def interface_surface_dots(
     distance: float = 8.0,
     density: float = 15.0,
     trim_cutoff: float = 1.6,
+    probe_radius: float = PROBE_RADIUS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Return the trimmed buried Connolly surface dots for a two-sided interface.
@@ -71,7 +72,7 @@ def interface_surface_dots(
     mol = np.array([1] * len(c1) + [2] * len(c2), dtype=int)
 
     dots, normals, flags, dot_mol = _connolly_mds(
-        PROBE_RADIUS, atoms, radii, mol, density=density
+        float(probe_radius), atoms, radii, mol, density=density
     )
     if len(dots) == 0:
         return (np.empty((0, 3), dtype=float),) * 4

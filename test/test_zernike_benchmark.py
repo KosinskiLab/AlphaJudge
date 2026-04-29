@@ -184,11 +184,28 @@ END
     second = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert second.returncode == 0, second.stderr
     meta2 = json.loads((out_dir / "run_metadata.json").read_text())
-    assert meta2["grid_cache_hits"] > meta1["grid_cache_hits"]
+    assert (
+        meta2["point_cloud_cache_hits"] > meta1["point_cloud_cache_hits"]
+        or meta2["grid_cache_hits"] > meta1["grid_cache_hits"]
+        or meta2["coefficient_cache_hits"] > meta1["coefficient_cache_hits"]
+    )
 
     summary_rows = list(csv.DictReader((out_dir / "candidate_summary.csv").open()))
-    assert len(summary_rows) == 2
+    assert len(summary_rows) == 5
+    assert {row["candidate_family"] for row in summary_rows} == {"sc_baseline", "per_side", "joint_volume"}
+    baseline_row = next(row for row in summary_rows if row["candidate_id"] == "interface_sc")
+    assert baseline_row["delta_all_auroc_vs_sc"] == "0.0"
 
-    score_rows = list(csv.DictReader((out_dir / "scores" / "atom_gaussian__g32__o10__s1.5.csv").open()))
+    metric_rows = list(csv.DictReader((out_dir / "candidate_metrics.csv").open()))
+    assert "delta_auroc_vs_sc" in metric_rows[0]
+    assert "delta_average_precision_vs_sc" in metric_rows[0]
+
+    runtime_rows = list(csv.DictReader((out_dir / "candidate_runtime_summary.csv").open()))
+    assert any(row["candidate_id"] == "interface_sc" for row in runtime_rows)
+
+    robustness_rows = list(csv.DictReader((out_dir / "candidate_robustness_summary.csv").open()))
+    assert any(row["candidate_id"] == "interface_sc" for row in robustness_rows)
+
+    score_rows = list(csv.DictReader((out_dir / "scores" / "interface_sc.csv").open()))
     assert {row["backend"] for row in score_rows} == {"af2", "af3"}
-    assert {row["candidate_status"] for row in score_rows} == {"success"}
+    assert {row["candidate_status"] for row in score_rows} == {"baseline"}

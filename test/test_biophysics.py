@@ -12,9 +12,21 @@ from alphajudge.biophysics import (
     disulfide_bonds,
     hydrogen_bonds,
     salt_bridges,
+    shape_complementarity,
     zernike_shape_complementarity,
 )
-from alphajudge.biophysics.zernike import SURFACE_BINARY, zernike_grids
+from alphajudge.biophysics.sc import interface_surface_dots
+from alphajudge.biophysics.zernike import (
+    GAUSSIAN_WEIGHTED_SCORE,
+    HARD_CUTOFF_SCORE,
+    JOINT_LOW_ORDER_RATIO_SCORE,
+    JOINT_RESIDUE_BEAD_GAUSSIAN,
+    RESIDUE_BEAD_GAUSSIAN,
+    SURFACE_BINARY,
+    SURFACE_GAUSSIAN,
+    zernike_grids,
+    zernike_score_from_grids,
+)
 
 
 def _parse_residues(pdb_text: str):
@@ -28,6 +40,16 @@ def _transform_residues(residues, *, scale: float = 1.0, shift: tuple[float, flo
     for residue in moved:
         for atom in residue:
             atom.coord = atom.coord * float(scale) + delta
+    return moved
+
+
+def _jitter_distal_sidechains(residues, shift: tuple[float, float, float]):
+    moved = copy.deepcopy(residues)
+    delta = np.asarray(shift, dtype=float)
+    for residue in moved:
+        for atom in residue:
+            if atom.id.strip().upper() not in {"N", "CA", "C", "O", "CB"}:
+                atom.coord = atom.coord + delta
     return moved
 
 
@@ -142,6 +164,60 @@ END
     assert scaled == pytest.approx(baseline, abs=5e-3)
 
 
+def test_residue_bead_zernike_is_translation_and_scale_invariant():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  LYS A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CB  LYS A   1       1.400   0.200   0.200  1.00 50.00           C
+ATOM      3  CG  LYS A   1       2.300   0.900   0.300  1.00 50.00           C
+ATOM      4  CA  GLU A   2       0.200   2.100   0.300  1.00 50.00           C
+ATOM      5  CB  GLU A   2       1.300   2.700   0.500  1.00 50.00           C
+ATOM      6  CG  GLU A   2       2.300   3.300   0.600  1.00 50.00           C
+ATOM      7  CA  ARG B   1       3.300   0.300   0.100  1.00 50.00           C
+ATOM      8  CB  ARG B   1       4.400   0.900   0.200  1.00 50.00           C
+ATOM      9  CG  ARG B   1       5.400   1.300   0.300  1.00 50.00           C
+ATOM     10  CA  ASP B   2       3.200   2.200   0.400  1.00 50.00           C
+ATOM     11  CB  ASP B   2       4.200   2.800   0.500  1.00 50.00           C
+ATOM     12  CG  ASP B   2       5.100   3.300   0.700  1.00 50.00           C
+TER
+END
+"""
+    )
+
+    translated_a = _transform_residues(residues_a, shift=(5.0, -3.0, 7.0))
+    translated_b = _transform_residues(residues_b, shift=(5.0, -3.0, 7.0))
+    scaled_a = _transform_residues(residues_a, scale=1.75, shift=(-8.0, 2.0, 1.5))
+    scaled_b = _transform_residues(residues_b, scale=1.75, shift=(-8.0, 2.0, 1.5))
+
+    baseline = zernike_shape_complementarity(
+        residues_a,
+        residues_b,
+        representation=RESIDUE_BEAD_GAUSSIAN,
+        grid_size=16,
+        order=4,
+        sigma=2.0,
+    )
+    translated = zernike_shape_complementarity(
+        translated_a,
+        translated_b,
+        representation=RESIDUE_BEAD_GAUSSIAN,
+        grid_size=16,
+        order=4,
+        sigma=2.0,
+    )
+    scaled = zernike_shape_complementarity(
+        scaled_a,
+        scaled_b,
+        representation=RESIDUE_BEAD_GAUSSIAN,
+        grid_size=16,
+        order=4,
+        sigma=2.0,
+    )
+
+    assert translated == pytest.approx(baseline, abs=1e-6)
+    assert scaled == pytest.approx(baseline, abs=5e-3)
+
+
 def test_zernike_shape_complementarity_returns_zero_without_contacts():
     residues_a, residues_b = _parse_residues(
         """\
@@ -153,6 +229,88 @@ END
     )
 
     assert zernike_shape_complementarity(residues_a, residues_b, grid_size=16, order=4) == 0.0
+
+
+def test_joint_low_order_ratio_returns_zero_without_contacts():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CA  GLY B   1      20.000   0.000   0.000  1.00 50.00           C
+TER
+END
+"""
+    )
+
+    assert (
+        zernike_shape_complementarity(
+            residues_a,
+            residues_b,
+            representation=JOINT_RESIDUE_BEAD_GAUSSIAN,
+            score_mode=JOINT_LOW_ORDER_RATIO_SCORE,
+            grid_size=16,
+            order=4,
+            sigma=2.0,
+            fit_order=12,
+        )
+        == 0.0
+    )
+
+
+def test_zernike_fit_order_reuses_lower_order_for_hard_and_weighted_scores():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CB  ALA A   1       1.500   0.500   0.200  1.00 50.00           C
+ATOM      3  CA  LEU A   2       0.000   2.000   0.500  1.00 50.00           C
+ATOM      4  CB  LEU A   2       1.200   2.600   0.800  1.00 50.00           C
+ATOM      5  CA  GLY B   1       3.000   0.200   0.000  1.00 50.00           C
+ATOM      6  O   GLY B   1       3.800   0.700   0.100  1.00 50.00           O
+ATOM      7  CA  SER B   2       3.200   2.100   0.600  1.00 50.00           C
+ATOM      8  OG  SER B   2       4.000   2.700   1.000  1.00 50.00           O
+TER
+END
+"""
+    )
+
+    grid1, grid2 = zernike_grids(
+        residues_a,
+        residues_b,
+        representation=RESIDUE_BEAD_GAUSSIAN,
+        grid_size=16,
+        sigma=2.0,
+    )
+
+    direct_hard = zernike_score_from_grids(
+        grid1,
+        grid2,
+        order=4,
+        score_mode=HARD_CUTOFF_SCORE,
+    )
+    reused_hard = zernike_score_from_grids(
+        grid1,
+        grid2,
+        order=4,
+        score_mode=HARD_CUTOFF_SCORE,
+        fit_order=12,
+    )
+    direct_weighted = zernike_score_from_grids(
+        grid1,
+        grid2,
+        order=4,
+        score_mode=GAUSSIAN_WEIGHTED_SCORE,
+        order_decay_n0=4.0,
+    )
+    reused_weighted = zernike_score_from_grids(
+        grid1,
+        grid2,
+        order=4,
+        score_mode=GAUSSIAN_WEIGHTED_SCORE,
+        fit_order=12,
+        order_decay_n0=4.0,
+    )
+
+    assert reused_hard == pytest.approx(direct_hard, abs=1e-6)
+    assert reused_weighted == pytest.approx(direct_weighted, abs=1e-6)
 
 
 def test_surface_binary_zernike_grids_are_deterministic():
@@ -190,3 +348,111 @@ END
     assert np.array_equal(grid2_a, grid2_b)
     assert float(np.sum(grid1_a)) > 0.0
     assert float(np.sum(grid2_a)) > 0.0
+
+
+def test_surface_probe_override_is_deterministic_and_preserves_sc_defaults():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CB  ALA A   1       1.500   0.500   0.200  1.00 50.00           C
+ATOM      3  CA  LEU A   2       0.000   2.000   0.500  1.00 50.00           C
+ATOM      4  CB  LEU A   2       1.200   2.600   0.800  1.00 50.00           C
+ATOM      5  CA  GLY B   1       3.000   0.200   0.000  1.00 50.00           C
+ATOM      6  O   GLY B   1       3.800   0.700   0.100  1.00 50.00           O
+ATOM      7  CA  SER B   2       3.200   2.100   0.600  1.00 50.00           C
+ATOM      8  OG  SER B   2       4.000   2.700   1.000  1.00 50.00           O
+TER
+END
+"""
+    )
+
+    d1a, n1a, d2a, n2a = interface_surface_dots(residues_a, residues_b)
+    d1b, n1b, d2b, n2b = interface_surface_dots(residues_a, residues_b, probe_radius=1.7)
+
+    assert np.array_equal(d1a, d1b)
+    assert np.array_equal(n1a, n1b)
+    assert np.array_equal(d2a, d2b)
+    assert np.array_equal(n2a, n2b)
+    assert shape_complementarity(residues_a, residues_b) == pytest.approx(
+        shape_complementarity(residues_a, residues_b),
+        abs=1e-12,
+    )
+
+    grid1_a, grid2_a = zernike_grids(
+        residues_a,
+        residues_b,
+        representation=SURFACE_GAUSSIAN,
+        grid_size=16,
+        sigma=1.5,
+        surface_density=3.0,
+        surface_probe_radius=2.3,
+    )
+    grid1_b, grid2_b = zernike_grids(
+        residues_a,
+        residues_b,
+        representation=SURFACE_GAUSSIAN,
+        grid_size=16,
+        sigma=1.5,
+        surface_density=3.0,
+        surface_probe_radius=2.3,
+    )
+
+    assert np.array_equal(grid1_a, grid1_b)
+    assert np.array_equal(grid2_a, grid2_b)
+
+
+def test_sidechain_jitter_perturbs_residue_bead_less_than_atom_and_sc():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  N   LYS A   1      -0.200  -0.300   0.000  1.00 50.00           N
+ATOM      2  CA  LYS A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      3  C   LYS A   1       0.500   1.300   0.100  1.00 50.00           C
+ATOM      4  O   LYS A   1       0.300   2.300   0.000  1.00 50.00           O
+ATOM      5  CB  LYS A   1       1.400  -0.400   0.300  1.00 50.00           C
+ATOM      6  CG  LYS A   1       2.400   0.300   0.700  1.00 50.00           C
+ATOM      7  CD  LYS A   1       3.500  -0.200   1.100  1.00 50.00           C
+ATOM      8  CE  LYS A   1       4.500   0.500   1.500  1.00 50.00           C
+ATOM      9  NZ  LYS A   1       5.500   0.000   1.800  1.00 50.00           N
+ATOM     10  N   GLU B   1       2.000  -0.200   0.200  1.00 50.00           N
+ATOM     11  CA  GLU B   1       3.000   0.200   0.300  1.00 50.00           C
+ATOM     12  C   GLU B   1       3.400   1.500   0.500  1.00 50.00           C
+ATOM     13  O   GLU B   1       3.200   2.500   0.400  1.00 50.00           O
+ATOM     14  CB  GLU B   1       4.000  -0.500   0.700  1.00 50.00           C
+ATOM     15  CG  GLU B   1       4.900   0.200   1.300  1.00 50.00           C
+ATOM     16  CD  GLU B   1       5.800  -0.500   1.900  1.00 50.00           C
+ATOM     17  OE1 GLU B   1       6.700   0.200   2.300  1.00 50.00           O
+ATOM     18  OE2 GLU B   1       5.700  -1.700   2.000  1.00 50.00           O
+TER
+END
+"""
+    )
+
+    jittered_a = _jitter_distal_sidechains(residues_a, shift=(1.2, -0.7, 0.5))
+    jittered_b = _jitter_distal_sidechains(residues_b, shift=(-1.0, 0.8, -0.4))
+
+    sc_delta = abs(shape_complementarity(jittered_a, jittered_b) - shape_complementarity(residues_a, residues_b))
+    atom_delta = abs(
+        zernike_shape_complementarity(residues_a, residues_b, representation="atom_gaussian", grid_size=16, order=4, sigma=1.5)
+        - zernike_shape_complementarity(jittered_a, jittered_b, representation="atom_gaussian", grid_size=16, order=4, sigma=1.5)
+    )
+    residue_delta = abs(
+        zernike_shape_complementarity(
+            residues_a,
+            residues_b,
+            representation=RESIDUE_BEAD_GAUSSIAN,
+            grid_size=16,
+            order=4,
+            sigma=2.0,
+        )
+        - zernike_shape_complementarity(
+            jittered_a,
+            jittered_b,
+            representation=RESIDUE_BEAD_GAUSSIAN,
+            grid_size=16,
+            order=4,
+            sigma=2.0,
+        )
+    )
+
+    assert residue_delta < atom_delta
+    assert residue_delta < sc_delta

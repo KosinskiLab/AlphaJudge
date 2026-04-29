@@ -1,0 +1,130 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="900" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7F3EA"/>
+      <stop offset="1" stop-color="#E8F0E6"/>
+    </linearGradient>
+    <linearGradient id="hero" x1="0" y1="0" x2="480" y2="280" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173F35"/>
+      <stop offset="1" stop-color="#29594D"/>
+    </linearGradient>
+    <style>
+      .title { font: 700 44px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #173F35; }
+      .subtitle { font: 500 20px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #476156; }
+      .panelTitle { font: 700 24px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #173F35; }
+      .copy { font: 500 18px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #24362F; }
+      .small { font: 500 16px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #40564D; }
+      .tiny { font: 500 14px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #5A7068; }
+      .card { fill: rgba(255,255,255,0.82); stroke: rgba(23,63,53,0.10); stroke-width: 1.5; }
+      .good { fill: #DDF4E4; stroke: #2E7D4D; stroke-width: 1.5; }
+      .warn { fill: #FFF1D8; stroke: #C48A13; stroke-width: 1.5; }
+      .risk { fill: #FDE4DE; stroke: #B04E37; stroke-width: 1.5; }
+      .pillDark { fill: #173F35; }
+      .pillGreen { fill: #2E7D4D; }
+      .pillGold { fill: #C48A13; }
+      .pillRed { fill: #B04E37; }
+      .pillText { font: 700 14px 'IBM Plex Sans', 'Aptos', sans-serif; fill: white; letter-spacing: 0.04em; }
+      .tableHead { font: 700 15px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #173F35; }
+      .tableText { font: 500 15px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #24362F; }
+      .tableMuted { font: 500 15px 'IBM Plex Sans', 'Aptos', sans-serif; fill: #5A7068; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+
+  <text x="72" y="84" class="title">AlphaJudge Prototype: Low-Pass Zernike vs Interface SC</text>
+  <text x="72" y="118" class="subtitle">Checkpoint on branch zernike: direct SC baseline, per-side and joint-volume candidates, and presentation-ready prototype status</text>
+
+  <rect x="72" y="156" width="476" height="304" rx="28" fill="url(#hero)"/>
+  <text x="110" y="214" font-family="'IBM Plex Sans', 'Aptos', sans-serif" font-size="28" font-weight="700" fill="white">Core Hypothesis</text>
+  <text x="110" y="258" class="copy" fill="white">AlphaFold often gets the global interface placement right,</text>
+  <text x="110" y="288" class="copy" fill="white">but local side-chain geometry can be noisy.</text>
+  <text x="110" y="336" class="copy" fill="white">SC is sensitive to local clashes, normals, and dot pairing.</text>
+  <text x="110" y="366" class="copy" fill="white">Low-pass Zernike should blur that noise and retain</text>
+  <text x="110" y="396" class="copy" fill="white">the global interface signal.</text>
+  <rect x="110" y="420" width="152" height="34" rx="17" class="pillGreen"/>
+  <text x="134" y="442" class="pillText">ROTATION-INVARIANT</text>
+  <rect x="278" y="420" width="142" height="34" rx="17" class="pillGold"/>
+  <text x="301" y="442" class="pillText">LOW-PASS SHAPE</text>
+
+  <rect x="582" y="156" width="446" height="304" rx="28" class="card"/>
+  <text x="616" y="206" class="panelTitle">What The Prototype Now Compares</text>
+
+  <rect x="616" y="234" width="378" height="42" rx="21" class="pillDark"/>
+  <text x="642" y="260" class="pillText">BASELINE</text>
+  <text x="760" y="260" class="copy" fill="white">interface_sc from best_interfaces.csv</text>
+
+  <rect x="616" y="292" width="378" height="42" rx="21" fill="#D7EDE4"/>
+  <text x="642" y="318" class="tableHead">PER-SIDE</text>
+  <text x="760" y="318" class="copy">atom_gaussian and residue_bead_gaussian</text>
+
+  <rect x="616" y="350" width="378" height="42" rx="21" fill="#E7EFE1"/>
+  <text x="642" y="376" class="tableHead">SURFACE</text>
+  <text x="760" y="376" class="copy">surface_gaussian from reused buried Connolly dots</text>
+
+  <rect x="616" y="408" width="378" height="42" rx="21" fill="#E9E2F4"/>
+  <text x="642" y="434" class="tableHead">JOINT</text>
+  <text x="760" y="434" class="copy">joint_surface and joint_residue combined volumes</text>
+
+  <text x="616" y="492" class="small">All candidates are benchmarked directly against SC, not only against one another.</text>
+
+  <rect x="1062" y="156" width="466" height="304" rx="28" class="card"/>
+  <text x="1096" y="206" class="panelTitle">Verified Prototype Outcomes</text>
+
+  <rect x="1096" y="236" width="398" height="60" rx="18" class="good"/>
+  <text x="1120" y="272" class="copy">Direct SC head-to-head benchmark harness is implemented.</text>
+
+  <rect x="1096" y="310" width="398" height="60" rx="18" class="good"/>
+  <text x="1120" y="346" class="copy">Per-side, residue-bead, surface, and joint-volume paths are wired.</text>
+
+  <rect x="1096" y="384" width="398" height="60" rx="18" class="warn"/>
+  <text x="1120" y="420" class="copy">Production zernike_sc is intentionally unchanged for now.</text>
+
+  <text x="1096" y="492" class="small">Reason: promotion now requires beating SC on AF3 rescue and AUROC without breaking global guardrails.</text>
+
+  <rect x="72" y="500" width="1456" height="292" rx="28" class="card"/>
+  <text x="106" y="550" class="panelTitle">Comparative Prototype Snapshot</text>
+
+  <line x1="106" y1="586" x2="1496" y2="586" stroke="#D1DBD4" stroke-width="1.5"/>
+  <line x1="106" y1="638" x2="1496" y2="638" stroke="#E1E7E2" stroke-width="1"/>
+  <line x1="106" y1="690" x2="1496" y2="690" stroke="#E1E7E2" stroke-width="1"/>
+  <line x1="106" y1="742" x2="1496" y2="742" stroke="#E1E7E2" stroke-width="1"/>
+  <line x1="400" y1="586" x2="400" y2="772" stroke="#D1DBD4" stroke-width="1"/>
+  <line x1="680" y1="586" x2="680" y2="772" stroke="#D1DBD4" stroke-width="1"/>
+  <line x1="980" y1="586" x2="980" y2="772" stroke="#D1DBD4" stroke-width="1"/>
+  <line x1="1222" y1="586" x2="1222" y2="772" stroke="#D1DBD4" stroke-width="1"/>
+
+  <text x="122" y="618" class="tableHead">Score Family</text>
+  <text x="430" y="618" class="tableHead">Noise Logic</text>
+  <text x="708" y="618" class="tableHead">Benchmark Status</text>
+  <text x="1008" y="618" class="tableHead">Runtime Status</text>
+  <text x="1250" y="618" class="tableHead">Current Readout</text>
+
+  <text x="122" y="670" class="tableText">interface_sc</text>
+  <text x="430" y="670" class="tableMuted">Local dot normals and nearest-dot fit</text>
+  <text x="708" y="670" class="tableText">Explicit baseline in every summary table</text>
+  <text x="1008" y="670" class="tableText">Existing reference</text>
+  <text x="1250" y="670" class="tableText">What every new score must beat</text>
+
+  <text x="122" y="722" class="tableText">Atom Gaussian Zernike</text>
+  <text x="430" y="722" class="tableMuted">Low-pass volumetric density from interface atoms</text>
+  <text x="708" y="722" class="tableText">Production-compatible baseline candidate</text>
+  <text x="1008" y="722" class="tableText">Fastest Zernike family today</text>
+  <text x="1250" y="722" class="tableText">Current fallback until a better candidate wins</text>
+
+  <text x="122" y="774" class="tableText">Residue / Joint / Surface Zernike</text>
+  <text x="430" y="774" class="tableMuted">Coarser, smoother, more global interface shape</text>
+  <text x="708" y="774" class="tableText">Head-to-head harness and robustness checks added</text>
+  <text x="1008" y="774" class="tableText">Surface path is the bottleneck</text>
+  <text x="1250" y="774" class="tableText">Promising idea, not promoted yet</text>
+
+  <rect x="1062" y="650" width="432" height="108" rx="24" class="risk"/>
+  <text x="1090" y="688" class="panelTitle">Prototype Caution</text>
+  <text x="1090" y="722" class="copy">Surface-based candidates match the biology well,</text>
+  <text x="1090" y="750" class="copy">but they are currently the slowest part of the sweep.</text>
+
+  <rect x="72" y="814" width="1456" height="50" rx="25" fill="#173F35"/>
+  <text x="104" y="846" font-family="'IBM Plex Sans', 'Aptos', sans-serif" font-size="18" font-weight="600" fill="white">
+    Verified at this checkpoint: direct SC-vs-Zernike benchmark script, cache-aware smoke benchmark test, side-chain robustness tests, and runner schema compatibility all passing.
+  </text>
+</svg>
