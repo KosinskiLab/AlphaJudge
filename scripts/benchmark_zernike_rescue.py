@@ -30,6 +30,8 @@ from alphajudge.biophysics.zernike import (
     DEFAULT_SURFACE_PROBE_RADIUS,
     GAUSSIAN_REPRESENTATIONS,
     GAUSSIAN_WEIGHTED_SCORE,
+    GAP_ZERNIKE_BANDPASS_SCORE,
+    GAP_ZERNIKE_NONUNIFORM_SCORE,
     GAP_ZERNIKE_RATIO_SCORE,
     GAP_ZERNIKE_WEIGHTED_SCORE,
     GRID_SCORE_MODES,
@@ -421,6 +423,42 @@ def _tuned_atom_gap_overlap_spec() -> ZernikeSpec:
     )
 
 
+def tuned_atom_gap_penalty_specs() -> list[ZernikeSpec]:
+    common = {
+        "representation": ATOM_GAUSSIAN,
+        "grid_size": 32,
+        "sigma": 1.5,
+        "fit_order": MAX_SWEEP_ORDER,
+    }
+    return [
+        ZernikeSpec(
+            **common,
+            order=0,
+            score_mode=GAP_ZERNIKE_NONUNIFORM_SCORE,
+        ),
+        ZernikeSpec(
+            **common,
+            order=2,
+            score_mode=GAP_ZERNIKE_NONUNIFORM_SCORE,
+        ),
+        ZernikeSpec(
+            **common,
+            order=4,
+            score_mode=GAP_ZERNIKE_BANDPASS_SCORE,
+        ),
+        ZernikeSpec(
+            **common,
+            order=6,
+            score_mode=GAP_ZERNIKE_BANDPASS_SCORE,
+        ),
+        ZernikeSpec(
+            **common,
+            order=8,
+            score_mode=GAP_ZERNIKE_BANDPASS_SCORE,
+        ),
+    ]
+
+
 def build_cosine_diagnostic_candidates() -> list[ZernikeSpec]:
     return [
         _atom_cosine_baseline_spec(),
@@ -499,6 +537,7 @@ def _append_gap_candidates(
 def build_full_candidates() -> list[ZernikeSpec]:
     candidates: list[ZernikeSpec] = build_cosine_diagnostic_candidates()
     candidates.append(_tuned_atom_gap_overlap_spec())
+    candidates.extend(tuned_atom_gap_penalty_specs())
     for grid_size in (24, 32):
         for sigma in (2.0, 3.0):
             _append_gap_candidates(candidates, representation=ATOM_GAUSSIAN, grid_size=grid_size, sigma=sigma)
@@ -525,6 +564,7 @@ def build_smoke_candidates() -> list[ZernikeSpec]:
     return [
         _atom_cosine_baseline_spec(),
         _tuned_atom_gap_overlap_spec(),
+        *tuned_atom_gap_penalty_specs(),
         ZernikeSpec(
             representation=RESIDUE_BEAD_GAUSSIAN,
             grid_size=24,

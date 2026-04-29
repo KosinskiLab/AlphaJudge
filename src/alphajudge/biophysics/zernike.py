@@ -29,15 +29,21 @@ JOINT_LOW_ORDER_RATIO_SCORE = "joint_low_order_ratio"
 SHARED_GRID_OVERLAP_SCORE = "shared_grid_overlap"
 GAP_ZERNIKE_RATIO_SCORE = "gap_zernike_ratio"
 GAP_ZERNIKE_WEIGHTED_SCORE = "gap_zernike_weighted"
+GAP_ZERNIKE_NONUNIFORM_SCORE = "gap_zernike_nonuniform"
+GAP_ZERNIKE_BANDPASS_SCORE = "gap_zernike_bandpass"
 
 GAP_SCORE_MODES = {
     GAP_ZERNIKE_RATIO_SCORE,
     GAP_ZERNIKE_WEIGHTED_SCORE,
+    GAP_ZERNIKE_NONUNIFORM_SCORE,
+    GAP_ZERNIKE_BANDPASS_SCORE,
 }
 GRID_SCORE_MODES = {
     SHARED_GRID_OVERLAP_SCORE,
     GAP_ZERNIKE_RATIO_SCORE,
     GAP_ZERNIKE_WEIGHTED_SCORE,
+    GAP_ZERNIKE_NONUNIFORM_SCORE,
+    GAP_ZERNIKE_BANDPASS_SCORE,
 }
 
 JOINT_REPRESENTATIONS = {
@@ -88,6 +94,8 @@ _SHORT_SCORE_TAGS = {
     SHARED_GRID_OVERLAP_SCORE: "overlap",
     GAP_ZERNIKE_RATIO_SCORE: "gapratio",
     GAP_ZERNIKE_WEIGHTED_SCORE: "gapweighted",
+    GAP_ZERNIKE_NONUNIFORM_SCORE: "gapnonuniform",
+    GAP_ZERNIKE_BANDPASS_SCORE: "gapband",
 }
 
 
@@ -549,6 +557,26 @@ def zernike_weighted_energy_ratio(
     return float(np.clip(numer / denom, 0.0, 1.0))
 
 
+def zernike_band_energy_ratio(
+    coeff: np.ndarray,
+    min_order: int,
+    max_order: int,
+    fit_order: int | None = None,
+) -> float:
+    """Fraction of descriptor energy in a low/mid-order Zernike band."""
+    fit_to = fit_order_value(int(max_order), fit_order)
+    full_prefix = zernike_descriptor_prefix_length(fit_to)
+    full_coeff = np.asarray(coeff[:full_prefix], dtype=float)
+    denom = float(np.dot(full_coeff, full_coeff))
+    if denom <= 0.0:
+        return 0.0
+    orders = zernike_descriptor_orders(fit_to)[:full_prefix]
+    mask = (orders >= int(min_order)) & (orders <= int(max_order))
+    band_coeff = full_coeff[mask]
+    numer = float(np.dot(band_coeff, band_coeff))
+    return float(np.clip(numer / denom, 0.0, 1.0))
+
+
 def zernike_joint_grid(grid1: np.ndarray, grid2: np.ndarray) -> np.ndarray:
     joint = np.asarray(grid1, dtype=np.float32) + np.asarray(grid2, dtype=np.float32)
     mass = float(np.sum(joint))
@@ -638,6 +666,12 @@ def zernike_score_from_gap_coefficients(
             fit_order,
             order_decay_n0=float(order_decay_n0),
         )
+        return float(np.clip(overlap * ratio, 0.0, 1.0))
+    if score_mode == GAP_ZERNIKE_NONUNIFORM_SCORE:
+        global_ratio = zernike_low_order_energy_ratio(gap_coeff, int(order), fit_order)
+        return float(np.clip(overlap * (1.0 - global_ratio), 0.0, 1.0))
+    if score_mode == GAP_ZERNIKE_BANDPASS_SCORE:
+        ratio = zernike_band_energy_ratio(gap_coeff, 2, int(order), fit_order)
         return float(np.clip(overlap * ratio, 0.0, 1.0))
     raise ValueError(f"Unknown Zernike gap score mode {score_mode!r}")
 
@@ -812,6 +846,8 @@ __all__ = [
     "GAUSSIAN_REPRESENTATIONS",
     "GAUSSIAN_WEIGHTED_SCORE",
     "GAP_SCORE_MODES",
+    "GAP_ZERNIKE_BANDPASS_SCORE",
+    "GAP_ZERNIKE_NONUNIFORM_SCORE",
     "GAP_ZERNIKE_RATIO_SCORE",
     "GAP_ZERNIKE_WEIGHTED_SCORE",
     "GRID_SCORE_MODES",
@@ -831,6 +867,7 @@ __all__ = [
     "ZernikeSpec",
     "fit_order_value",
     "zernike_candidate_family",
+    "zernike_band_energy_ratio",
     "zernike_coefficient_bundle_from_grids",
     "zernike_coefficients",
     "zernike_descriptor_orders",
