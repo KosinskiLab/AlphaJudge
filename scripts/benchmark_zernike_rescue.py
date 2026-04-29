@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Benchmark pure Zernike candidates against the AlphaJudge benchmark tree."""
+"""Benchmark low-pass Zernike candidates head-to-head against interface_sc."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import json
@@ -19,24 +20,35 @@ import numpy as np
 from Bio.PDB import MMCIFParser, PDBParser
 from scipy.stats import rankdata
 
+from alphajudge.biophysics.sc import shape_complementarity
 from alphajudge.biophysics.zernike import (
     ATOM_GAUSSIAN,
     DEFAULT_DISTANCE,
+    DEFAULT_ORDER_DECAY_N0,
     DEFAULT_PADDING,
-    DEFAULT_PROXIMITY_LENGTH_SCALE,
     DEFAULT_SIGMA,
     DEFAULT_SURFACE_DENSITY,
+    DEFAULT_SURFACE_PROBE_RADIUS,
     DEFAULT_SURFACE_TRIM_CUTOFF,
     GAUSSIAN_REPRESENTATIONS,
-    SURFACE_BINARY,
+    GAUSSIAN_WEIGHTED_SCORE,
+    HARD_CUTOFF_SCORE,
+    JOINT_LOW_ORDER_RATIO_SCORE,
+    JOINT_REPRESENTATIONS,
+    JOINT_RESIDUE_BEAD_GAUSSIAN,
+    JOINT_SURFACE_GAUSSIAN,
+    RESIDUE_BEAD_GAUSSIAN,
     SURFACE_GAUSSIAN,
-    SURFACE_PROXIMITY_GAUSSIAN,
+    SURFACE_REPRESENTATIONS,
+    WeightedPointCloud,
     ZernikeSpec,
-    zernike_coefficients,
-    zernike_descriptor_prefix_length,
-    zernike_grids,
-    zernike_shape_complementarity,
-    zernike_similarity_from_coefficients,
+    fit_order_value,
+    zernike_candidate_family,
+    zernike_coefficient_bundle_from_grids,
+    zernike_grids_from_point_clouds,
+    zernike_point_clouds,
+    zernike_score_from_coefficients,
+    zernike_source_representation,
 )
 
 BENCH_ROOT_DEFAULT = Path(
@@ -47,39 +59,170 @@ BACKENDS = ("af2", "af3")
 PAIRSETS = ("pos_pairs", "neg_pairs")
 SMOKE_SAMPLE_SIZE = 100
 RUNTIME_SAMPLE_SIZE = 200
+ROBUSTNESS_SAMPLE_SIZE = 50
+ROBUSTNESS_JITTER_STD = 1.0
 MAX_SWEEP_ORDER = 12
 AF3_FAILURE_QUANTILE = 0.90
 TOP_N = 50
+SC_BASELINE_ID = "interface_sc"
+
+PROTEIN_BACKBONE_ATOMS = {"N", "CA", "C", "O", "OXT"}
+NA_BACKBONE_ATOMS = {
+    "P",
+    "OP1",
+    "OP2",
+    "OP3",
+    "O5'",
+    "C5'",
+    "C4'",
+    "O4'",
+    "C3'",
+    "O3'",
+    "C2'",
+    "C1'",
+    "O2'",
+    "O5*",
+    "C5*",
+    "C4*",
+    "O4*",
+    "C3*",
+    "O3*",
+    "C2*",
+    "C1*",
+    "O2*",
+}
 
 
-class GridCache:
+def hash_payload(payload: dict) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def safe_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return float("nan")
+
+
+def write_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("")
+        return
+    fieldnames = list(rows[0].keys())
+    seen = set(fieldnames)
+    for row in rows[1:]:
+        for key in row.keys():
+            if key not in seen:
+                fieldnames.append(key)
+                seen.add(key)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _point_cloud_payload(row: dict, spec: ZernikeSpec) -> dict:
+    source = zernike_source_representation(spec.representation)
+    return {
+        "model_file": str(Path(str(row["model_file"])).resolve()),
+        "interface": str(row["interface"]),
+        "representation": source,
+        "distance": float(spec.distance),
+        "surface_density": float(spec.surface_density) if source in SURFACE_REPRESENTATIONS else None,
+        "surface_trim_cutoff": float(spec.surface_trim_cutoff) if source in SURFACE_REPRESENTATIONS else None,
+        "surface_probe_radius": float(spec.surface_probe_radius) if source in SURFACE_REPRESENTATIONS else None,
+        "proximity_length_scale": float(spec.proximity_length_scale)
+        if source == "surface_proximity_gaussian"
+        else None,
+    }
+
+
+def _grid_payload(row: dict, spec: ZernikeSpec) -> dict:
+    payload = _point_cloud_payload(row, spec)
+    payload.update(
+        {
+            "grid_size": int(spec.grid_size),
+            "sigma": float(spec.sigma) if spec.representation in GAUSSIAN_REPRESENTATIONS else None,
+            "padding": float(spec.padding),
+            "grid_builder": "binary"
+            if zernike_source_representation(spec.representation) == "surface_binary"
+            else "density",
+        }
+    )
+    return payload
+
+
+def _coeff_payload(row: dict, spec: ZernikeSpec) -> dict:
+    payload = _grid_payload(row, spec)
+    payload.update({"fit_order": fit_order_value(spec)})
+    return payload
+
+
+class PointCloudCache:
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.hits = 0
         self.misses = 0
 
-    @staticmethod
-    def _hash_payload(payload: dict) -> str:
-        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(raw).hexdigest()
+    def _cache_path(self, row: dict, spec: ZernikeSpec) -> Path:
+        return self.cache_dir / f"{hash_payload(_point_cloud_payload(row, spec))}.npz"
+
+    def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[WeightedPointCloud, WeightedPointCloud]:
+        path = self._cache_path(row, spec)
+        if path.exists():
+            with np.load(path) as payload:
+                self.hits += 1
+                return (
+                    WeightedPointCloud(
+                        np.asarray(payload["points1"], dtype=float),
+                        np.asarray(payload["weights1"], dtype=float),
+                    ),
+                    WeightedPointCloud(
+                        np.asarray(payload["points2"], dtype=float),
+                        np.asarray(payload["weights2"], dtype=float),
+                    ),
+                )
+
+        residues1, residues2 = load_interface_residues(str(row["model_file"]), str(row["interface"]))
+        side1, side2 = zernike_point_clouds(
+            residues1,
+            residues2,
+            representation=spec.representation,
+            distance=spec.distance,
+            surface_density=spec.surface_density,
+            surface_trim_cutoff=spec.surface_trim_cutoff,
+            surface_probe_radius=spec.surface_probe_radius,
+            proximity_length_scale=spec.proximity_length_scale,
+        )
+        np.savez_compressed(
+            path,
+            points1=side1.points,
+            weights1=side1.weights,
+            points2=side2.points,
+            weights2=side2.weights,
+        )
+        self.misses += 1
+        return side1, side2
+
+
+class GridCache:
+    def __init__(self, cache_dir: Path, point_cloud_cache: PointCloudCache):
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.point_cloud_cache = point_cloud_cache
+        self.hits = 0
+        self.misses = 0
 
     def _cache_path(self, row: dict, spec: ZernikeSpec) -> Path:
-        payload = {
-            "model_file": str(Path(str(row["model_file"])).resolve()),
-            "interface": str(row["interface"]),
-            "representation": spec.representation,
-            "grid_size": int(spec.grid_size),
-            "sigma": float(spec.sigma) if spec.representation in GAUSSIAN_REPRESENTATIONS else None,
-            "padding": float(spec.padding),
-            "distance": float(spec.distance),
-            "surface_density": float(spec.surface_density),
-            "surface_trim_cutoff": float(spec.surface_trim_cutoff),
-            "proximity_length_scale": float(spec.proximity_length_scale)
-            if spec.representation == SURFACE_PROXIMITY_GAUSSIAN
-            else None,
-        }
-        return self.cache_dir / f"{self._hash_payload(payload)}.npz"
+        return self.cache_dir / f"{hash_payload(_grid_payload(row, spec))}.npz"
 
     def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[np.ndarray, np.ndarray]:
         path = self._cache_path(row, spec)
@@ -88,29 +231,47 @@ class GridCache:
                 self.hits += 1
                 return payload["grid1"], payload["grid2"]
 
-        residues1, residues2 = load_interface_residues(str(row["model_file"]), str(row["interface"]))
-        grid1, grid2 = zernike_grids(
-            residues1,
-            residues2,
+        side1, side2 = self.point_cloud_cache.get_or_build(row, spec)
+        grid1, grid2 = zernike_grids_from_point_clouds(
+            side1,
+            side2,
             representation=spec.representation,
-            distance=spec.distance,
             grid_size=spec.grid_size,
             sigma=spec.sigma,
             padding=spec.padding,
-            surface_density=spec.surface_density,
-            surface_trim_cutoff=spec.surface_trim_cutoff,
-            proximity_length_scale=spec.proximity_length_scale,
         )
         np.savez_compressed(path, grid1=grid1, grid2=grid2)
         self.misses += 1
         return grid1, grid2
 
 
-def safe_float(value):
-    try:
-        return float(value)
-    except Exception:
-        return float("nan")
+class CoefficientCache:
+    def __init__(self, cache_dir: Path, grid_cache: GridCache):
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.grid_cache = grid_cache
+        self.hits = 0
+        self.misses = 0
+
+    def _cache_path(self, row: dict, spec: ZernikeSpec) -> Path:
+        return self.cache_dir / f"{hash_payload(_coeff_payload(row, spec))}.npz"
+
+    def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        path = self._cache_path(row, spec)
+        if path.exists():
+            with np.load(path) as payload:
+                self.hits += 1
+                return payload["coeff1"], payload["coeff2"], payload["joint_coeff"]
+
+        grid1, grid2 = self.grid_cache.get_or_build(row, spec)
+        coeff1, coeff2, joint_coeff = zernike_coefficient_bundle_from_grids(
+            grid1,
+            grid2,
+            fit_order_value(spec),
+        )
+        np.savez_compressed(path, coeff1=coeff1, coeff2=coeff2, joint_coeff=joint_coeff)
+        self.misses += 1
+        return coeff1, coeff2, joint_coeff
 
 
 def coerce_best_row(row: dict[str, str]) -> dict:
@@ -127,62 +288,153 @@ def coerce_best_row(row: dict[str, str]) -> dict:
 def candidate_groups(candidates: Iterable[ZernikeSpec]) -> dict[tuple, list[ZernikeSpec]]:
     groups: dict[tuple, list[ZernikeSpec]] = defaultdict(list)
     for spec in candidates:
+        source = zernike_source_representation(spec.representation)
         key = (
-            spec.representation,
+            source,
             int(spec.grid_size),
             float(spec.sigma) if spec.representation in GAUSSIAN_REPRESENTATIONS else None,
             float(spec.padding),
             float(spec.distance),
-            float(spec.surface_density),
-            float(spec.surface_trim_cutoff),
-            float(spec.proximity_length_scale)
-            if spec.representation == SURFACE_PROXIMITY_GAUSSIAN
-            else None,
+            float(spec.surface_density) if source in SURFACE_REPRESENTATIONS else None,
+            float(spec.surface_trim_cutoff) if source in SURFACE_REPRESENTATIONS else None,
+            float(spec.surface_probe_radius) if source in SURFACE_REPRESENTATIONS else None,
+            float(spec.proximity_length_scale) if source == "surface_proximity_gaussian" else None,
+            fit_order_value(spec),
         )
         groups[key].append(spec)
     return groups
 
 
+def _weighted_score_modes() -> list[tuple[str, float]]:
+    return [
+        (HARD_CUTOFF_SCORE, DEFAULT_ORDER_DECAY_N0),
+        (GAUSSIAN_WEIGHTED_SCORE, 4.0),
+        (GAUSSIAN_WEIGHTED_SCORE, 6.0),
+    ]
+
+
 def build_full_candidates() -> list[ZernikeSpec]:
-    candidates = [ZernikeSpec()]
-    for grid_size in (32, 48):
-        for order in (8, 10, 12):
-            candidates.append(
-                ZernikeSpec(
-                    representation=SURFACE_BINARY,
-                    grid_size=grid_size,
-                    order=order,
-                    sigma=DEFAULT_SIGMA,
-                )
-            )
-            for sigma in (1.0, 1.5):
+    candidates: list[ZernikeSpec] = []
+
+    for grid_size in (24, 32):
+        for order in (8, 10):
+            for sigma in (1.5, 2.5):
+                for score_mode, decay in _weighted_score_modes():
+                    candidates.append(
+                        ZernikeSpec(
+                            representation=ATOM_GAUSSIAN,
+                            grid_size=grid_size,
+                            order=order,
+                            sigma=sigma,
+                            score_mode=score_mode,
+                            fit_order=MAX_SWEEP_ORDER,
+                            order_decay_n0=decay,
+                        )
+                    )
+
+        for order in (6, 8, 10):
+            for sigma in (2.0, 3.0):
+                for score_mode, decay in _weighted_score_modes():
+                    candidates.append(
+                        ZernikeSpec(
+                            representation=RESIDUE_BEAD_GAUSSIAN,
+                            grid_size=grid_size,
+                            order=order,
+                            sigma=sigma,
+                            score_mode=score_mode,
+                            fit_order=MAX_SWEEP_ORDER,
+                            order_decay_n0=decay,
+                        )
+                    )
+
+        for order in (6, 8):
+            for sigma in (1.5, 2.0):
+                for density in (3.0, 5.0):
+                    for probe in (1.7, 2.3):
+                        for score_mode, decay in _weighted_score_modes():
+                            candidates.append(
+                                ZernikeSpec(
+                                    representation=SURFACE_GAUSSIAN,
+                                    grid_size=grid_size,
+                                    order=order,
+                                    sigma=sigma,
+                                    surface_density=density,
+                                    surface_probe_radius=probe,
+                                    score_mode=score_mode,
+                                    fit_order=MAX_SWEEP_ORDER,
+                                    order_decay_n0=decay,
+                                )
+                            )
+
+        for order in (4, 6, 8):
+            for sigma in (2.0, 3.0):
                 candidates.append(
                     ZernikeSpec(
-                        representation=SURFACE_GAUSSIAN,
+                        representation=JOINT_RESIDUE_BEAD_GAUSSIAN,
                         grid_size=grid_size,
                         order=order,
                         sigma=sigma,
+                        score_mode=JOINT_LOW_ORDER_RATIO_SCORE,
+                        fit_order=MAX_SWEEP_ORDER,
                     )
                 )
-                candidates.append(
-                    ZernikeSpec(
-                        representation=SURFACE_PROXIMITY_GAUSSIAN,
-                        grid_size=grid_size,
-                        order=order,
-                        sigma=sigma,
-                    )
-                )
+
+        for order in (4, 6, 8):
+            for sigma in (1.5, 2.0):
+                for density in (3.0, 5.0):
+                    for probe in (1.7, 2.3):
+                        candidates.append(
+                            ZernikeSpec(
+                                representation=JOINT_SURFACE_GAUSSIAN,
+                                grid_size=grid_size,
+                                order=order,
+                                sigma=sigma,
+                                surface_density=density,
+                                surface_probe_radius=probe,
+                                score_mode=JOINT_LOW_ORDER_RATIO_SCORE,
+                                fit_order=MAX_SWEEP_ORDER,
+                            )
+                        )
+
     return candidates
 
 
 def build_smoke_candidates() -> list[ZernikeSpec]:
     return [
-        ZernikeSpec(),
+        ZernikeSpec(
+            representation=ATOM_GAUSSIAN,
+            grid_size=32,
+            order=10,
+            sigma=1.5,
+            score_mode=HARD_CUTOFF_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+        ),
+        ZernikeSpec(
+            representation=RESIDUE_BEAD_GAUSSIAN,
+            grid_size=24,
+            order=8,
+            sigma=2.0,
+            score_mode=GAUSSIAN_WEIGHTED_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+            order_decay_n0=4.0,
+        ),
         ZernikeSpec(
             representation=SURFACE_GAUSSIAN,
-            grid_size=32,
-            order=8,
+            grid_size=24,
+            order=6,
             sigma=1.5,
+            surface_density=3.0,
+            surface_probe_radius=2.3,
+            score_mode=HARD_CUTOFF_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+        ),
+        ZernikeSpec(
+            representation=JOINT_RESIDUE_BEAD_GAUSSIAN,
+            grid_size=24,
+            order=6,
+            sigma=2.0,
+            score_mode=JOINT_LOW_ORDER_RATIO_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
         ),
     ]
 
@@ -339,7 +591,6 @@ def balanced_sample(rows: list[dict], sample_size: int) -> list[dict]:
         grouped[key].sort(key=lambda row: (str(row["pair"]), str(row["interface"])))
 
     base = sample_size // len(ordered_keys)
-    remainder = sample_size % len(ordered_keys)
     selected: list[dict] = []
     leftovers: dict[tuple[str, str, str], list[dict]] = {}
 
@@ -387,8 +638,57 @@ def load_interface_residues(model_file: str, interface_label: str) -> tuple[tupl
     return chains[chain1_id], chains[chain2_id]
 
 
-def descriptor_prefix(coeffs: np.ndarray, order: int) -> np.ndarray:
-    return coeffs[: zernike_descriptor_prefix_length(order)]
+def candidate_row_metadata(row: dict, *, candidate_id: str, representation: str, candidate_family: str) -> dict:
+    return {
+        "pair": row["pair"],
+        "organism": row["organism"],
+        "backend": row["backend"],
+        "pairset": row["pairset"],
+        "label": row["label"],
+        "interface": row["interface"],
+        "jobs": row["jobs"],
+        "model_file": row["model_file"],
+        "interface_sc": row.get("interface_sc", float("nan")),
+        "average_interface_pae": row.get("average_interface_pae", float("nan")),
+        "interface_area": row.get("interface_area", float("nan")),
+        "interface_contact_pairs": row.get("interface_contact_pairs", float("nan")),
+        "interface_num_intf_residues": row.get("interface_num_intf_residues", float("nan")),
+        "interface_average_plddt": row.get("interface_average_plddt", float("nan")),
+        "candidate_id": candidate_id,
+        "candidate_family": candidate_family,
+        "representation": representation,
+    }
+
+
+def baseline_sc_results(rows: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for row in rows:
+        out_row = candidate_row_metadata(
+            row,
+            candidate_id=SC_BASELINE_ID,
+            representation=SC_BASELINE_ID,
+            candidate_family="sc_baseline",
+        )
+        out_row.update(
+            {
+                "grid_size": "",
+                "order": "",
+                "sigma": "",
+                "surface_density": "",
+                "surface_trim_cutoff": "",
+                "surface_probe_radius": "",
+                "proximity_length_scale": "",
+                "padding": "",
+                "distance": "",
+                "score_mode": "baseline",
+                "fit_order": "",
+                "order_decay_n0": "",
+                "candidate_score": safe_float(row.get("interface_sc", float("nan"))),
+                "candidate_status": "baseline",
+            }
+        )
+        out.append(out_row)
+    return out
 
 
 def evaluate_candidates(
@@ -397,59 +697,69 @@ def evaluate_candidates(
     *,
     cache_dir: Path,
 ) -> tuple[dict[str, list[dict]], dict]:
+    point_cloud_cache = PointCloudCache(cache_dir / "point_clouds")
+    grid_cache = GridCache(cache_dir / "grids", point_cloud_cache)
+    coeff_cache = CoefficientCache(cache_dir / "coefficients", grid_cache)
     grouped_candidates = candidate_groups(candidates)
-    cache = GridCache(cache_dir)
     results: dict[str, list[dict]] = {spec.candidate_id(): [] for spec in candidates}
+    results[SC_BASELINE_ID] = baseline_sc_results(rows)
     status_counts: dict[str, int] = defaultdict(int)
 
     for row in rows:
-        row_id = {
-            "pair": row["pair"],
-            "organism": row["organism"],
-            "backend": row["backend"],
-            "pairset": row["pairset"],
-            "label": row["label"],
-            "interface": row["interface"],
-            "jobs": row["jobs"],
-            "model_file": row["model_file"],
-            "interface_sc": row.get("interface_sc", float("nan")),
-            "average_interface_pae": row.get("average_interface_pae", float("nan")),
-            "interface_area": row.get("interface_area", float("nan")),
-            "interface_contact_pairs": row.get("interface_contact_pairs", float("nan")),
-            "interface_num_intf_residues": row.get("interface_num_intf_residues", float("nan")),
-            "interface_average_plddt": row.get("interface_average_plddt", float("nan")),
-        }
-
         for _, spec_group in grouped_candidates.items():
             anchor = spec_group[0]
             try:
-                grid1, grid2 = cache.get_or_build(row, anchor)
-                coeff1 = zernike_coefficients(grid1, MAX_SWEEP_ORDER)
-                coeff2 = zernike_coefficients(grid2, MAX_SWEEP_ORDER)
+                coeff1, coeff2, joint_coeff = coeff_cache.get_or_build(row, anchor)
                 for spec in spec_group:
-                    score = zernike_similarity_from_coefficients(
-                        descriptor_prefix(coeff1, spec.order),
-                        descriptor_prefix(coeff2, spec.order),
+                    if spec.representation in JOINT_REPRESENTATIONS:
+                        score = zernike_score_from_coefficients(
+                            joint_coeff,
+                            None,
+                            order=spec.order,
+                            score_mode=spec.score_mode,
+                            fit_order=fit_order_value(spec),
+                            order_decay_n0=spec.order_decay_n0,
+                        )
+                    else:
+                        score = zernike_score_from_coefficients(
+                            coeff1,
+                            coeff2,
+                            order=spec.order,
+                            score_mode=spec.score_mode,
+                            fit_order=fit_order_value(spec),
+                            order_decay_n0=spec.order_decay_n0,
+                        )
+
+                    out_row = candidate_row_metadata(
+                        row,
+                        candidate_id=spec.candidate_id(),
+                        representation=spec.representation,
+                        candidate_family=zernike_candidate_family(spec.representation),
                     )
-                    out_row = dict(row_id)
                     out_row.update(
                         {
-                            "candidate_id": spec.candidate_id(),
-                            "representation": spec.representation,
                             "grid_size": spec.grid_size,
                             "order": spec.order,
                             "sigma": spec.sigma if spec.representation in GAUSSIAN_REPRESENTATIONS else "",
                             "surface_density": spec.surface_density
-                            if spec.representation in {SURFACE_BINARY, SURFACE_GAUSSIAN, SURFACE_PROXIMITY_GAUSSIAN}
+                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
                             else "",
                             "surface_trim_cutoff": spec.surface_trim_cutoff
-                            if spec.representation in {SURFACE_BINARY, SURFACE_GAUSSIAN, SURFACE_PROXIMITY_GAUSSIAN}
+                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
+                            else "",
+                            "surface_probe_radius": spec.surface_probe_radius
+                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
                             else "",
                             "proximity_length_scale": spec.proximity_length_scale
-                            if spec.representation == SURFACE_PROXIMITY_GAUSSIAN
+                            if zernike_source_representation(spec.representation) == "surface_proximity_gaussian"
                             else "",
                             "padding": spec.padding,
                             "distance": spec.distance,
+                            "score_mode": spec.score_mode,
+                            "fit_order": fit_order_value(spec),
+                            "order_decay_n0": spec.order_decay_n0
+                            if spec.score_mode == GAUSSIAN_WEIGHTED_SCORE
+                            else "",
                             "candidate_score": score,
                             "candidate_status": "success",
                         }
@@ -458,25 +768,36 @@ def evaluate_candidates(
                     status_counts["success"] += 1
             except Exception as exc:
                 for spec in spec_group:
-                    out_row = dict(row_id)
+                    out_row = candidate_row_metadata(
+                        row,
+                        candidate_id=spec.candidate_id(),
+                        representation=spec.representation,
+                        candidate_family=zernike_candidate_family(spec.representation),
+                    )
                     out_row.update(
                         {
-                            "candidate_id": spec.candidate_id(),
-                            "representation": spec.representation,
                             "grid_size": spec.grid_size,
                             "order": spec.order,
                             "sigma": spec.sigma if spec.representation in GAUSSIAN_REPRESENTATIONS else "",
                             "surface_density": spec.surface_density
-                            if spec.representation in {SURFACE_BINARY, SURFACE_GAUSSIAN, SURFACE_PROXIMITY_GAUSSIAN}
+                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
                             else "",
                             "surface_trim_cutoff": spec.surface_trim_cutoff
-                            if spec.representation in {SURFACE_BINARY, SURFACE_GAUSSIAN, SURFACE_PROXIMITY_GAUSSIAN}
+                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
+                            else "",
+                            "surface_probe_radius": spec.surface_probe_radius
+                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
                             else "",
                             "proximity_length_scale": spec.proximity_length_scale
-                            if spec.representation == SURFACE_PROXIMITY_GAUSSIAN
+                            if zernike_source_representation(spec.representation) == "surface_proximity_gaussian"
                             else "",
                             "padding": spec.padding,
                             "distance": spec.distance,
+                            "score_mode": spec.score_mode,
+                            "fit_order": fit_order_value(spec),
+                            "order_decay_n0": spec.order_decay_n0
+                            if spec.score_mode == GAUSSIAN_WEIGHTED_SCORE
+                            else "",
                             "candidate_score": float("nan"),
                             "candidate_status": f"error:{exc}",
                         }
@@ -485,8 +806,12 @@ def evaluate_candidates(
                     status_counts["error"] += 1
 
     cache_meta = {
-        "grid_cache_hits": cache.hits,
-        "grid_cache_misses": cache.misses,
+        "point_cloud_cache_hits": point_cloud_cache.hits,
+        "point_cloud_cache_misses": point_cloud_cache.misses,
+        "grid_cache_hits": grid_cache.hits,
+        "grid_cache_misses": grid_cache.misses,
+        "coefficient_cache_hits": coeff_cache.hits,
+        "coefficient_cache_misses": coeff_cache.misses,
         "status_counts": dict(sorted(status_counts.items())),
     }
     return results, cache_meta
@@ -624,21 +949,26 @@ def measure_candidate_runtime(rows: list[dict], spec: ZernikeSpec) -> dict[str, 
             residues_cache[key] = load_interface_residues(*key)
         residues1, residues2 = residues_cache[key]
         start = time.perf_counter()
-        _ = zernike_shape_complementarity(
-            residues1,
-            residues2,
-            representation=spec.representation,
-            distance=spec.distance,
-            grid_size=spec.grid_size,
-            order=spec.order,
-            sigma=spec.sigma,
-            padding=spec.padding,
-            surface_density=spec.surface_density,
-            surface_trim_cutoff=spec.surface_trim_cutoff,
-            proximity_length_scale=spec.proximity_length_scale,
-        )
+        _ = zernike_shape_from_spec(residues1, residues2, spec)
         timings.append(time.perf_counter() - start)
+    return summarize_timings(timings)
 
+
+def measure_sc_runtime(rows: list[dict]) -> dict[str, float]:
+    timings = []
+    residues_cache: dict[tuple[str, str], tuple[tuple, tuple]] = {}
+    for row in rows:
+        key = (str(row["model_file"]), str(row["interface"]))
+        if key not in residues_cache:
+            residues_cache[key] = load_interface_residues(*key)
+        residues1, residues2 = residues_cache[key]
+        start = time.perf_counter()
+        _ = shape_complementarity(residues1, residues2)
+        timings.append(time.perf_counter() - start)
+    return summarize_timings(timings)
+
+
+def summarize_timings(timings: list[float]) -> dict[str, float]:
     if not timings:
         return {
             "median_runtime_sec": float("nan"),
@@ -654,27 +984,98 @@ def measure_candidate_runtime(rows: list[dict], spec: ZernikeSpec) -> dict[str, 
     }
 
 
-def write_csv(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        path.write_text("")
-        return
-    fieldnames = list(rows[0].keys())
-    seen = set(fieldnames)
-    for row in rows[1:]:
-        for key in row.keys():
-            if key not in seen:
-                fieldnames.append(key)
-                seen.add(key)
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+def _is_sidechain_heavy_atom(atom_name: str, element: str) -> bool:
+    if not element or element.upper() == "H":
+        return False
+    name = atom_name.strip().upper()
+    return name not in PROTEIN_BACKBONE_ATOMS and name not in NA_BACKBONE_ATOMS
 
 
-def write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+def jitter_sidechains(residues, rng: np.random.Generator, std: float):
+    moved = copy.deepcopy(residues)
+    for residue in moved:
+        for atom in residue:
+            if _is_sidechain_heavy_atom(atom.id, atom.element or ""):
+                atom.coord = atom.coord + rng.normal(0.0, float(std), size=3)
+    return moved
+
+
+def zernike_shape_from_spec(residues1, residues2, spec: ZernikeSpec) -> float:
+    from alphajudge.biophysics.zernike import zernike_shape_complementarity
+
+    return zernike_shape_complementarity(
+        residues1,
+        residues2,
+        representation=spec.representation,
+        distance=spec.distance,
+        grid_size=spec.grid_size,
+        order=spec.order,
+        sigma=spec.sigma,
+        padding=spec.padding,
+        surface_density=spec.surface_density,
+        surface_trim_cutoff=spec.surface_trim_cutoff,
+        surface_probe_radius=spec.surface_probe_radius,
+        proximity_length_scale=spec.proximity_length_scale,
+        score_mode=spec.score_mode,
+        fit_order=spec.fit_order,
+        order_decay_n0=spec.order_decay_n0,
+    )
+
+
+def robustness_sample_rows(rows: list[dict], sample_size: int) -> list[dict]:
+    positives = [row for row in rows if row["label"] == "positive"]
+    return balanced_sample(positives, sample_size)
+
+
+def measure_robustness(
+    rows: list[dict],
+    candidates: list[ZernikeSpec],
+    *,
+    jitter_std: float,
+) -> list[dict]:
+    deltas_by_id: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        residues1, residues2 = load_interface_residues(str(row["model_file"]), str(row["interface"]))
+        seed = int(hash_payload({"pair": row["pair"], "interface": row["interface"]})[:16], 16) % (2**32)
+        rng = np.random.default_rng(seed)
+        jittered1 = jitter_sidechains(residues1, rng, jitter_std)
+        jittered2 = jitter_sidechains(residues2, rng, jitter_std)
+
+        baseline = shape_complementarity(residues1, residues2)
+        baseline_jitter = shape_complementarity(jittered1, jittered2)
+        deltas_by_id[SC_BASELINE_ID].append(abs(baseline_jitter - baseline))
+
+        for spec in candidates:
+            score = zernike_shape_from_spec(residues1, residues2, spec)
+            score_jitter = zernike_shape_from_spec(jittered1, jittered2, spec)
+            deltas_by_id[spec.candidate_id()].append(abs(score_jitter - score))
+
+    out = []
+    baseline_median = float(np.median(deltas_by_id[SC_BASELINE_ID])) if deltas_by_id[SC_BASELINE_ID] else float("nan")
+    for candidate_id, deltas in sorted(deltas_by_id.items()):
+        median_delta = float(np.median(deltas)) if deltas else float("nan")
+        out.append(
+            {
+                "candidate_id": candidate_id,
+                "jitter_std_angstrom": float(jitter_std),
+                "median_abs_delta": median_delta,
+                "mean_abs_delta": float(np.mean(deltas)) if deltas else float("nan"),
+                "max_abs_delta": float(np.max(deltas)) if deltas else float("nan"),
+                "robustness_n": len(deltas),
+                "delta_vs_sc": median_delta - baseline_median
+                if math.isfinite(median_delta) and math.isfinite(baseline_median)
+                else float("nan"),
+                "robustness_pass": int(
+                    candidate_id == SC_BASELINE_ID
+                    or (
+                        math.isfinite(median_delta)
+                        and math.isfinite(baseline_median)
+                        and median_delta <= baseline_median
+                    )
+                ),
+            }
+        )
+    return out
 
 
 def summarize_candidates(
@@ -682,177 +1083,243 @@ def summarize_candidates(
     candidates: list[ZernikeSpec],
     *,
     runtime_rows: list[dict],
-) -> tuple[list[dict], list[dict], list[dict], dict[str, list[dict]]]:
-    baseline_sc_rows = next(
-        rows
-        for spec, rows in candidate_results.items()
-        if spec == ZernikeSpec().candidate_id()
-    )
+    robustness_rows: list[dict],
+) -> tuple[list[dict], list[dict], list[dict], list[dict], dict[str, list[dict]]]:
+    baseline_rows = annotate_failure_slice(candidate_results[SC_BASELINE_ID])
 
-    baseline_cell_aurocs = {
-        key: auroc_from_rows(group, "interface_sc")
-        for key, group in grouped_by(baseline_sc_rows, ("organism", "backend")).items()
+    baseline_cell_metrics = {
+        key: compute_scope_metrics(group, "candidate_score")
+        for key, group in grouped_by(baseline_rows, ("organism", "backend")).items()
     }
-    baseline_sc_global = auroc_from_rows(baseline_sc_rows, "interface_sc")
-    baseline_sc_af3 = auroc_from_rows(
-        [row for row in baseline_sc_rows if row["backend"] == "af3"],
-        "interface_sc",
-    )
-
-    summary_rows: list[dict] = []
-    metric_rows: list[dict] = []
-    annotated_outputs: dict[str, list[dict]] = {}
-    runtime_rows_out: list[dict] = []
-
+    baseline_global = compute_scope_metrics(baseline_rows, "candidate_score")
+    baseline_af2 = compute_scope_metrics([row for row in baseline_rows if row["backend"] == "af2"], "candidate_score")
+    baseline_af3 = compute_scope_metrics([row for row in baseline_rows if row["backend"] == "af3"], "candidate_score")
     baseline_failure_slice = [
         row
-        for row in annotate_failure_slice(baseline_sc_rows)
+        for row in baseline_rows
         if row["is_af3_sc_failure_slice"] == 1
     ]
-    baseline_atom_failure_rescue_rate = float(
+    baseline_rescue_rate = float(
         np.mean([row["rescued_af3_failure_positive"] for row in baseline_failure_slice])
     ) if baseline_failure_slice else 0.0
-    baseline_sc_failure_rescue_rate = 0.0
 
-    runtime_by_candidate: dict[str, dict[str, float]] = {}
+    runtime_by_candidate: dict[str, dict[str, float]] = {
+        SC_BASELINE_ID: measure_sc_runtime(runtime_rows)
+    }
+    runtime_rows_out: list[dict] = [{ "candidate_id": SC_BASELINE_ID, **runtime_by_candidate[SC_BASELINE_ID]}]
     for spec in candidates:
         stats = measure_candidate_runtime(runtime_rows, spec)
         runtime_by_candidate[spec.candidate_id()] = stats
         runtime_rows_out.append({"candidate_id": spec.candidate_id(), **stats})
 
-    baseline_runtime = runtime_by_candidate[ZernikeSpec().candidate_id()]["median_runtime_sec"]
+    robustness_by_candidate = {row["candidate_id"]: row for row in robustness_rows}
 
+    atom_baseline_id = next(
+        spec.candidate_id()
+        for spec in candidates
+        if spec.representation == ATOM_GAUSSIAN
+        and spec.grid_size == 32
+        and spec.order == 10
+        and math.isclose(float(spec.sigma), 1.5, rel_tol=0.0, abs_tol=1e-6)
+        and spec.score_mode == HARD_CUTOFF_SCORE
+    )
+    atom_baseline_runtime = runtime_by_candidate[atom_baseline_id]["median_runtime_sec"]
+    sc_runtime = runtime_by_candidate[SC_BASELINE_ID]["median_runtime_sec"]
+    baseline_jitter = safe_float(robustness_by_candidate.get(SC_BASELINE_ID, {}).get("median_abs_delta", float("nan")))
+
+    summary_rows: list[dict] = []
+    metric_rows: list[dict] = []
+    annotated_outputs: dict[str, list[dict]] = {SC_BASELINE_ID: baseline_rows}
+
+    def append_scope_rows(candidate_id: str, rows: list[dict], baseline_scope: tuple[float, float, int, int], scope: str, organism: str = "", backend: str = "") -> None:
+        auroc, ap, n_pos, n_neg = compute_scope_metrics(rows, "candidate_score")
+        metric_rows.append(
+            {
+                "candidate_id": candidate_id,
+                "scope": scope,
+                "organism": organism,
+                "backend": backend,
+                "auroc": auroc,
+                "average_precision": ap,
+                "n_pos": n_pos,
+                "n_neg": n_neg,
+                "sc_auroc": baseline_scope[0],
+                "sc_average_precision": baseline_scope[1],
+                "delta_auroc_vs_sc": auroc - baseline_scope[0]
+                if math.isfinite(auroc) and math.isfinite(baseline_scope[0])
+                else float("nan"),
+                "delta_average_precision_vs_sc": ap - baseline_scope[1]
+                if math.isfinite(ap) and math.isfinite(baseline_scope[1])
+                else float("nan"),
+            }
+        )
+
+    for key, group in grouped_by(baseline_rows, ("organism", "backend")).items():
+        append_scope_rows(SC_BASELINE_ID, group, baseline_cell_metrics[key], "cell", key[0], key[1])
+    append_scope_rows(SC_BASELINE_ID, baseline_rows, baseline_global, "global")
+    append_scope_rows(SC_BASELINE_ID, [row for row in baseline_rows if row["backend"] == "af2"], baseline_af2, "af2", backend="af2")
+    append_scope_rows(SC_BASELINE_ID, [row for row in baseline_rows if row["backend"] == "af3"], baseline_af3, "af3", backend="af3")
+
+    summary_rows.append(
+        {
+            "candidate_id": SC_BASELINE_ID,
+            "candidate_family": "sc_baseline",
+            "representation": SC_BASELINE_ID,
+            "grid_size": "",
+            "order": "",
+            "sigma": "",
+            "surface_density": "",
+            "surface_trim_cutoff": "",
+            "surface_probe_radius": "",
+            "proximity_length_scale": "",
+            "padding": "",
+            "distance": "",
+            "score_mode": "baseline",
+            "fit_order": "",
+            "order_decay_n0": "",
+            "af3_failure_rescue_rate": baseline_rescue_rate,
+            "delta_rescue_vs_sc": 0.0,
+            "pooled_af3_auroc": baseline_af3[0],
+            "delta_af3_auroc_vs_sc": 0.0,
+            "pooled_af3_average_precision": baseline_af3[1],
+            "delta_af3_average_precision_vs_sc": 0.0,
+            "pooled_all_auroc": baseline_global[0],
+            "delta_all_auroc_vs_sc": 0.0,
+            "pooled_all_average_precision": baseline_global[1],
+            "delta_all_average_precision_vs_sc": 0.0,
+            "pooled_af2_auroc": baseline_af2[0],
+            "median_runtime_sec": runtime_by_candidate[SC_BASELINE_ID]["median_runtime_sec"],
+            "runtime_ratio_vs_sc": 1.0,
+            "runtime_ratio_vs_atom_baseline": runtime_by_candidate[SC_BASELINE_ID]["median_runtime_sec"] / atom_baseline_runtime
+            if math.isfinite(runtime_by_candidate[SC_BASELINE_ID]["median_runtime_sec"]) and math.isfinite(atom_baseline_runtime) and atom_baseline_runtime > 0.0
+            else float("nan"),
+            "sidechain_jitter_median_abs_delta": baseline_jitter,
+            "delta_sidechain_jitter_vs_sc": 0.0,
+            "runtime_ok": 1,
+            "robustness_pass": 1,
+            "guardrail_pass": 1,
+            "accepted_for_production": 0,
+            "rank": 0,
+            "recommended_candidate": 0,
+        }
+    )
+
+    ranked_rows: list[dict] = []
     for spec in candidates:
         candidate_id = spec.candidate_id()
         rows = annotate_failure_slice(candidate_results[candidate_id])
         annotated_outputs[candidate_id] = rows
 
         pooled_global = compute_scope_metrics(rows, "candidate_score")
-        pooled_af2 = compute_scope_metrics(
-            [row for row in rows if row["backend"] == "af2"],
-            "candidate_score",
-        )
-        pooled_af3 = compute_scope_metrics(
-            [row for row in rows if row["backend"] == "af3"],
-            "candidate_score",
-        )
+        pooled_af2 = compute_scope_metrics([row for row in rows if row["backend"] == "af2"], "candidate_score")
+        pooled_af3 = compute_scope_metrics([row for row in rows if row["backend"] == "af3"], "candidate_score")
 
         cell_deltas = []
         for key, group in grouped_by(rows, ("organism", "backend")).items():
-            auroc, ap, n_pos, n_neg = compute_scope_metrics(group, "candidate_score")
-            baseline_auroc = baseline_cell_aurocs.get(key, float("nan"))
-            delta = auroc - baseline_auroc if math.isfinite(auroc) and math.isfinite(baseline_auroc) else float("nan")
-            metric_rows.append(
-                {
-                    "candidate_id": candidate_id,
-                    "scope": "cell",
-                    "organism": key[0],
-                    "backend": key[1],
-                    "auroc": auroc,
-                    "average_precision": ap,
-                    "n_pos": n_pos,
-                    "n_neg": n_neg,
-                    "baseline_sc_auroc": baseline_auroc,
-                    "delta_auroc_vs_sc": delta,
-                }
-            )
-            if math.isfinite(delta):
-                cell_deltas.append(delta)
+            append_scope_rows(candidate_id, group, baseline_cell_metrics[key], "cell", key[0], key[1])
+            auroc = metric_rows[-1]["auroc"]
+            delta = metric_rows[-1]["delta_auroc_vs_sc"]
+            if math.isfinite(safe_float(delta)):
+                cell_deltas.append(float(delta))
 
-        for scope_name, scope_rows in (
-            ("global", rows),
-            ("af2", [row for row in rows if row["backend"] == "af2"]),
-            ("af3", [row for row in rows if row["backend"] == "af3"]),
-        ):
-            auroc, ap, n_pos, n_neg = compute_scope_metrics(scope_rows, "candidate_score")
-            baseline_auroc = (
-                baseline_sc_global
-                if scope_name == "global"
-                else auroc_from_rows(scope_rows, "interface_sc")
-            )
-            metric_rows.append(
-                {
-                    "candidate_id": candidate_id,
-                    "scope": scope_name,
-                    "organism": "",
-                    "backend": scope_name if scope_name in {"af2", "af3"} else "",
-                    "auroc": auroc,
-                    "average_precision": ap,
-                    "n_pos": n_pos,
-                    "n_neg": n_neg,
-                    "baseline_sc_auroc": baseline_auroc,
-                    "delta_auroc_vs_sc": auroc - baseline_auroc
-                    if math.isfinite(auroc) and math.isfinite(baseline_auroc)
-                    else float("nan"),
-                }
-            )
+        append_scope_rows(candidate_id, rows, baseline_global, "global")
+        append_scope_rows(candidate_id, [row for row in rows if row["backend"] == "af2"], baseline_af2, "af2", backend="af2")
+        append_scope_rows(candidate_id, [row for row in rows if row["backend"] == "af3"], baseline_af3, "af3", backend="af3")
 
-        failure_slice_rows = [
-            row
-            for row in rows
-            if row["is_af3_sc_failure_slice"] == 1
-        ]
+        failure_slice_rows = [row for row in rows if row["is_af3_sc_failure_slice"] == 1]
         rescue_rate = float(
             np.mean([row["rescued_af3_failure_positive"] for row in failure_slice_rows])
         ) if failure_slice_rows else float("nan")
 
         runtime_stats = runtime_by_candidate[candidate_id]
         runtime_ok = (
-            math.isfinite(baseline_runtime)
+            math.isfinite(atom_baseline_runtime)
             and math.isfinite(runtime_stats["median_runtime_sec"])
-            and runtime_stats["median_runtime_sec"] <= 5.0 * baseline_runtime
+            and atom_baseline_runtime > 0.0
+            and runtime_stats["median_runtime_sec"] <= 5.0 * atom_baseline_runtime
         )
         guardrail_pass = (
             math.isfinite(pooled_global[0])
-            and pooled_global[0] >= baseline_sc_global
+            and math.isfinite(baseline_global[0])
+            and pooled_global[0] >= baseline_global[0]
             and all(delta >= -0.01 for delta in cell_deltas)
         )
+        robustness_row = robustness_by_candidate.get(candidate_id, {})
+        robustness_pass = int(robustness_row.get("robustness_pass", 0)) == 1
         accepted_for_production = (
-            guardrail_pass
-            and runtime_ok
+            runtime_ok
+            and robustness_pass
+            and guardrail_pass
             and math.isfinite(rescue_rate)
-            and rescue_rate > baseline_sc_failure_rescue_rate
+            and rescue_rate > baseline_rescue_rate
             and math.isfinite(pooled_af3[0])
-            and pooled_af3[0] > baseline_sc_af3
+            and math.isfinite(baseline_af3[0])
+            and pooled_af3[0] > baseline_af3[0]
         )
 
-        summary_rows.append(
+        ranked_rows.append(
             {
                 "candidate_id": candidate_id,
+                "candidate_family": zernike_candidate_family(spec.representation),
                 "representation": spec.representation,
                 "grid_size": spec.grid_size,
                 "order": spec.order,
                 "sigma": spec.sigma if spec.representation in GAUSSIAN_REPRESENTATIONS else "",
                 "surface_density": spec.surface_density
-                if spec.representation in {SURFACE_BINARY, SURFACE_GAUSSIAN, SURFACE_PROXIMITY_GAUSSIAN}
+                if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
                 else "",
                 "surface_trim_cutoff": spec.surface_trim_cutoff
-                if spec.representation in {SURFACE_BINARY, SURFACE_GAUSSIAN, SURFACE_PROXIMITY_GAUSSIAN}
+                if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
+                else "",
+                "surface_probe_radius": spec.surface_probe_radius
+                if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
                 else "",
                 "proximity_length_scale": spec.proximity_length_scale
-                if spec.representation == SURFACE_PROXIMITY_GAUSSIAN
+                if zernike_source_representation(spec.representation) == "surface_proximity_gaussian"
                 else "",
                 "padding": spec.padding,
                 "distance": spec.distance,
+                "score_mode": spec.score_mode,
+                "fit_order": fit_order_value(spec),
+                "order_decay_n0": spec.order_decay_n0 if spec.score_mode == GAUSSIAN_WEIGHTED_SCORE else "",
                 "af3_failure_rescue_rate": rescue_rate,
+                "delta_rescue_vs_sc": rescue_rate - baseline_rescue_rate
+                if math.isfinite(rescue_rate)
+                else float("nan"),
                 "pooled_af3_auroc": pooled_af3[0],
+                "delta_af3_auroc_vs_sc": pooled_af3[0] - baseline_af3[0]
+                if math.isfinite(pooled_af3[0]) and math.isfinite(baseline_af3[0])
+                else float("nan"),
                 "pooled_af3_average_precision": pooled_af3[1],
+                "delta_af3_average_precision_vs_sc": pooled_af3[1] - baseline_af3[1]
+                if math.isfinite(pooled_af3[1]) and math.isfinite(baseline_af3[1])
+                else float("nan"),
                 "pooled_all_auroc": pooled_global[0],
+                "delta_all_auroc_vs_sc": pooled_global[0] - baseline_global[0]
+                if math.isfinite(pooled_global[0]) and math.isfinite(baseline_global[0])
+                else float("nan"),
                 "pooled_all_average_precision": pooled_global[1],
+                "delta_all_average_precision_vs_sc": pooled_global[1] - baseline_global[1]
+                if math.isfinite(pooled_global[1]) and math.isfinite(baseline_global[1])
+                else float("nan"),
                 "pooled_af2_auroc": pooled_af2[0],
                 "median_runtime_sec": runtime_stats["median_runtime_sec"],
-                "mean_runtime_sec": runtime_stats["mean_runtime_sec"],
+                "runtime_ratio_vs_sc": runtime_stats["median_runtime_sec"] / sc_runtime
+                if math.isfinite(runtime_stats["median_runtime_sec"]) and math.isfinite(sc_runtime) and sc_runtime > 0.0
+                else float("nan"),
+                "runtime_ratio_vs_atom_baseline": runtime_stats["median_runtime_sec"] / atom_baseline_runtime
+                if math.isfinite(runtime_stats["median_runtime_sec"]) and math.isfinite(atom_baseline_runtime) and atom_baseline_runtime > 0.0
+                else float("nan"),
+                "sidechain_jitter_median_abs_delta": safe_float(robustness_row.get("median_abs_delta", float("nan"))),
+                "delta_sidechain_jitter_vs_sc": safe_float(robustness_row.get("delta_vs_sc", float("nan"))),
                 "runtime_ok": int(runtime_ok),
+                "robustness_pass": int(robustness_pass),
                 "guardrail_pass": int(guardrail_pass),
                 "accepted_for_production": int(accepted_for_production),
-                "baseline_sc_global_auroc": baseline_sc_global,
-                "baseline_sc_af3_auroc": baseline_sc_af3,
-                "baseline_sc_failure_rescue_rate": baseline_sc_failure_rescue_rate,
-                "baseline_atom_failure_rescue_rate": baseline_atom_failure_rescue_rate,
             }
         )
 
-    summary_rows.sort(
+    ranked_rows.sort(
         key=lambda row: (
             -(safe_float(row["af3_failure_rescue_rate"]) if math.isfinite(safe_float(row["af3_failure_rescue_rate"])) else -1.0),
             -(safe_float(row["pooled_af3_auroc"]) if math.isfinite(safe_float(row["pooled_af3_auroc"])) else -1.0),
@@ -860,17 +1327,14 @@ def summarize_candidates(
             safe_float(row["median_runtime_sec"]) if math.isfinite(safe_float(row["median_runtime_sec"])) else float("inf"),
         )
     )
-
     first_pass = True
-    for idx, row in enumerate(summary_rows, start=1):
+    for idx, row in enumerate(ranked_rows, start=1):
         row["rank"] = idx
-        if first_pass and row["accepted_for_production"] == 1:
-            row["recommended_candidate"] = 1
+        row["recommended_candidate"] = int(first_pass and row["accepted_for_production"] == 1)
+        if row["recommended_candidate"] == 1:
             first_pass = False
-        else:
-            row["recommended_candidate"] = 0
-
-    return summary_rows, metric_rows, runtime_rows_out, annotated_outputs
+    summary_rows.extend(ranked_rows)
+    return summary_rows, metric_rows, runtime_rows_out, robustness_rows, annotated_outputs
 
 
 def write_candidate_reports(
@@ -879,34 +1343,63 @@ def write_candidate_reports(
 ) -> None:
     score_dir = out_dir / "scores"
     top_dir = out_dir / "top_hits"
+    sc_rows = annotated_outputs.get(SC_BASELINE_ID, [])
+    sc_by_key = {
+        (row["pair"], row["organism"], row["backend"], row["interface"]): row
+        for row in sc_rows
+    }
+
     for candidate_id, rows in annotated_outputs.items():
         write_csv(score_dir / f"{candidate_id}.csv", rows)
 
-        failure_slice = [
-            row for row in rows if row["is_af3_sc_failure_slice"] == 1
-        ]
-        rescued = [
-            row for row in failure_slice if row["rescued_af3_failure_positive"] == 1
-        ]
-        rescued.sort(
+        if candidate_id == SC_BASELINE_ID:
+            continue
+
+        failure_slice = [row for row in rows if row["is_af3_sc_failure_slice"] == 1]
+        rescued_by_candidate = []
+        rescued_by_sc = []
+        still_missed = []
+        for row in failure_slice:
+            key = (row["pair"], row["organism"], row["backend"], row["interface"])
+            sc_row = sc_by_key.get(key, {})
+            merged = dict(row)
+            merged.update(
+                {
+                    "sc_candidate_score": safe_float(sc_row.get("candidate_score", float("nan"))),
+                    "sc_candidate_neg90": safe_float(sc_row.get("candidate_neg90", float("nan"))),
+                    "sc_rescued_af3_failure_positive": int(sc_row.get("rescued_af3_failure_positive", 0)),
+                }
+            )
+            if row["rescued_af3_failure_positive"] == 1 and int(sc_row.get("rescued_af3_failure_positive", 0)) == 0:
+                rescued_by_candidate.append(merged)
+            if row["rescued_af3_failure_positive"] == 0 and int(sc_row.get("rescued_af3_failure_positive", 0)) == 1:
+                rescued_by_sc.append(merged)
+            if row["rescued_af3_failure_positive"] == 0:
+                still_missed.append(merged)
+
+        rescued_by_candidate.sort(
             key=lambda row: (
                 -safe_float(row["candidate_margin_to_neg90"]),
                 -safe_float(row["candidate_score"]),
                 str(row["pair"]),
             )
         )
-        missed = [
-            row for row in failure_slice if row["rescued_af3_failure_positive"] == 0
-        ]
-        missed.sort(
+        rescued_by_sc.sort(
             key=lambda row: (
-                -safe_float(row["candidate_margin_to_neg90"]),
+                -safe_float(row["sc_candidate_score"]),
+                str(row["pair"]),
+            )
+        )
+        still_missed.sort(
+            key=lambda row: (
                 -safe_float(row["candidate_score"]),
                 str(row["pair"]),
             )
         )
-        write_csv(top_dir / f"{candidate_id}__rescued.csv", rescued[:TOP_N])
-        write_csv(top_dir / f"{candidate_id}__still_missed.csv", missed[:TOP_N])
+
+        write_csv(top_dir / f"{candidate_id}__rescued_vs_sc.csv", rescued_by_candidate[:TOP_N])
+        write_csv(top_dir / f"{candidate_id}__rescued_by_sc_only.csv", rescued_by_sc[:TOP_N])
+        write_csv(top_dir / f"{candidate_id}__still_missed.csv", still_missed[:TOP_N])
 
 
 def main() -> int:
@@ -939,24 +1432,39 @@ def main() -> int:
         else all_rows
     )
     runtime_rows = runtime_sample_rows(all_rows, args.runtime_sample_size)
+    robustness_rows_sample = robustness_sample_rows(
+        all_rows,
+        min(10, len([row for row in all_rows if row["label"] == "positive"]))
+        if args.mode == "smoke"
+        else ROBUSTNESS_SAMPLE_SIZE,
+    )
 
     candidate_results, cache_meta = evaluate_candidates(
         benchmark_rows,
         candidates,
-        cache_dir=out_dir / "cache" / "grids",
+        cache_dir=out_dir / "cache",
     )
-    summary_rows, metric_rows, runtime_summary_rows, annotated_outputs = summarize_candidates(
+    robustness_summary = measure_robustness(
+        robustness_rows_sample,
+        candidates,
+        jitter_std=ROBUSTNESS_JITTER_STD,
+    )
+    summary_rows, metric_rows, runtime_summary_rows, robustness_summary_rows, annotated_outputs = summarize_candidates(
         candidate_results,
         candidates,
         runtime_rows=runtime_rows,
+        robustness_rows=robustness_summary,
     )
 
     write_csv(out_dir / "dataset_rows.csv", benchmark_rows)
     write_csv(out_dir / "skipped_rows.csv", skipped)
     write_csv(out_dir / "dataset_cell_counts.csv", dataset_cell_counts(benchmark_rows))
+    write_csv(out_dir / "runtime_rows.csv", runtime_rows)
+    write_csv(out_dir / "robustness_rows.csv", robustness_rows_sample)
     write_csv(out_dir / "candidate_summary.csv", summary_rows)
     write_csv(out_dir / "candidate_metrics.csv", metric_rows)
     write_csv(out_dir / "candidate_runtime_summary.csv", runtime_summary_rows)
+    write_csv(out_dir / "candidate_robustness_summary.csv", robustness_summary_rows)
     write_candidate_reports(out_dir, annotated_outputs)
     write_json(
         out_dir / "run_metadata.json",
@@ -967,7 +1475,9 @@ def main() -> int:
             "rows_total_discovered": len(all_rows),
             "rows_scored": len(benchmark_rows),
             "runtime_rows": len(runtime_rows),
+            "robustness_rows": len(robustness_rows_sample),
             "candidate_count": len(candidates),
+            "reported_score_count": len(candidates) + 1,
             "candidates": [asdict(spec) for spec in candidates],
             **cache_meta,
         },
@@ -976,6 +1486,7 @@ def main() -> int:
     print(f"wrote {out_dir / 'candidate_summary.csv'}")
     print(f"wrote {out_dir / 'candidate_metrics.csv'}")
     print(f"wrote {out_dir / 'candidate_runtime_summary.csv'}")
+    print(f"wrote {out_dir / 'candidate_robustness_summary.csv'}")
     print(f"wrote {out_dir / 'run_metadata.json'}")
     return 0
 
