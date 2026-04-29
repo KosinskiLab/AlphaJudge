@@ -9,6 +9,8 @@ from pathlib import Path
 
 from Bio.PDB import MMCIFIO, PDBIO, PDBParser
 
+from scripts.benchmark_zernike_rescue import score_distribution_summary
+
 
 def _write_csv(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,10 +193,14 @@ END
     )
 
     summary_rows = list(csv.DictReader((out_dir / "candidate_summary.csv").open()))
-    assert len(summary_rows) == 5
-    assert {row["candidate_family"] for row in summary_rows} == {"sc_baseline", "per_side", "joint_volume"}
+    assert len(summary_rows) == 8
+    assert {row["candidate_family"] for row in summary_rows} == {"sc_baseline", "per_side", "joint_volume", "grid_gap"}
     baseline_row = next(row for row in summary_rows if row["candidate_id"] == "interface_sc")
     assert baseline_row["delta_all_auroc_vs_sc"] == "0.0"
+    assert "positive_fraction_ge_0_95" in baseline_row
+    assert "negative_fraction_ge_0_95" in baseline_row
+    assert "saturation_reject" in baseline_row
+    assert any(row["production_eligible"] == "1" for row in summary_rows)
 
     metric_rows = list(csv.DictReader((out_dir / "candidate_metrics.csv").open()))
     assert "delta_auroc_vs_sc" in metric_rows[0]
@@ -209,3 +215,18 @@ END
     score_rows = list(csv.DictReader((out_dir / "scores" / "interface_sc.csv").open()))
     assert {row["backend"] for row in score_rows} == {"af2", "af3"}
     assert {row["candidate_status"] for row in score_rows} == {"baseline"}
+
+
+def test_saturation_diagnostics_reject_always_high_scores():
+    rows = [
+        {"label": "positive", "candidate_score": 0.98},
+        {"label": "positive", "candidate_score": 0.99},
+        {"label": "negative", "candidate_score": 0.97},
+        {"label": "negative", "candidate_score": 0.98},
+    ]
+
+    summary = score_distribution_summary(rows)
+
+    assert summary["positive_fraction_ge_0_95"] == 1.0
+    assert summary["negative_fraction_ge_0_95"] == 1.0
+    assert summary["saturation_reject"] == 1

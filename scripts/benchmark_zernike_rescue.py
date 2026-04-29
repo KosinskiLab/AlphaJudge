@@ -23,31 +23,31 @@ from scipy.stats import rankdata
 from alphajudge.biophysics.sc import shape_complementarity
 from alphajudge.biophysics.zernike import (
     ATOM_GAUSSIAN,
-    DEFAULT_DISTANCE,
-    DEFAULT_ORDER_DECAY_N0,
-    DEFAULT_PADDING,
-    DEFAULT_SIGMA,
     DEFAULT_SURFACE_DENSITY,
     DEFAULT_SURFACE_PROBE_RADIUS,
-    DEFAULT_SURFACE_TRIM_CUTOFF,
     GAUSSIAN_REPRESENTATIONS,
     GAUSSIAN_WEIGHTED_SCORE,
+    GAP_ZERNIKE_RATIO_SCORE,
+    GAP_ZERNIKE_WEIGHTED_SCORE,
+    GRID_SCORE_MODES,
     HARD_CUTOFF_SCORE,
     JOINT_LOW_ORDER_RATIO_SCORE,
     JOINT_REPRESENTATIONS,
     JOINT_RESIDUE_BEAD_GAUSSIAN,
-    JOINT_SURFACE_GAUSSIAN,
     RESIDUE_BEAD_GAUSSIAN,
     SURFACE_GAUSSIAN,
     SURFACE_REPRESENTATIONS,
+    SHARED_GRID_OVERLAP_SCORE,
     WeightedPointCloud,
     ZernikeSpec,
     fit_order_value,
     zernike_candidate_family,
     zernike_coefficient_bundle_from_grids,
+    zernike_gap_coefficient_bundle_from_grids,
     zernike_grids_from_point_clouds,
     zernike_point_clouds,
     zernike_score_from_coefficients,
+    zernike_score_from_gap_coefficients,
     zernike_source_representation,
 )
 
@@ -65,6 +65,11 @@ MAX_SWEEP_ORDER = 12
 AF3_FAILURE_QUANTILE = 0.90
 TOP_N = 50
 SC_BASELINE_ID = "interface_sc"
+DIAGNOSTIC_HARD_PER_CLASS = 6
+DIAGNOSTIC_AF3_SAMPLE_SIZE = 200
+SATURATION_SCORE_THRESHOLD = 0.95
+SATURATION_FRACTION_THRESHOLD = 0.80
+MIN_MEDIAN_SEPARATION = 0.02
 
 PROTEIN_BACKBONE_ATOMS = {"N", "CA", "C", "O", "OXT"}
 NA_BACKBONE_ATOMS = {
@@ -161,7 +166,12 @@ def _grid_payload(row: dict, spec: ZernikeSpec) -> dict:
 
 def _coeff_payload(row: dict, spec: ZernikeSpec) -> dict:
     payload = _grid_payload(row, spec)
-    payload.update({"fit_order": fit_order_value(spec)})
+    payload.update(
+        {
+            "fit_order": fit_order_value(spec),
+            "coefficient_builder": "zernike_coeff_gap_bundle_v1",
+        }
+    )
     return payload
 
 
@@ -256,12 +266,18 @@ class CoefficientCache:
     def _cache_path(self, row: dict, spec: ZernikeSpec) -> Path:
         return self.cache_dir / f"{hash_payload(_coeff_payload(row, spec))}.npz"
 
-    def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         path = self._cache_path(row, spec)
         if path.exists():
             with np.load(path) as payload:
                 self.hits += 1
-                return payload["coeff1"], payload["coeff2"], payload["joint_coeff"]
+                return (
+                    payload["coeff1"],
+                    payload["coeff2"],
+                    payload["joint_coeff"],
+                    payload["gap_coeff"],
+                    float(payload["grid_overlap"]),
+                )
 
         grid1, grid2 = self.grid_cache.get_or_build(row, spec)
         coeff1, coeff2, joint_coeff = zernike_coefficient_bundle_from_grids(
@@ -269,9 +285,21 @@ class CoefficientCache:
             grid2,
             fit_order_value(spec),
         )
-        np.savez_compressed(path, coeff1=coeff1, coeff2=coeff2, joint_coeff=joint_coeff)
+        gap_coeff, grid_overlap = zernike_gap_coefficient_bundle_from_grids(
+            grid1,
+            grid2,
+            fit_order_value(spec),
+        )
+        np.savez_compressed(
+            path,
+            coeff1=coeff1,
+            coeff2=coeff2,
+            joint_coeff=joint_coeff,
+            gap_coeff=gap_coeff,
+            grid_overlap=np.asarray(grid_overlap, dtype=float),
+        )
         self.misses += 1
-        return coeff1, coeff2, joint_coeff
+        return coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap
 
 
 def coerce_best_row(row: dict[str, str]) -> dict:
@@ -305,110 +333,20 @@ def candidate_groups(candidates: Iterable[ZernikeSpec]) -> dict[tuple, list[Zern
     return groups
 
 
-def _weighted_score_modes() -> list[tuple[str, float]]:
+def _atom_cosine_baseline_spec() -> ZernikeSpec:
+    return ZernikeSpec(
+        representation=ATOM_GAUSSIAN,
+        grid_size=32,
+        order=10,
+        sigma=1.5,
+        score_mode=HARD_CUTOFF_SCORE,
+        fit_order=MAX_SWEEP_ORDER,
+    )
+
+
+def build_cosine_diagnostic_candidates() -> list[ZernikeSpec]:
     return [
-        (HARD_CUTOFF_SCORE, DEFAULT_ORDER_DECAY_N0),
-        (GAUSSIAN_WEIGHTED_SCORE, 4.0),
-        (GAUSSIAN_WEIGHTED_SCORE, 6.0),
-    ]
-
-
-def build_full_candidates() -> list[ZernikeSpec]:
-    candidates: list[ZernikeSpec] = []
-
-    for grid_size in (24, 32):
-        for order in (8, 10):
-            for sigma in (1.5, 2.5):
-                for score_mode, decay in _weighted_score_modes():
-                    candidates.append(
-                        ZernikeSpec(
-                            representation=ATOM_GAUSSIAN,
-                            grid_size=grid_size,
-                            order=order,
-                            sigma=sigma,
-                            score_mode=score_mode,
-                            fit_order=MAX_SWEEP_ORDER,
-                            order_decay_n0=decay,
-                        )
-                    )
-
-        for order in (6, 8, 10):
-            for sigma in (2.0, 3.0):
-                for score_mode, decay in _weighted_score_modes():
-                    candidates.append(
-                        ZernikeSpec(
-                            representation=RESIDUE_BEAD_GAUSSIAN,
-                            grid_size=grid_size,
-                            order=order,
-                            sigma=sigma,
-                            score_mode=score_mode,
-                            fit_order=MAX_SWEEP_ORDER,
-                            order_decay_n0=decay,
-                        )
-                    )
-
-        for order in (6, 8):
-            for sigma in (1.5, 2.0):
-                for density in (3.0, 5.0):
-                    for probe in (1.7, 2.3):
-                        for score_mode, decay in _weighted_score_modes():
-                            candidates.append(
-                                ZernikeSpec(
-                                    representation=SURFACE_GAUSSIAN,
-                                    grid_size=grid_size,
-                                    order=order,
-                                    sigma=sigma,
-                                    surface_density=density,
-                                    surface_probe_radius=probe,
-                                    score_mode=score_mode,
-                                    fit_order=MAX_SWEEP_ORDER,
-                                    order_decay_n0=decay,
-                                )
-                            )
-
-        for order in (4, 6, 8):
-            for sigma in (2.0, 3.0):
-                candidates.append(
-                    ZernikeSpec(
-                        representation=JOINT_RESIDUE_BEAD_GAUSSIAN,
-                        grid_size=grid_size,
-                        order=order,
-                        sigma=sigma,
-                        score_mode=JOINT_LOW_ORDER_RATIO_SCORE,
-                        fit_order=MAX_SWEEP_ORDER,
-                    )
-                )
-
-        for order in (4, 6, 8):
-            for sigma in (1.5, 2.0):
-                for density in (3.0, 5.0):
-                    for probe in (1.7, 2.3):
-                        candidates.append(
-                            ZernikeSpec(
-                                representation=JOINT_SURFACE_GAUSSIAN,
-                                grid_size=grid_size,
-                                order=order,
-                                sigma=sigma,
-                                surface_density=density,
-                                surface_probe_radius=probe,
-                                score_mode=JOINT_LOW_ORDER_RATIO_SCORE,
-                                fit_order=MAX_SWEEP_ORDER,
-                            )
-                        )
-
-    return candidates
-
-
-def build_smoke_candidates() -> list[ZernikeSpec]:
-    return [
-        ZernikeSpec(
-            representation=ATOM_GAUSSIAN,
-            grid_size=32,
-            order=10,
-            sigma=1.5,
-            score_mode=HARD_CUTOFF_SCORE,
-            fit_order=MAX_SWEEP_ORDER,
-        ),
+        _atom_cosine_baseline_spec(),
         ZernikeSpec(
             representation=RESIDUE_BEAD_GAUSSIAN,
             grid_size=24,
@@ -434,6 +372,132 @@ def build_smoke_candidates() -> list[ZernikeSpec]:
             order=6,
             sigma=2.0,
             score_mode=JOINT_LOW_ORDER_RATIO_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+        ),
+    ]
+
+
+def _append_gap_candidates(
+    candidates: list[ZernikeSpec],
+    *,
+    representation: str,
+    grid_size: int,
+    sigma: float,
+    surface_density: float = DEFAULT_SURFACE_DENSITY,
+    surface_probe_radius: float = DEFAULT_SURFACE_PROBE_RADIUS,
+) -> None:
+    common = {
+        "representation": representation,
+        "grid_size": grid_size,
+        "sigma": sigma,
+        "surface_density": surface_density,
+        "surface_probe_radius": surface_probe_radius,
+        "fit_order": MAX_SWEEP_ORDER,
+    }
+    candidates.append(
+        ZernikeSpec(
+            **common,
+            order=0,
+            score_mode=SHARED_GRID_OVERLAP_SCORE,
+        )
+    )
+    for order in (4, 6, 8):
+        candidates.append(
+            ZernikeSpec(
+                **common,
+                order=order,
+                score_mode=GAP_ZERNIKE_RATIO_SCORE,
+            )
+        )
+        candidates.append(
+            ZernikeSpec(
+                **common,
+                order=order,
+                score_mode=GAP_ZERNIKE_WEIGHTED_SCORE,
+                order_decay_n0=4.0,
+            )
+        )
+
+
+def build_full_candidates() -> list[ZernikeSpec]:
+    candidates: list[ZernikeSpec] = build_cosine_diagnostic_candidates()
+    for grid_size in (24, 32):
+        for sigma in (2.0, 3.0):
+            _append_gap_candidates(candidates, representation=ATOM_GAUSSIAN, grid_size=grid_size, sigma=sigma)
+            _append_gap_candidates(
+                candidates,
+                representation=RESIDUE_BEAD_GAUSSIAN,
+                grid_size=grid_size,
+                sigma=sigma,
+            )
+        for sigma in (1.5, 2.5):
+            _append_gap_candidates(
+                candidates,
+                representation=SURFACE_GAUSSIAN,
+                grid_size=grid_size,
+                sigma=sigma,
+                surface_density=3.0,
+                surface_probe_radius=2.3,
+            )
+
+    return candidates
+
+
+def build_smoke_candidates() -> list[ZernikeSpec]:
+    return [
+        _atom_cosine_baseline_spec(),
+        ZernikeSpec(
+            representation=RESIDUE_BEAD_GAUSSIAN,
+            grid_size=24,
+            order=8,
+            sigma=2.0,
+            score_mode=GAUSSIAN_WEIGHTED_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+            order_decay_n0=4.0,
+        ),
+        ZernikeSpec(
+            representation=SURFACE_GAUSSIAN,
+            grid_size=24,
+            order=6,
+            sigma=1.5,
+            surface_density=3.0,
+            surface_probe_radius=2.3,
+            score_mode=HARD_CUTOFF_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+        ),
+        ZernikeSpec(
+            representation=JOINT_RESIDUE_BEAD_GAUSSIAN,
+            grid_size=24,
+            order=6,
+            sigma=2.0,
+            score_mode=JOINT_LOW_ORDER_RATIO_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+        ),
+        ZernikeSpec(
+            representation=ATOM_GAUSSIAN,
+            grid_size=24,
+            order=6,
+            sigma=2.0,
+            score_mode=GAP_ZERNIKE_RATIO_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+        ),
+        ZernikeSpec(
+            representation=RESIDUE_BEAD_GAUSSIAN,
+            grid_size=24,
+            order=6,
+            sigma=2.0,
+            score_mode=GAP_ZERNIKE_WEIGHTED_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+            order_decay_n0=4.0,
+        ),
+        ZernikeSpec(
+            representation=SURFACE_GAUSSIAN,
+            grid_size=24,
+            order=0,
+            sigma=1.5,
+            surface_density=3.0,
+            surface_probe_radius=2.3,
+            score_mode=SHARED_GRID_OVERLAP_SCORE,
             fit_order=MAX_SWEEP_ORDER,
         ),
     ]
@@ -579,7 +643,9 @@ def dataset_cell_counts(rows: Iterable[dict]) -> list[dict]:
 
 
 def balanced_sample(rows: list[dict], sample_size: int) -> list[dict]:
-    if sample_size <= 0 or len(rows) <= sample_size:
+    if sample_size <= 0:
+        return []
+    if len(rows) <= sample_size:
         return list(rows)
 
     grouped: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
@@ -618,6 +684,71 @@ def balanced_sample(rows: list[dict], sample_size: int) -> list[dict]:
     return selected[:sample_size]
 
 
+def _copy_for_diagnostic_slice(row: dict, slice_name: str) -> dict:
+    out = dict(row)
+    out["diagnostic_slice"] = slice_name
+    return out
+
+
+def human_af3_hard_slice(rows: list[dict], per_class: int = DIAGNOSTIC_HARD_PER_CLASS) -> list[dict]:
+    positives = [
+        row
+        for row in rows
+        if row["organism"] == "human" and row["backend"] == "af3" and row["label"] == "positive"
+    ]
+    negatives = [
+        row
+        for row in rows
+        if row["organism"] == "human" and row["backend"] == "af3" and row["label"] == "negative"
+    ]
+    positives.sort(key=lambda row: (safe_float(row.get("interface_sc", float("nan"))), str(row["pair"])))
+    negatives.sort(key=lambda row: (-safe_float(row.get("interface_sc", float("nan"))), str(row["pair"])))
+    selected = positives[:per_class] + negatives[:per_class]
+    return [_copy_for_diagnostic_slice(row, "human_af3_hard_low_sc_pos_high_sc_neg") for row in selected]
+
+
+def af3_mixed_diagnostic_sample(rows: list[dict], sample_size: int = DIAGNOSTIC_AF3_SAMPLE_SIZE) -> list[dict]:
+    af3_rows = [row for row in rows if row["backend"] == "af3"]
+    if sample_size <= 0 or len(af3_rows) <= sample_size:
+        return [_copy_for_diagnostic_slice(row, "af3_mixed_200") for row in af3_rows]
+
+    positives = [row for row in af3_rows if row["label"] == "positive"]
+    negatives = [row for row in af3_rows if row["label"] == "negative"]
+    quarter = max(1, sample_size // 4)
+
+    low_sc_pos = sorted(positives, key=lambda row: (safe_float(row.get("interface_sc", float("nan"))), str(row["pair"])))[:quarter]
+    high_sc_neg = sorted(negatives, key=lambda row: (-safe_float(row.get("interface_sc", float("nan"))), str(row["pair"])))[:quarter]
+
+    used_keys = {(row["organism"], row["pairset"], row["pair"], row["interface"]) for row in low_sc_pos + high_sc_neg}
+    ordinary_pos = [
+        row
+        for row in sorted(positives, key=lambda row: (str(row["organism"]), str(row["pair"]), str(row["interface"])))
+        if (row["organism"], row["pairset"], row["pair"], row["interface"]) not in used_keys
+    ][:quarter]
+    used_keys.update((row["organism"], row["pairset"], row["pair"], row["interface"]) for row in ordinary_pos)
+    ordinary_neg = [
+        row
+        for row in sorted(negatives, key=lambda row: (str(row["organism"]), str(row["pair"]), str(row["interface"])))
+        if (row["organism"], row["pairset"], row["pair"], row["interface"]) not in used_keys
+    ][:quarter]
+    selected = low_sc_pos + ordinary_pos + high_sc_neg + ordinary_neg
+
+    if len(selected) < sample_size:
+        used_keys = {(row["organism"], row["pairset"], row["pair"], row["interface"]) for row in selected}
+        remainder = [
+            row
+            for row in sorted(af3_rows, key=lambda row: (str(row["organism"]), str(row["pairset"]), str(row["pair"])))
+            if (row["organism"], row["pairset"], row["pair"], row["interface"]) not in used_keys
+        ]
+        selected.extend(remainder[: sample_size - len(selected)])
+
+    return [_copy_for_diagnostic_slice(row, "af3_mixed_200") for row in selected[:sample_size]]
+
+
+def diagnostic_benchmark_rows(rows: list[dict]) -> list[dict]:
+    return human_af3_hard_slice(rows) + af3_mixed_diagnostic_sample(rows)
+
+
 def parser_for_model(path: str):
     model_path = Path(path)
     return MMCIFParser(QUIET=True) if model_path.suffix.lower() == ".cif" else PDBParser(QUIET=True)
@@ -639,7 +770,7 @@ def load_interface_residues(model_file: str, interface_label: str) -> tuple[tupl
 
 
 def candidate_row_metadata(row: dict, *, candidate_id: str, representation: str, candidate_family: str) -> dict:
-    return {
+    out = {
         "pair": row["pair"],
         "organism": row["organism"],
         "backend": row["backend"],
@@ -658,6 +789,9 @@ def candidate_row_metadata(row: dict, *, candidate_id: str, representation: str,
         "candidate_family": candidate_family,
         "representation": representation,
     }
+    if "diagnostic_slice" in row:
+        out["diagnostic_slice"] = row["diagnostic_slice"]
+    return out
 
 
 def baseline_sc_results(rows: list[dict]) -> list[dict]:
@@ -709,9 +843,18 @@ def evaluate_candidates(
         for _, spec_group in grouped_candidates.items():
             anchor = spec_group[0]
             try:
-                coeff1, coeff2, joint_coeff = coeff_cache.get_or_build(row, anchor)
+                coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap = coeff_cache.get_or_build(row, anchor)
                 for spec in spec_group:
-                    if spec.representation in JOINT_REPRESENTATIONS:
+                    if spec.score_mode in GRID_SCORE_MODES:
+                        score = zernike_score_from_gap_coefficients(
+                            gap_coeff,
+                            grid_overlap,
+                            order=spec.order,
+                            score_mode=spec.score_mode,
+                            fit_order=fit_order_value(spec),
+                            order_decay_n0=spec.order_decay_n0,
+                        )
+                    elif spec.representation in JOINT_REPRESENTATIONS:
                         score = zernike_score_from_coefficients(
                             joint_coeff,
                             None,
@@ -734,7 +877,7 @@ def evaluate_candidates(
                         row,
                         candidate_id=spec.candidate_id(),
                         representation=spec.representation,
-                        candidate_family=zernike_candidate_family(spec.representation),
+                        candidate_family=zernike_candidate_family(spec.representation, spec.score_mode),
                     )
                     out_row.update(
                         {
@@ -758,7 +901,7 @@ def evaluate_candidates(
                             "score_mode": spec.score_mode,
                             "fit_order": fit_order_value(spec),
                             "order_decay_n0": spec.order_decay_n0
-                            if spec.score_mode == GAUSSIAN_WEIGHTED_SCORE
+                            if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
                             else "",
                             "candidate_score": score,
                             "candidate_status": "success",
@@ -772,7 +915,7 @@ def evaluate_candidates(
                         row,
                         candidate_id=spec.candidate_id(),
                         representation=spec.representation,
-                        candidate_family=zernike_candidate_family(spec.representation),
+                        candidate_family=zernike_candidate_family(spec.representation, spec.score_mode),
                     )
                     out_row.update(
                         {
@@ -796,7 +939,7 @@ def evaluate_candidates(
                             "score_mode": spec.score_mode,
                             "fit_order": fit_order_value(spec),
                             "order_decay_n0": spec.order_decay_n0
-                            if spec.score_mode == GAUSSIAN_WEIGHTED_SCORE
+                            if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
                             else "",
                             "candidate_score": float("nan"),
                             "candidate_status": f"error:{exc}",
@@ -877,6 +1020,68 @@ def compute_scope_metrics(rows: list[dict], field: str) -> tuple[float, float, i
     n_pos = sum(1 for row in rows if row["label"] == "positive" and math.isfinite(safe_float(row[field])))
     n_neg = sum(1 for row in rows if row["label"] == "negative" and math.isfinite(safe_float(row[field])))
     return auroc, ap, n_pos, n_neg
+
+
+def _median_or_nan(values: list[float]) -> float:
+    return float(np.median(values)) if values else float("nan")
+
+
+def score_distribution_summary(rows: list[dict], field: str = "candidate_score") -> dict[str, float | int]:
+    pos = [
+        safe_float(row[field])
+        for row in rows
+        if row["label"] == "positive" and math.isfinite(safe_float(row[field]))
+    ]
+    neg = [
+        safe_float(row[field])
+        for row in rows
+        if row["label"] == "negative" and math.isfinite(safe_float(row[field]))
+    ]
+    all_scores = pos + neg
+    pos_median = _median_or_nan(pos)
+    neg_median = _median_or_nan(neg)
+    median_separation = (
+        pos_median - neg_median
+        if math.isfinite(pos_median) and math.isfinite(neg_median)
+        else float("nan")
+    )
+    pos_high_fraction = (
+        float(np.mean([score >= SATURATION_SCORE_THRESHOLD for score in pos]))
+        if pos
+        else float("nan")
+    )
+    neg_high_fraction = (
+        float(np.mean([score >= SATURATION_SCORE_THRESHOLD for score in neg]))
+        if neg
+        else float("nan")
+    )
+    score_min = min(all_scores) if all_scores else float("nan")
+    score_max = max(all_scores) if all_scores else float("nan")
+    dynamic_range = score_max - score_min if all_scores else float("nan")
+    saturation_reject = (
+        math.isfinite(pos_high_fraction)
+        and math.isfinite(neg_high_fraction)
+        and pos_high_fraction >= SATURATION_FRACTION_THRESHOLD
+        and neg_high_fraction >= SATURATION_FRACTION_THRESHOLD
+    ) or (
+        math.isfinite(median_separation)
+        and median_separation < MIN_MEDIAN_SEPARATION
+    )
+    return {
+        "positive_median_score": pos_median,
+        "negative_median_score": neg_median,
+        "positive_minus_negative_median": median_separation,
+        "positive_fraction_ge_0_95": pos_high_fraction,
+        "negative_fraction_ge_0_95": neg_high_fraction,
+        "score_min": score_min,
+        "score_max": score_max,
+        "score_dynamic_range": dynamic_range,
+        "saturation_reject": int(saturation_reject),
+    }
+
+
+def is_production_candidate(spec: ZernikeSpec) -> bool:
+    return spec.score_mode in GRID_SCORE_MODES
 
 
 def grouped_by(rows: list[dict], keys: tuple[str, ...]) -> dict[tuple, list[dict]]:
@@ -1094,6 +1299,7 @@ def summarize_candidates(
     baseline_global = compute_scope_metrics(baseline_rows, "candidate_score")
     baseline_af2 = compute_scope_metrics([row for row in baseline_rows if row["backend"] == "af2"], "candidate_score")
     baseline_af3 = compute_scope_metrics([row for row in baseline_rows if row["backend"] == "af3"], "candidate_score")
+    baseline_distribution = score_distribution_summary(baseline_rows)
     baseline_failure_slice = [
         row
         for row in baseline_rows
@@ -1195,6 +1401,10 @@ def summarize_candidates(
             else float("nan"),
             "sidechain_jitter_median_abs_delta": baseline_jitter,
             "delta_sidechain_jitter_vs_sc": 0.0,
+            **baseline_distribution,
+            "production_eligible": 0,
+            "diagnostic_only": 0,
+            "diagnostic_pass": 0,
             "runtime_ok": 1,
             "robustness_pass": 1,
             "guardrail_pass": 1,
@@ -1213,6 +1423,10 @@ def summarize_candidates(
         pooled_global = compute_scope_metrics(rows, "candidate_score")
         pooled_af2 = compute_scope_metrics([row for row in rows if row["backend"] == "af2"], "candidate_score")
         pooled_af3 = compute_scope_metrics([row for row in rows if row["backend"] == "af3"], "candidate_score")
+        distribution = score_distribution_summary(rows)
+        production_eligible = is_production_candidate(spec)
+        diagnostic_only = not production_eligible
+        diagnostic_pass = production_eligible and int(distribution["saturation_reject"]) == 0
 
         cell_deltas = []
         for key, group in grouped_by(rows, ("organism", "backend")).items():
@@ -1247,7 +1461,9 @@ def summarize_candidates(
         robustness_row = robustness_by_candidate.get(candidate_id, {})
         robustness_pass = int(robustness_row.get("robustness_pass", 0)) == 1
         accepted_for_production = (
-            runtime_ok
+            production_eligible
+            and diagnostic_pass
+            and runtime_ok
             and robustness_pass
             and guardrail_pass
             and math.isfinite(rescue_rate)
@@ -1260,7 +1476,7 @@ def summarize_candidates(
         ranked_rows.append(
             {
                 "candidate_id": candidate_id,
-                "candidate_family": zernike_candidate_family(spec.representation),
+                "candidate_family": zernike_candidate_family(spec.representation, spec.score_mode),
                 "representation": spec.representation,
                 "grid_size": spec.grid_size,
                 "order": spec.order,
@@ -1281,7 +1497,9 @@ def summarize_candidates(
                 "distance": spec.distance,
                 "score_mode": spec.score_mode,
                 "fit_order": fit_order_value(spec),
-                "order_decay_n0": spec.order_decay_n0 if spec.score_mode == GAUSSIAN_WEIGHTED_SCORE else "",
+                "order_decay_n0": spec.order_decay_n0
+                if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
+                else "",
                 "af3_failure_rescue_rate": rescue_rate,
                 "delta_rescue_vs_sc": rescue_rate - baseline_rescue_rate
                 if math.isfinite(rescue_rate)
@@ -1312,6 +1530,10 @@ def summarize_candidates(
                 else float("nan"),
                 "sidechain_jitter_median_abs_delta": safe_float(robustness_row.get("median_abs_delta", float("nan"))),
                 "delta_sidechain_jitter_vs_sc": safe_float(robustness_row.get("delta_vs_sc", float("nan"))),
+                **distribution,
+                "production_eligible": int(production_eligible),
+                "diagnostic_only": int(diagnostic_only),
+                "diagnostic_pass": int(diagnostic_pass),
                 "runtime_ok": int(runtime_ok),
                 "robustness_pass": int(robustness_pass),
                 "guardrail_pass": int(guardrail_pass),
@@ -1345,7 +1567,13 @@ def write_candidate_reports(
     top_dir = out_dir / "top_hits"
     sc_rows = annotated_outputs.get(SC_BASELINE_ID, [])
     sc_by_key = {
-        (row["pair"], row["organism"], row["backend"], row["interface"]): row
+        (
+            row["pair"],
+            row["organism"],
+            row["backend"],
+            row["interface"],
+            row.get("diagnostic_slice", ""),
+        ): row
         for row in sc_rows
     }
 
@@ -1360,7 +1588,13 @@ def write_candidate_reports(
         rescued_by_sc = []
         still_missed = []
         for row in failure_slice:
-            key = (row["pair"], row["organism"], row["backend"], row["interface"])
+            key = (
+                row["pair"],
+                row["organism"],
+                row["backend"],
+                row["interface"],
+                row.get("diagnostic_slice", ""),
+            )
             sc_row = sc_by_key.get(key, {})
             merged = dict(row)
             merged.update(
@@ -1402,6 +1636,58 @@ def write_candidate_reports(
         write_csv(top_dir / f"{candidate_id}__still_missed.csv", still_missed[:TOP_N])
 
 
+def diagnostic_summary_rows(annotated_outputs: dict[str, list[dict]]) -> list[dict]:
+    out: list[dict] = []
+    for candidate_id, rows in sorted(annotated_outputs.items()):
+        rows = [row for row in rows if "diagnostic_slice" in row]
+        if not rows:
+            continue
+        for (diagnostic_slice,), group in sorted(grouped_by(rows, ("diagnostic_slice",)).items()):
+            auroc, ap, n_pos, n_neg = compute_scope_metrics(group, "candidate_score")
+            distribution = score_distribution_summary(group)
+            out.append(
+                {
+                    "candidate_id": candidate_id,
+                    "diagnostic_slice": diagnostic_slice,
+                    "auroc": auroc,
+                    "average_precision": ap,
+                    "n_pos": n_pos,
+                    "n_neg": n_neg,
+                    **distribution,
+                }
+            )
+    return out
+
+
+def filter_candidates_from_summary(candidates: list[ZernikeSpec], summary_path: Path) -> list[ZernikeSpec]:
+    rows = read_csv_rows(summary_path)
+    allowed = {
+        row["candidate_id"]
+        for row in rows
+        if row.get("candidate_id") != SC_BASELINE_ID
+        and row.get("diagnostic_pass") in {"1", "1.0", "true", "True"}
+    }
+    atom_baseline = _atom_cosine_baseline_spec()
+    atom_baseline_id = atom_baseline.candidate_id()
+    filtered = [spec for spec in candidates if spec.candidate_id() in allowed or spec.candidate_id() == atom_baseline_id]
+    if not any(spec.candidate_id() != atom_baseline_id for spec in filtered):
+        raise SystemExit(f"No diagnostic-pass Zernike candidates found in {summary_path}")
+    return filtered
+
+
+def filter_candidates_by_id(candidates: list[ZernikeSpec], candidate_ids: list[str]) -> list[ZernikeSpec]:
+    allowed = set(candidate_ids)
+    atom_baseline = _atom_cosine_baseline_spec()
+    atom_baseline_id = atom_baseline.candidate_id()
+    filtered = [spec for spec in candidates if spec.candidate_id() in allowed or spec.candidate_id() == atom_baseline_id]
+    missing = sorted(allowed - {spec.candidate_id() for spec in candidates})
+    if missing:
+        raise SystemExit(f"Unknown candidate id(s): {', '.join(missing)}")
+    if not any(spec.candidate_id() != atom_baseline_id for spec in filtered):
+        raise SystemExit("Candidate filter removed all non-baseline Zernike candidates.")
+    return filtered
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bench-root", default=str(BENCH_ROOT_DEFAULT))
@@ -1409,12 +1695,29 @@ def main() -> int:
     parser.add_argument("--manifest-tag", default=None)
     parser.add_argument(
         "--mode",
-        choices=["full", "smoke"],
+        choices=["full", "diagnostic", "smoke"],
         default="full",
-        help="Smoke mode uses a fixed mixed sample and a smaller candidate set.",
+        help="Diagnostic mode uses fixed AF3 slices; smoke mode uses a small mixed sample.",
     )
     parser.add_argument("--smoke-sample-size", type=int, default=SMOKE_SAMPLE_SIZE)
     parser.add_argument("--runtime-sample-size", type=int, default=RUNTIME_SAMPLE_SIZE)
+    parser.add_argument(
+        "--robustness-sample-size",
+        type=int,
+        default=None,
+        help="Override side-chain jitter robustness sample size; use 0 to skip.",
+    )
+    parser.add_argument(
+        "--survivors-from",
+        default=None,
+        help="Candidate summary CSV from diagnostic mode; full mode will score only diagnostic-pass candidates plus the atom baseline.",
+    )
+    parser.add_argument(
+        "--candidate-id",
+        action="append",
+        default=[],
+        help="Restrict scoring to one candidate id; may be passed multiple times. The atom cosine baseline is kept for runtime ratios.",
+    )
     args = parser.parse_args()
 
     bench_root = Path(args.bench_root)
@@ -1426,18 +1729,31 @@ def main() -> int:
         raise SystemExit("No benchmark rows discovered.")
 
     candidates = build_smoke_candidates() if args.mode == "smoke" else build_full_candidates()
-    benchmark_rows = (
-        balanced_sample(all_rows, args.smoke_sample_size)
-        if args.mode == "smoke"
-        else all_rows
-    )
-    runtime_rows = runtime_sample_rows(all_rows, args.runtime_sample_size)
-    robustness_rows_sample = robustness_sample_rows(
-        all_rows,
+    if args.survivors_from:
+        candidates = filter_candidates_from_summary(candidates, Path(args.survivors_from))
+    if args.candidate_id:
+        candidates = filter_candidates_by_id(candidates, args.candidate_id)
+
+    if args.mode == "smoke":
+        benchmark_rows = balanced_sample(all_rows, args.smoke_sample_size)
+    elif args.mode == "diagnostic":
+        benchmark_rows = diagnostic_benchmark_rows(all_rows)
+    else:
+        benchmark_rows = all_rows
+
+    runtime_source_rows = [row for row in all_rows if row["backend"] == "af3"] if args.mode == "diagnostic" else all_rows
+    runtime_rows = runtime_sample_rows(runtime_source_rows, args.runtime_sample_size)
+    default_robustness_sample_size = (
         min(10, len([row for row in all_rows if row["label"] == "positive"]))
         if args.mode == "smoke"
-        else ROBUSTNESS_SAMPLE_SIZE,
+        else ROBUSTNESS_SAMPLE_SIZE
     )
+    robustness_sample_size = (
+        default_robustness_sample_size
+        if args.robustness_sample_size is None
+        else args.robustness_sample_size
+    )
+    robustness_rows_sample = robustness_sample_rows(all_rows, robustness_sample_size)
 
     candidate_results, cache_meta = evaluate_candidates(
         benchmark_rows,
@@ -1465,6 +1781,9 @@ def main() -> int:
     write_csv(out_dir / "candidate_metrics.csv", metric_rows)
     write_csv(out_dir / "candidate_runtime_summary.csv", runtime_summary_rows)
     write_csv(out_dir / "candidate_robustness_summary.csv", robustness_summary_rows)
+    diagnostic_rows = diagnostic_summary_rows(annotated_outputs)
+    if diagnostic_rows:
+        write_csv(out_dir / "candidate_diagnostic_summary.csv", diagnostic_rows)
     write_candidate_reports(out_dir, annotated_outputs)
     write_json(
         out_dir / "run_metadata.json",
@@ -1478,6 +1797,7 @@ def main() -> int:
             "robustness_rows": len(robustness_rows_sample),
             "candidate_count": len(candidates),
             "reported_score_count": len(candidates) + 1,
+            "survivors_from": args.survivors_from,
             "candidates": [asdict(spec) for spec in candidates],
             **cache_meta,
         },
