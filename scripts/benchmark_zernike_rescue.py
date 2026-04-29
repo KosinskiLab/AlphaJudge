@@ -9,6 +9,8 @@ import csv
 import hashlib
 import json
 import math
+import os
+import subprocess
 import time
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -134,6 +136,60 @@ def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def unlink_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def atomic_savez_compressed(path: Path, **arrays) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        with tmp_path.open("wb") as handle:
+            np.savez_compressed(handle, **arrays)
+        tmp_path.replace(path)
+    finally:
+        unlink_if_exists(tmp_path)
+
+
+def git_metadata(repo_root: Path) -> dict:
+    def run_git(args: list[str]) -> str:
+        return subprocess.run(
+            ["git", *args],
+            cwd=repo_root,
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+
+    try:
+        commit = run_git(["rev-parse", "HEAD"])
+    except Exception:
+        commit = ""
+    try:
+        branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+    except Exception:
+        branch = ""
+    try:
+        tracked_status = run_git(["status", "--short", "--untracked-files=no"]).splitlines()
+    except Exception:
+        tracked_status = []
+    try:
+        full_status = run_git(["status", "--short", "--untracked-files=normal"]).splitlines()
+    except Exception:
+        full_status = []
+
+    return {
+        "git_commit": commit,
+        "git_branch": branch,
+        "git_tracked_dirty": int(bool(tracked_status)),
+        "git_tracked_status": tracked_status,
+        "git_untracked_count": len([line for line in full_status if line.startswith("?? ")]),
+    }
+
+
 def _point_cloud_payload(row: dict, spec: ZernikeSpec) -> dict:
     source = zernike_source_representation(spec.representation)
     return {
@@ -189,18 +245,21 @@ class PointCloudCache:
     def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[WeightedPointCloud, WeightedPointCloud]:
         path = self._cache_path(row, spec)
         if path.exists():
-            with np.load(path) as payload:
-                self.hits += 1
-                return (
-                    WeightedPointCloud(
-                        np.asarray(payload["points1"], dtype=float),
-                        np.asarray(payload["weights1"], dtype=float),
-                    ),
-                    WeightedPointCloud(
-                        np.asarray(payload["points2"], dtype=float),
-                        np.asarray(payload["weights2"], dtype=float),
-                    ),
-                )
+            try:
+                with np.load(path) as payload:
+                    self.hits += 1
+                    return (
+                        WeightedPointCloud(
+                            np.asarray(payload["points1"], dtype=float),
+                            np.asarray(payload["weights1"], dtype=float),
+                        ),
+                        WeightedPointCloud(
+                            np.asarray(payload["points2"], dtype=float),
+                            np.asarray(payload["weights2"], dtype=float),
+                        ),
+                    )
+            except Exception:
+                unlink_if_exists(path)
 
         residues1, residues2 = load_interface_residues(str(row["model_file"]), str(row["interface"]))
         side1, side2 = zernike_point_clouds(
@@ -213,7 +272,7 @@ class PointCloudCache:
             surface_probe_radius=spec.surface_probe_radius,
             proximity_length_scale=spec.proximity_length_scale,
         )
-        np.savez_compressed(
+        atomic_savez_compressed(
             path,
             points1=side1.points,
             weights1=side1.weights,
@@ -238,9 +297,12 @@ class GridCache:
     def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[np.ndarray, np.ndarray]:
         path = self._cache_path(row, spec)
         if path.exists():
-            with np.load(path) as payload:
-                self.hits += 1
-                return payload["grid1"], payload["grid2"]
+            try:
+                with np.load(path) as payload:
+                    self.hits += 1
+                    return payload["grid1"], payload["grid2"]
+            except Exception:
+                unlink_if_exists(path)
 
         side1, side2 = self.point_cloud_cache.get_or_build(row, spec)
         grid1, grid2 = zernike_grids_from_point_clouds(
@@ -251,7 +313,7 @@ class GridCache:
             sigma=spec.sigma,
             padding=spec.padding,
         )
-        np.savez_compressed(path, grid1=grid1, grid2=grid2)
+        atomic_savez_compressed(path, grid1=grid1, grid2=grid2)
         self.misses += 1
         return grid1, grid2
 
@@ -270,15 +332,18 @@ class CoefficientCache:
     def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
         path = self._cache_path(row, spec)
         if path.exists():
-            with np.load(path) as payload:
-                self.hits += 1
-                return (
-                    payload["coeff1"],
-                    payload["coeff2"],
-                    payload["joint_coeff"],
-                    payload["gap_coeff"],
-                    float(payload["grid_overlap"]),
-                )
+            try:
+                with np.load(path) as payload:
+                    self.hits += 1
+                    return (
+                        payload["coeff1"],
+                        payload["coeff2"],
+                        payload["joint_coeff"],
+                        payload["gap_coeff"],
+                        float(payload["grid_overlap"]),
+                    )
+            except Exception:
+                unlink_if_exists(path)
 
         grid1, grid2 = self.grid_cache.get_or_build(row, spec)
         coeff1, coeff2, joint_coeff = zernike_coefficient_bundle_from_grids(
@@ -291,7 +356,7 @@ class CoefficientCache:
             grid2,
             fit_order_value(spec),
         )
-        np.savez_compressed(
+        atomic_savez_compressed(
             path,
             coeff1=coeff1,
             coeff2=coeff2,
@@ -984,11 +1049,13 @@ def evaluate_candidates(
     *,
     cache_dir: Path,
     jobs: int = 1,
+    progress_every: int = 0,
 ) -> tuple[dict[str, list[dict]], dict]:
     grouped_candidates = candidate_groups(candidates)
     grouped_candidate_lists = list(grouped_candidates.values())
     results: dict[str, list[dict]] = {spec.candidate_id(): [] for spec in candidates}
     results[SC_BASELINE_ID] = baseline_sc_results(rows)
+    worker_count = min(max(1, int(jobs)), max(1, len(rows)))
     cache_meta = {
         "point_cloud_cache_hits": 0,
         "point_cloud_cache_misses": 0,
@@ -996,23 +1063,43 @@ def evaluate_candidates(
         "grid_cache_misses": 0,
         "coefficient_cache_hits": 0,
         "coefficient_cache_misses": 0,
+        "worker_count": worker_count,
         "status_counts": {},
     }
 
-    worker_count = max(1, int(jobs))
+    started = time.perf_counter()
+
+    def report_progress(done: int) -> None:
+        if progress_every <= 0:
+            return
+        if done != len(rows) and done % progress_every != 0:
+            return
+        elapsed = max(time.perf_counter() - started, 1e-9)
+        rate = done / elapsed
+        print(
+            f"[benchmark_zernike] scored {done}/{len(rows)} rows "
+            f"with {worker_count} workers ({rate:.2f} rows/s)",
+            flush=True,
+        )
+
     if worker_count == 1 or len(rows) <= 1:
-        for row in rows:
+        for done, row in enumerate(rows, start=1):
             row_results, row_meta = _evaluate_row_candidate_groups(row, grouped_candidate_lists, cache_dir)
             for candidate_id, candidate_rows in row_results.items():
                 results[candidate_id].extend(candidate_rows)
             _merge_cache_meta(cache_meta, row_meta)
+            report_progress(done)
     else:
         tasks = ((row, grouped_candidate_lists, str(cache_dir)) for row in rows)
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
-            for row_results, row_meta in executor.map(_evaluate_row_candidate_groups_task, tasks, chunksize=1):
+            for done, (row_results, row_meta) in enumerate(
+                executor.map(_evaluate_row_candidate_groups_task, tasks, chunksize=1),
+                start=1,
+            ):
                 for candidate_id, candidate_rows in row_results.items():
                     results[candidate_id].extend(candidate_rows)
                 _merge_cache_meta(cache_meta, row_meta)
+                report_progress(done)
 
     cache_meta["status_counts"] = dict(sorted(cache_meta.get("status_counts", {}).items()))
     return results, cache_meta
@@ -1803,6 +1890,12 @@ def main() -> int:
         default=1,
         help="Number of local worker processes for candidate scoring.",
     )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=100,
+        help="Print scoring progress every N benchmark rows; use 0 to disable.",
+    )
     args = parser.parse_args()
 
     bench_root = Path(args.bench_root)
@@ -1855,6 +1948,7 @@ def main() -> int:
         candidates,
         cache_dir=out_dir / "cache",
         jobs=args.jobs,
+        progress_every=args.progress_every,
     )
     robustness_summary = measure_robustness(
         robustness_rows_sample,
@@ -1891,6 +1985,7 @@ def main() -> int:
             "backends": list(backends),
             "pairsets": list(pairsets),
             "jobs": args.jobs,
+            "progress_every": args.progress_every,
             "rows_total_discovered": len(all_rows),
             "rows_scored": len(benchmark_rows),
             "runtime_rows": len(runtime_rows),
@@ -1899,6 +1994,7 @@ def main() -> int:
             "reported_score_count": len(candidates) + 1,
             "survivors_from": args.survivors_from,
             "candidates": [asdict(spec) for spec in candidates],
+            **git_metadata(Path(__file__).resolve().parents[1]),
             **cache_meta,
         },
     )

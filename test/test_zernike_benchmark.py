@@ -176,12 +176,17 @@ END
         "4",
         "--runtime-sample-size",
         "1",
+        "--jobs",
+        "2",
+        "--progress-every",
+        "0",
     ]
 
     first = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert first.returncode == 0, first.stderr
     meta1 = json.loads((out_dir / "run_metadata.json").read_text())
     assert meta1["grid_cache_misses"] > 0
+    assert meta1["worker_count"] == 2
 
     second = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert second.returncode == 0, second.stderr

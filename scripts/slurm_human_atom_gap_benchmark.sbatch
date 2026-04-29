@@ -11,6 +11,14 @@
 
 set -euo pipefail
 
+export BLIS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export PYTHONUNBUFFERED=1
+export VECLIB_MAXIMUM_THREADS=1
+
 REPO_ROOT=/g/kosinski/dima/PycharmProjects/AlphaJudge
 BENCH_ROOT=/g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/predictions
 OUT_ROOT=/g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26
@@ -22,6 +30,12 @@ cd "$REPO_ROOT"
 OUT_DIR="${OUT_ROOT}/zernike_human_atom_gap_full_${SLURM_JOB_ID}"
 mkdir -p "$OUT_DIR"
 
+echo "repo: $REPO_ROOT"
+echo "commit: $(git rev-parse HEAD)"
+echo "candidate: $CANDIDATE_ID"
+echo "out_dir: $OUT_DIR"
+echo "cpus: ${SLURM_CPUS_PER_TASK:-256}"
+
 "$PYTHON" scripts/benchmark_zernike_rescue.py \
   --bench-root "$BENCH_ROOT" \
   --out-dir "$OUT_DIR" \
@@ -30,4 +44,5 @@ mkdir -p "$OUT_DIR"
   --runtime-sample-size 200 \
   --robustness-sample-size 50 \
   --jobs "${SLURM_CPUS_PER_TASK:-256}" \
+  --progress-every 100 \
   --candidate-id "$CANDIDATE_ID"
