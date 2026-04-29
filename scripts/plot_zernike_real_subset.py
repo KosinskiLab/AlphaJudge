@@ -16,6 +16,8 @@ from matplotlib.colors import LinearSegmentedColormap
 from alphajudge.biophysics.zernike import (
     ATOM_GAUSSIAN,
     GAUSSIAN_WEIGHTED_SCORE,
+    GAP_ZERNIKE_RATIO_SCORE,
+    GAP_ZERNIKE_WEIGHTED_SCORE,
     HARD_CUTOFF_SCORE,
     JOINT_LOW_ORDER_RATIO_SCORE,
     JOINT_RESIDUE_BEAD_GAUSSIAN,
@@ -51,6 +53,39 @@ CANDIDATES = OrderedDict(
                     sigma=1.5,
                     score_mode=HARD_CUTOFF_SCORE,
                     fit_order=12,
+                ),
+            },
+        ),
+        (
+            "atom_gap_ratio",
+            {
+                "label": "Atom Gap",
+                "kind": "zernike",
+                "panel_title": "Atom Gap Ratio\n24^3, N=6, sigma=2.0",
+                "spec": ZernikeSpec(
+                    representation=ATOM_GAUSSIAN,
+                    grid_size=24,
+                    order=6,
+                    sigma=2.0,
+                    score_mode=GAP_ZERNIKE_RATIO_SCORE,
+                    fit_order=12,
+                ),
+            },
+        ),
+        (
+            "residue_gap_weighted",
+            {
+                "label": "Residue Gap",
+                "kind": "zernike",
+                "panel_title": "Residue Gap Weighted\n24^3, N=6, sigma=2.0, n0=4",
+                "spec": ZernikeSpec(
+                    representation=RESIDUE_BEAD_GAUSSIAN,
+                    grid_size=24,
+                    order=6,
+                    sigma=2.0,
+                    score_mode=GAP_ZERNIKE_WEIGHTED_SCORE,
+                    fit_order=12,
+                    order_decay_n0=4.0,
                 ),
             },
         ),
@@ -275,14 +310,14 @@ def plot_rows(rows: list[dict], out_path: Path, *, organism: str, backend: str, 
         normalized[:, col_idx] = 0.5 if hi == lo else (col - lo) / (hi - lo)
 
     aucs = [subset_auroc(rows, key) for key in candidate_keys]
-    fig = plt.figure(figsize=(14.5, max(9.2, 0.44 * len(rows) + 4.8)))
+    fig = plt.figure(figsize=(16.4, max(9.2, 0.44 * len(rows) + 4.8)))
     grid = fig.add_gridspec(nrows=2, ncols=1, height_ratios=[0.92, 3.35])
     ax_auc = fig.add_subplot(grid[0, 0])
     ax_heat = fig.add_subplot(grid[1, 0])
     fig.subplots_adjust(left=0.22, right=0.93, top=0.84, bottom=0.12, hspace=0.48)
 
     bar_y = np.arange(len(candidate_keys))
-    bar_colors = ["#314D45", "#2E7D4D", "#789C55", "#8D7A45"]
+    bar_colors = ["#314D45", "#2E7D4D", "#5F936D", "#8AA05E", "#789C55", "#8D7A45"]
     ax_auc.barh(bar_y, aucs, color=bar_colors, height=0.58)
     ax_auc.axvline(0.5, color="#9EA9A2", linewidth=1.4, linestyle=(0, (4, 4)))
     ax_auc.text(0.505, -0.62, "random", color=MUTED, fontsize=9, ha="left", va="center")
