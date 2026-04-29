@@ -193,8 +193,9 @@ END
     )
 
     summary_rows = list(csv.DictReader((out_dir / "candidate_summary.csv").open()))
-    assert len(summary_rows) == 8
+    assert len(summary_rows) == 9
     assert {row["candidate_family"] for row in summary_rows} == {"sc_baseline", "per_side", "joint_volume", "grid_gap"}
+    assert any(row["candidate_id"] == "atom_gaussian__g32__o0__s1.5__moverlap__f12" for row in summary_rows)
     baseline_row = next(row for row in summary_rows if row["candidate_id"] == "interface_sc")
     assert baseline_row["delta_all_auroc_vs_sc"] == "0.0"
     assert "positive_fraction_ge_0_95" in baseline_row

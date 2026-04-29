@@ -11,6 +11,7 @@ import json
 import math
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
@@ -344,6 +345,17 @@ def _atom_cosine_baseline_spec() -> ZernikeSpec:
     )
 
 
+def _tuned_atom_gap_overlap_spec() -> ZernikeSpec:
+    return ZernikeSpec(
+        representation=ATOM_GAUSSIAN,
+        grid_size=32,
+        order=0,
+        sigma=1.5,
+        score_mode=SHARED_GRID_OVERLAP_SCORE,
+        fit_order=MAX_SWEEP_ORDER,
+    )
+
+
 def build_cosine_diagnostic_candidates() -> list[ZernikeSpec]:
     return [
         _atom_cosine_baseline_spec(),
@@ -421,6 +433,7 @@ def _append_gap_candidates(
 
 def build_full_candidates() -> list[ZernikeSpec]:
     candidates: list[ZernikeSpec] = build_cosine_diagnostic_candidates()
+    candidates.append(_tuned_atom_gap_overlap_spec())
     for grid_size in (24, 32):
         for sigma in (2.0, 3.0):
             _append_gap_candidates(candidates, representation=ATOM_GAUSSIAN, grid_size=grid_size, sigma=sigma)
@@ -446,6 +459,7 @@ def build_full_candidates() -> list[ZernikeSpec]:
 def build_smoke_candidates() -> list[ZernikeSpec]:
     return [
         _atom_cosine_baseline_spec(),
+        _tuned_atom_gap_overlap_spec(),
         ZernikeSpec(
             representation=RESIDUE_BEAD_GAUSSIAN,
             grid_size=24,
@@ -525,13 +539,16 @@ def load_benchmark_rows(
     bench_root: Path,
     *,
     manifest_tag: str | None = None,
+    organisms: Iterable[str] = ORGANISMS,
+    backends: Iterable[str] = BACKENDS,
+    pairsets: Iterable[str] = PAIRSETS,
 ) -> tuple[list[dict], list[dict]]:
     rows: list[dict] = []
     skipped: list[dict] = []
 
-    for organism in ORGANISMS:
-        for backend in BACKENDS:
-            for pairset in PAIRSETS:
+    for organism in organisms:
+        for backend in backends:
+            for pairset in pairsets:
                 group_root = bench_root / organism / backend / pairset
                 best_csv = group_root / "best_interfaces.csv"
                 if not best_csv.exists():
@@ -825,128 +842,114 @@ def baseline_sc_results(rows: list[dict]) -> list[dict]:
     return out
 
 
-def evaluate_candidates(
-    rows: list[dict],
-    candidates: list[ZernikeSpec],
-    *,
+def _candidate_result_row(row: dict, spec: ZernikeSpec, score: float, status: str) -> dict:
+    out_row = candidate_row_metadata(
+        row,
+        candidate_id=spec.candidate_id(),
+        representation=spec.representation,
+        candidate_family=zernike_candidate_family(spec.representation, spec.score_mode),
+    )
+    out_row.update(
+        {
+            "grid_size": spec.grid_size,
+            "order": spec.order,
+            "sigma": spec.sigma if spec.representation in GAUSSIAN_REPRESENTATIONS else "",
+            "surface_density": spec.surface_density
+            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
+            else "",
+            "surface_trim_cutoff": spec.surface_trim_cutoff
+            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
+            else "",
+            "surface_probe_radius": spec.surface_probe_radius
+            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
+            else "",
+            "proximity_length_scale": spec.proximity_length_scale
+            if zernike_source_representation(spec.representation) == "surface_proximity_gaussian"
+            else "",
+            "padding": spec.padding,
+            "distance": spec.distance,
+            "score_mode": spec.score_mode,
+            "fit_order": fit_order_value(spec),
+            "order_decay_n0": spec.order_decay_n0
+            if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
+            else "",
+            "candidate_score": score,
+            "candidate_status": status,
+        }
+    )
+    return out_row
+
+
+def _score_spec_from_coefficients(
+    spec: ZernikeSpec,
+    coeff1: np.ndarray,
+    coeff2: np.ndarray,
+    joint_coeff: np.ndarray,
+    gap_coeff: np.ndarray,
+    grid_overlap: float,
+) -> float:
+    if spec.score_mode in GRID_SCORE_MODES:
+        return zernike_score_from_gap_coefficients(
+            gap_coeff,
+            grid_overlap,
+            order=spec.order,
+            score_mode=spec.score_mode,
+            fit_order=fit_order_value(spec),
+            order_decay_n0=spec.order_decay_n0,
+        )
+    if spec.representation in JOINT_REPRESENTATIONS:
+        return zernike_score_from_coefficients(
+            joint_coeff,
+            None,
+            order=spec.order,
+            score_mode=spec.score_mode,
+            fit_order=fit_order_value(spec),
+            order_decay_n0=spec.order_decay_n0,
+        )
+    return zernike_score_from_coefficients(
+        coeff1,
+        coeff2,
+        order=spec.order,
+        score_mode=spec.score_mode,
+        fit_order=fit_order_value(spec),
+        order_decay_n0=spec.order_decay_n0,
+    )
+
+
+def _evaluate_row_candidate_groups(
+    row: dict,
+    grouped_candidates: list[list[ZernikeSpec]],
     cache_dir: Path,
 ) -> tuple[dict[str, list[dict]], dict]:
     point_cloud_cache = PointCloudCache(cache_dir / "point_clouds")
     grid_cache = GridCache(cache_dir / "grids", point_cloud_cache)
     coeff_cache = CoefficientCache(cache_dir / "coefficients", grid_cache)
-    grouped_candidates = candidate_groups(candidates)
-    results: dict[str, list[dict]] = {spec.candidate_id(): [] for spec in candidates}
-    results[SC_BASELINE_ID] = baseline_sc_results(rows)
+    rows_by_candidate: dict[str, list[dict]] = defaultdict(list)
     status_counts: dict[str, int] = defaultdict(int)
 
-    for row in rows:
-        for _, spec_group in grouped_candidates.items():
-            anchor = spec_group[0]
-            try:
-                coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap = coeff_cache.get_or_build(row, anchor)
-                for spec in spec_group:
-                    if spec.score_mode in GRID_SCORE_MODES:
-                        score = zernike_score_from_gap_coefficients(
-                            gap_coeff,
-                            grid_overlap,
-                            order=spec.order,
-                            score_mode=spec.score_mode,
-                            fit_order=fit_order_value(spec),
-                            order_decay_n0=spec.order_decay_n0,
-                        )
-                    elif spec.representation in JOINT_REPRESENTATIONS:
-                        score = zernike_score_from_coefficients(
-                            joint_coeff,
-                            None,
-                            order=spec.order,
-                            score_mode=spec.score_mode,
-                            fit_order=fit_order_value(spec),
-                            order_decay_n0=spec.order_decay_n0,
-                        )
-                    else:
-                        score = zernike_score_from_coefficients(
-                            coeff1,
-                            coeff2,
-                            order=spec.order,
-                            score_mode=spec.score_mode,
-                            fit_order=fit_order_value(spec),
-                            order_decay_n0=spec.order_decay_n0,
-                        )
-
-                    out_row = candidate_row_metadata(
-                        row,
-                        candidate_id=spec.candidate_id(),
-                        representation=spec.representation,
-                        candidate_family=zernike_candidate_family(spec.representation, spec.score_mode),
-                    )
-                    out_row.update(
-                        {
-                            "grid_size": spec.grid_size,
-                            "order": spec.order,
-                            "sigma": spec.sigma if spec.representation in GAUSSIAN_REPRESENTATIONS else "",
-                            "surface_density": spec.surface_density
-                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
-                            else "",
-                            "surface_trim_cutoff": spec.surface_trim_cutoff
-                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
-                            else "",
-                            "surface_probe_radius": spec.surface_probe_radius
-                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
-                            else "",
-                            "proximity_length_scale": spec.proximity_length_scale
-                            if zernike_source_representation(spec.representation) == "surface_proximity_gaussian"
-                            else "",
-                            "padding": spec.padding,
-                            "distance": spec.distance,
-                            "score_mode": spec.score_mode,
-                            "fit_order": fit_order_value(spec),
-                            "order_decay_n0": spec.order_decay_n0
-                            if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
-                            else "",
-                            "candidate_score": score,
-                            "candidate_status": "success",
-                        }
-                    )
-                    results[spec.candidate_id()].append(out_row)
-                    status_counts["success"] += 1
-            except Exception as exc:
-                for spec in spec_group:
-                    out_row = candidate_row_metadata(
-                        row,
-                        candidate_id=spec.candidate_id(),
-                        representation=spec.representation,
-                        candidate_family=zernike_candidate_family(spec.representation, spec.score_mode),
-                    )
-                    out_row.update(
-                        {
-                            "grid_size": spec.grid_size,
-                            "order": spec.order,
-                            "sigma": spec.sigma if spec.representation in GAUSSIAN_REPRESENTATIONS else "",
-                            "surface_density": spec.surface_density
-                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
-                            else "",
-                            "surface_trim_cutoff": spec.surface_trim_cutoff
-                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
-                            else "",
-                            "surface_probe_radius": spec.surface_probe_radius
-                            if zernike_source_representation(spec.representation) in SURFACE_REPRESENTATIONS
-                            else "",
-                            "proximity_length_scale": spec.proximity_length_scale
-                            if zernike_source_representation(spec.representation) == "surface_proximity_gaussian"
-                            else "",
-                            "padding": spec.padding,
-                            "distance": spec.distance,
-                            "score_mode": spec.score_mode,
-                            "fit_order": fit_order_value(spec),
-                            "order_decay_n0": spec.order_decay_n0
-                            if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
-                            else "",
-                            "candidate_score": float("nan"),
-                            "candidate_status": f"error:{exc}",
-                        }
-                    )
-                    results[spec.candidate_id()].append(out_row)
-                    status_counts["error"] += 1
+    for spec_group in grouped_candidates:
+        anchor = spec_group[0]
+        try:
+            coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap = coeff_cache.get_or_build(row, anchor)
+            for spec in spec_group:
+                score = _score_spec_from_coefficients(
+                    spec,
+                    coeff1,
+                    coeff2,
+                    joint_coeff,
+                    gap_coeff,
+                    grid_overlap,
+                )
+                rows_by_candidate[spec.candidate_id()].append(
+                    _candidate_result_row(row, spec, score, "success")
+                )
+                status_counts["success"] += 1
+        except Exception as exc:
+            for spec in spec_group:
+                rows_by_candidate[spec.candidate_id()].append(
+                    _candidate_result_row(row, spec, float("nan"), f"error:{exc}")
+                )
+                status_counts["error"] += 1
 
     cache_meta = {
         "point_cloud_cache_hits": point_cloud_cache.hits,
@@ -957,6 +960,61 @@ def evaluate_candidates(
         "coefficient_cache_misses": coeff_cache.misses,
         "status_counts": dict(sorted(status_counts.items())),
     }
+    return dict(rows_by_candidate), cache_meta
+
+
+def _evaluate_row_candidate_groups_task(task: tuple[dict, list[list[ZernikeSpec]], str]) -> tuple[dict[str, list[dict]], dict]:
+    row, grouped_candidates, cache_dir = task
+    return _evaluate_row_candidate_groups(row, grouped_candidates, Path(cache_dir))
+
+
+def _merge_cache_meta(target: dict, source: dict) -> None:
+    for key, value in source.items():
+        if key == "status_counts":
+            counts = target.setdefault("status_counts", {})
+            for status, count in value.items():
+                counts[status] = counts.get(status, 0) + count
+        elif isinstance(value, (int, float)):
+            target[key] = target.get(key, 0) + value
+
+
+def evaluate_candidates(
+    rows: list[dict],
+    candidates: list[ZernikeSpec],
+    *,
+    cache_dir: Path,
+    jobs: int = 1,
+) -> tuple[dict[str, list[dict]], dict]:
+    grouped_candidates = candidate_groups(candidates)
+    grouped_candidate_lists = list(grouped_candidates.values())
+    results: dict[str, list[dict]] = {spec.candidate_id(): [] for spec in candidates}
+    results[SC_BASELINE_ID] = baseline_sc_results(rows)
+    cache_meta = {
+        "point_cloud_cache_hits": 0,
+        "point_cloud_cache_misses": 0,
+        "grid_cache_hits": 0,
+        "grid_cache_misses": 0,
+        "coefficient_cache_hits": 0,
+        "coefficient_cache_misses": 0,
+        "status_counts": {},
+    }
+
+    worker_count = max(1, int(jobs))
+    if worker_count == 1 or len(rows) <= 1:
+        for row in rows:
+            row_results, row_meta = _evaluate_row_candidate_groups(row, grouped_candidate_lists, cache_dir)
+            for candidate_id, candidate_rows in row_results.items():
+                results[candidate_id].extend(candidate_rows)
+            _merge_cache_meta(cache_meta, row_meta)
+    else:
+        tasks = ((row, grouped_candidate_lists, str(cache_dir)) for row in rows)
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            for row_results, row_meta in executor.map(_evaluate_row_candidate_groups_task, tasks, chunksize=1):
+                for candidate_id, candidate_rows in row_results.items():
+                    results[candidate_id].extend(candidate_rows)
+                _merge_cache_meta(cache_meta, row_meta)
+
+    cache_meta["status_counts"] = dict(sorted(cache_meta.get("status_counts", {}).items()))
     return results, cache_meta
 
 
@@ -1718,13 +1776,50 @@ def main() -> int:
         default=[],
         help="Restrict scoring to one candidate id; may be passed multiple times. The atom cosine baseline is kept for runtime ratios.",
     )
+    parser.add_argument(
+        "--organism",
+        action="append",
+        choices=ORGANISMS,
+        default=[],
+        help="Restrict benchmark loading to one organism; may be passed multiple times.",
+    )
+    parser.add_argument(
+        "--backend",
+        action="append",
+        choices=BACKENDS,
+        default=[],
+        help="Restrict benchmark loading to one backend; may be passed multiple times.",
+    )
+    parser.add_argument(
+        "--pairset",
+        action="append",
+        choices=PAIRSETS,
+        default=[],
+        help="Restrict benchmark loading to one pair set; may be passed multiple times.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of local worker processes for candidate scoring.",
+    )
     args = parser.parse_args()
 
     bench_root = Path(args.bench_root)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    all_rows, skipped = load_benchmark_rows(bench_root, manifest_tag=args.manifest_tag)
+    organisms = tuple(args.organism) if args.organism else ORGANISMS
+    backends = tuple(args.backend) if args.backend else BACKENDS
+    pairsets = tuple(args.pairset) if args.pairset else PAIRSETS
+
+    all_rows, skipped = load_benchmark_rows(
+        bench_root,
+        manifest_tag=args.manifest_tag,
+        organisms=organisms,
+        backends=backends,
+        pairsets=pairsets,
+    )
     if not all_rows:
         raise SystemExit("No benchmark rows discovered.")
 
@@ -1759,6 +1854,7 @@ def main() -> int:
         benchmark_rows,
         candidates,
         cache_dir=out_dir / "cache",
+        jobs=args.jobs,
     )
     robustness_summary = measure_robustness(
         robustness_rows_sample,
@@ -1791,6 +1887,10 @@ def main() -> int:
             "bench_root": str(bench_root),
             "mode": args.mode,
             "manifest_tag": args.manifest_tag,
+            "organisms": list(organisms),
+            "backends": list(backends),
+            "pairsets": list(pairsets),
+            "jobs": args.jobs,
             "rows_total_discovered": len(all_rows),
             "rows_scored": len(benchmark_rows),
             "runtime_rows": len(runtime_rows),
