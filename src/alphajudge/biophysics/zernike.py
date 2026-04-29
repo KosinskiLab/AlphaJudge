@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable
 
@@ -10,11 +11,64 @@ import numpy as np
 from pyzernike import ZernikeDescriptor
 from scipy.spatial import cKDTree
 
+from .connolly import DOT_DENSITY
+from .sc import interface_surface_dots
+
+ATOM_GAUSSIAN = "atom_gaussian"
+SURFACE_BINARY = "surface_binary"
+SURFACE_GAUSSIAN = "surface_gaussian"
+SURFACE_PROXIMITY_GAUSSIAN = "surface_proximity_gaussian"
+GAUSSIAN_REPRESENTATIONS = {
+    ATOM_GAUSSIAN,
+    SURFACE_GAUSSIAN,
+    SURFACE_PROXIMITY_GAUSSIAN,
+}
+SURFACE_REPRESENTATIONS = {
+    SURFACE_BINARY,
+    SURFACE_GAUSSIAN,
+    SURFACE_PROXIMITY_GAUSSIAN,
+}
+
+DEFAULT_REPRESENTATION = ATOM_GAUSSIAN
 DEFAULT_DISTANCE = 8.0
 DEFAULT_GRID_SIZE = 32
 DEFAULT_ORDER = 10
 DEFAULT_SIGMA = 1.5
 DEFAULT_PADDING = 2.0
+# Surface Zernike is intentionally coarser than SC's Connolly-dot path so it
+# smooths away local side-chain noise instead of preserving it.
+DEFAULT_SURFACE_DENSITY = DOT_DENSITY / 3.0
+DEFAULT_SURFACE_TRIM_CUTOFF = 1.6
+DEFAULT_PROXIMITY_LENGTH_SCALE = 2.5
+
+
+@dataclass(frozen=True, slots=True)
+class WeightedPointCloud:
+    points: np.ndarray
+    weights: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class ZernikeSpec:
+    representation: str = DEFAULT_REPRESENTATION
+    grid_size: int = DEFAULT_GRID_SIZE
+    order: int = DEFAULT_ORDER
+    sigma: float = DEFAULT_SIGMA
+    padding: float = DEFAULT_PADDING
+    distance: float = DEFAULT_DISTANCE
+    surface_density: float = DEFAULT_SURFACE_DENSITY
+    surface_trim_cutoff: float = DEFAULT_SURFACE_TRIM_CUTOFF
+    proximity_length_scale: float = DEFAULT_PROXIMITY_LENGTH_SCALE
+
+    def candidate_id(self) -> str:
+        parts = [self.representation, f"g{self.grid_size}", f"o{self.order}"]
+        if self.representation in GAUSSIAN_REPRESENTATIONS:
+            parts.append(f"s{self.sigma:.2f}".rstrip("0").rstrip("."))
+        if self.representation in SURFACE_REPRESENTATIONS:
+            parts.append(f"d{self.surface_density:.2f}".rstrip("0").rstrip("."))
+        if self.representation == SURFACE_PROXIMITY_GAUSSIAN:
+            parts.append(f"p{self.proximity_length_scale:.2f}".rstrip("0").rstrip("."))
+        return "__".join(parts)
 
 
 def _collect_coords(residues: Iterable) -> np.ndarray:
@@ -54,25 +108,83 @@ def _unit_ball_mask(grid_size: int) -> np.ndarray:
     return (xx * xx + yy * yy + zz * zz) <= 1.0
 
 
+def zernike_descriptor_prefix_length(order: int) -> int:
+    """Return the number of invariant coefficients up to a given order."""
+    order = int(order)
+    if order <= 0:
+        raise ValueError("order must be positive")
+    half = order // 2
+    if order % 2 == 0:
+        return (half + 1) ** 2
+    return (half + 1) * (half + 2)
+
+
+def _shared_normalization(
+    side1: WeightedPointCloud,
+    side2: WeightedPointCloud,
+    padding: float,
+) -> tuple[np.ndarray, float]:
+    if side1.points.size == 0 or side2.points.size == 0:
+        raise ValueError("No interface points found for Zernike descriptor.")
+
+    combined = np.vstack([side1.points, side2.points])
+    centroid = np.mean(combined, axis=0)
+    radius = float(np.max(np.linalg.norm(combined - centroid, axis=1)) + float(padding))
+    if not np.isfinite(radius) or radius <= 0.0:
+        radius = 1.0
+    return centroid, radius
+
+
+def _normalized_positions(
+    points: np.ndarray,
+    centroid: np.ndarray,
+    radius: float,
+    grid_size: int,
+) -> np.ndarray:
+    normalized = np.clip((points - centroid) / radius, -1.0, 1.0)
+    return (normalized + 1.0) * 0.5 * (grid_size - 1)
+
+
+def _binary_grid(
+    cloud: WeightedPointCloud,
+    centroid: np.ndarray,
+    radius: float,
+    grid_size: int,
+) -> np.ndarray:
+    volume = np.zeros((grid_size, grid_size, grid_size), dtype=np.float32)
+    if cloud.points.size == 0:
+        return volume
+
+    positions = _normalized_positions(cloud.points, centroid, radius, grid_size)
+    voxels = np.rint(positions).astype(int)
+    voxels = np.clip(voxels, 0, grid_size - 1)
+    for idx, weight in zip(voxels, cloud.weights.tolist()):
+        if weight > 0.0:
+            volume[idx[0], idx[1], idx[2]] = 1.0
+
+    volume[~_unit_ball_mask(grid_size)] = 0.0
+    return volume
+
+
 def _density_grid(
-    coords: np.ndarray,
+    cloud: WeightedPointCloud,
     centroid: np.ndarray,
     radius: float,
     grid_size: int,
     sigma: float,
 ) -> np.ndarray:
     volume = np.zeros((grid_size, grid_size, grid_size), dtype=np.float32)
-    if coords.size == 0:
+    if cloud.points.size == 0:
         return volume
 
     spacing = (2.0 * radius) / max(grid_size - 1, 1)
     sigma_vox = max(float(sigma) / max(spacing, 1e-6), 0.5)
     support = max(1, int(math.ceil(3.0 * sigma_vox)))
+    positions = _normalized_positions(cloud.points, centroid, radius, grid_size)
 
-    normalized = np.clip((coords - centroid) / radius, -1.0, 1.0)
-    positions = (normalized + 1.0) * 0.5 * (grid_size - 1)
-
-    for pos in positions:
+    for pos, weight in zip(positions, cloud.weights.tolist()):
+        if weight <= 0.0:
+            continue
         center = np.rint(pos).astype(int)
         x0 = max(0, center[0] - support)
         x1 = min(grid_size - 1, center[0] + support)
@@ -86,55 +198,212 @@ def _density_grid(
         zs = np.arange(z0, z1 + 1, dtype=np.float32) - np.float32(pos[2])
         dist2 = xs[:, None, None] ** 2 + ys[None, :, None] ** 2 + zs[None, None, :] ** 2
         blob = np.exp(-0.5 * dist2 / (sigma_vox * sigma_vox)).astype(np.float32)
-        volume[x0 : x1 + 1, y0 : y1 + 1, z0 : z1 + 1] += blob
+        volume[x0 : x1 + 1, y0 : y1 + 1, z0 : z1 + 1] += np.float32(weight) * blob
 
     volume[~_unit_ball_mask(grid_size)] = 0.0
     return volume
 
 
+def _surface_point_clouds(
+    residues1,
+    residues2,
+    *,
+    distance: float,
+    density: float,
+    trim_cutoff: float,
+    representation: str,
+    proximity_length_scale: float,
+) -> tuple[WeightedPointCloud, WeightedPointCloud]:
+    d1, _, d2, _ = interface_surface_dots(
+        residues1,
+        residues2,
+        distance=distance,
+        density=density,
+        trim_cutoff=trim_cutoff,
+    )
+    if d1.size == 0 or d2.size == 0:
+        return (
+            WeightedPointCloud(np.empty((0, 3), dtype=float), np.empty(0, dtype=float)),
+            WeightedPointCloud(np.empty((0, 3), dtype=float), np.empty(0, dtype=float)),
+        )
+
+    if representation == SURFACE_PROXIMITY_GAUSSIAN:
+        tree2 = cKDTree(d2)
+        tree1 = cKDTree(d1)
+        dist1, _ = tree2.query(d1)
+        dist2, _ = tree1.query(d2)
+        scale = max(float(proximity_length_scale), 1e-6)
+        w1 = np.exp(-((dist1 / scale) ** 2))
+        w2 = np.exp(-((dist2 / scale) ** 2))
+    else:
+        w1 = np.ones(len(d1), dtype=float)
+        w2 = np.ones(len(d2), dtype=float)
+
+    return WeightedPointCloud(d1, w1), WeightedPointCloud(d2, w2)
+
+
+def zernike_point_clouds(
+    residues1,
+    residues2,
+    *,
+    representation: str = DEFAULT_REPRESENTATION,
+    distance: float = DEFAULT_DISTANCE,
+    surface_density: float = DEFAULT_SURFACE_DENSITY,
+    surface_trim_cutoff: float = DEFAULT_SURFACE_TRIM_CUTOFF,
+    proximity_length_scale: float = DEFAULT_PROXIMITY_LENGTH_SCALE,
+) -> tuple[WeightedPointCloud, WeightedPointCloud]:
+    """
+    Build weighted point clouds for a Zernike interface representation.
+    """
+    if representation == ATOM_GAUSSIAN:
+        coords1 = _collect_coords(residues1)
+        coords2 = _collect_coords(residues2)
+        side1, side2 = _filter_interface_coords(coords1, coords2, float(distance))
+        w1 = np.ones(len(side1), dtype=float)
+        w2 = np.ones(len(side2), dtype=float)
+        return WeightedPointCloud(side1, w1), WeightedPointCloud(side2, w2)
+
+    if representation in SURFACE_REPRESENTATIONS:
+        return _surface_point_clouds(
+            residues1,
+            residues2,
+            distance=float(distance),
+            density=float(surface_density),
+            trim_cutoff=float(surface_trim_cutoff),
+            representation=representation,
+            proximity_length_scale=float(proximity_length_scale),
+        )
+
+    raise ValueError(f"Unknown Zernike representation {representation!r}")
+
+
+def zernike_grids(
+    residues1,
+    residues2,
+    *,
+    representation: str = DEFAULT_REPRESENTATION,
+    distance: float = DEFAULT_DISTANCE,
+    grid_size: int = DEFAULT_GRID_SIZE,
+    sigma: float = DEFAULT_SIGMA,
+    padding: float = DEFAULT_PADDING,
+    surface_density: float = DEFAULT_SURFACE_DENSITY,
+    surface_trim_cutoff: float = DEFAULT_SURFACE_TRIM_CUTOFF,
+    proximity_length_scale: float = DEFAULT_PROXIMITY_LENGTH_SCALE,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build per-side normalized voxel grids for a chosen interface representation.
+    """
+    side1, side2 = zernike_point_clouds(
+        residues1,
+        residues2,
+        representation=representation,
+        distance=distance,
+        surface_density=surface_density,
+        surface_trim_cutoff=surface_trim_cutoff,
+        proximity_length_scale=proximity_length_scale,
+    )
+    centroid, radius = _shared_normalization(side1, side2, float(padding))
+
+    if representation == SURFACE_BINARY:
+        grid1 = _binary_grid(side1, centroid, radius, int(grid_size))
+        grid2 = _binary_grid(side2, centroid, radius, int(grid_size))
+    else:
+        grid1 = _density_grid(side1, centroid, radius, int(grid_size), float(sigma))
+        grid2 = _density_grid(side2, centroid, radius, int(grid_size), float(sigma))
+    return grid1, grid2
+
+
+def zernike_coefficients(grid: np.ndarray, order: int) -> np.ndarray:
+    coeffs = ZernikeDescriptor.fit(data=np.asarray(grid, dtype=np.float32), order=int(order)).get_coefficients()
+    return np.asarray(coeffs, dtype=float)
+
+
+def zernike_similarity_from_coefficients(coeff1: np.ndarray, coeff2: np.ndarray) -> float:
+    norm1 = float(np.linalg.norm(coeff1))
+    norm2 = float(np.linalg.norm(coeff2))
+    if norm1 <= 0.0 or norm2 <= 0.0:
+        return 0.0
+    similarity = float(np.dot(coeff1, coeff2) / (norm1 * norm2))
+    return float(np.clip(similarity, -1.0, 1.0))
+
+
+def zernike_descriptors_from_grids(
+    grid1: np.ndarray,
+    grid2: np.ndarray,
+    order: int,
+    *,
+    fit_order: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    fit_to = int(order if fit_order is None else max(order, fit_order))
+    coeff1 = zernike_coefficients(grid1, fit_to)
+    coeff2 = zernike_coefficients(grid2, fit_to)
+    prefix = zernike_descriptor_prefix_length(int(order))
+    return coeff1[:prefix], coeff2[:prefix]
+
+
+def zernike_similarity_from_grids(
+    grid1: np.ndarray,
+    grid2: np.ndarray,
+    order: int,
+    *,
+    fit_order: int | None = None,
+) -> float:
+    desc1, desc2 = zernike_descriptors_from_grids(
+        grid1,
+        grid2,
+        order=order,
+        fit_order=fit_order,
+    )
+    return zernike_similarity_from_coefficients(desc1, desc2)
+
+
 def zernike_descriptors(
     residues1,
     residues2,
+    *,
+    representation: str = DEFAULT_REPRESENTATION,
     distance: float = DEFAULT_DISTANCE,
     grid_size: int = DEFAULT_GRID_SIZE,
     order: int = DEFAULT_ORDER,
     sigma: float = DEFAULT_SIGMA,
     padding: float = DEFAULT_PADDING,
+    surface_density: float = DEFAULT_SURFACE_DENSITY,
+    surface_trim_cutoff: float = DEFAULT_SURFACE_TRIM_CUTOFF,
+    proximity_length_scale: float = DEFAULT_PROXIMITY_LENGTH_SCALE,
+    fit_order: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Build per-side 3D Zernike descriptors for the contacting atom clouds.
-
-    The two sides are centered and scaled together so their descriptors are
-    comparable under the same unit-ball normalization.
+    Build per-side 3D Zernike descriptors for a chosen interface representation.
     """
-    coords1 = _collect_coords(residues1)
-    coords2 = _collect_coords(residues2)
-    side1, side2 = _filter_interface_coords(coords1, coords2, float(distance))
-    if side1.size == 0 or side2.size == 0:
-        raise ValueError("No contacting interface atoms found for Zernike descriptor.")
-
-    combined = np.vstack([side1, side2])
-    centroid = np.mean(combined, axis=0)
-    radius = float(np.max(np.linalg.norm(combined - centroid, axis=1)) + float(padding))
-    if not np.isfinite(radius) or radius <= 0.0:
-        radius = 1.0
-
-    grid1 = _density_grid(side1, centroid, radius, int(grid_size), float(sigma))
-    grid2 = _density_grid(side2, centroid, radius, int(grid_size), float(sigma))
-
-    desc1 = ZernikeDescriptor.fit(data=grid1, order=int(order)).get_coefficients()
-    desc2 = ZernikeDescriptor.fit(data=grid2, order=int(order)).get_coefficients()
-    return np.asarray(desc1, dtype=float), np.asarray(desc2, dtype=float)
+    grid1, grid2 = zernike_grids(
+        residues1,
+        residues2,
+        representation=representation,
+        distance=distance,
+        grid_size=grid_size,
+        sigma=sigma,
+        padding=padding,
+        surface_density=surface_density,
+        surface_trim_cutoff=surface_trim_cutoff,
+        proximity_length_scale=proximity_length_scale,
+    )
+    return zernike_descriptors_from_grids(grid1, grid2, order=order, fit_order=fit_order)
 
 
 def zernike_shape_complementarity(
     residues1,
     residues2,
+    *,
+    representation: str = DEFAULT_REPRESENTATION,
     distance: float = DEFAULT_DISTANCE,
     grid_size: int = DEFAULT_GRID_SIZE,
     order: int = DEFAULT_ORDER,
     sigma: float = DEFAULT_SIGMA,
     padding: float = DEFAULT_PADDING,
+    surface_density: float = DEFAULT_SURFACE_DENSITY,
+    surface_trim_cutoff: float = DEFAULT_SURFACE_TRIM_CUTOFF,
+    proximity_length_scale: float = DEFAULT_PROXIMITY_LENGTH_SCALE,
+    fit_order: int | None = None,
 ) -> float:
     """
     Compare per-side 3D Zernike descriptors with cosine similarity.
@@ -145,30 +414,47 @@ def zernike_shape_complementarity(
         desc1, desc2 = zernike_descriptors(
             residues1,
             residues2,
+            representation=representation,
             distance=distance,
             grid_size=grid_size,
             order=order,
             sigma=sigma,
             padding=padding,
+            surface_density=surface_density,
+            surface_trim_cutoff=surface_trim_cutoff,
+            proximity_length_scale=proximity_length_scale,
+            fit_order=fit_order,
         )
     except Exception:
         return 0.0
-
-    norm1 = float(np.linalg.norm(desc1))
-    norm2 = float(np.linalg.norm(desc2))
-    if norm1 <= 0.0 or norm2 <= 0.0:
-        return 0.0
-
-    similarity = float(np.dot(desc1, desc2) / (norm1 * norm2))
-    return float(np.clip(similarity, -1.0, 1.0))
+    return zernike_similarity_from_coefficients(desc1, desc2)
 
 
 __all__ = [
+    "ATOM_GAUSSIAN",
     "DEFAULT_DISTANCE",
     "DEFAULT_GRID_SIZE",
     "DEFAULT_ORDER",
     "DEFAULT_PADDING",
+    "DEFAULT_PROXIMITY_LENGTH_SCALE",
+    "DEFAULT_REPRESENTATION",
     "DEFAULT_SIGMA",
+    "DEFAULT_SURFACE_DENSITY",
+    "DEFAULT_SURFACE_TRIM_CUTOFF",
+    "GAUSSIAN_REPRESENTATIONS",
+    "SURFACE_BINARY",
+    "SURFACE_GAUSSIAN",
+    "SURFACE_PROXIMITY_GAUSSIAN",
+    "SURFACE_REPRESENTATIONS",
+    "WeightedPointCloud",
+    "ZernikeSpec",
+    "zernike_coefficients",
+    "zernike_descriptor_prefix_length",
     "zernike_descriptors",
+    "zernike_descriptors_from_grids",
+    "zernike_grids",
+    "zernike_point_clouds",
     "zernike_shape_complementarity",
+    "zernike_similarity_from_coefficients",
+    "zernike_similarity_from_grids",
 ]
