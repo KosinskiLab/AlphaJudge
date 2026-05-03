@@ -48,6 +48,29 @@ Last updated: 2026-05-03
 
 AlphaFold2/3 often predict the global complex arrangement better than local side-chain geometry. SC can fail on AF3 positives because it is sensitive to local clashes, rotamers, and exact Connolly dot pairing. Zernike should therefore act as a geometry-only low-pass interface score: preserve global contact/gap structure while reducing local noise.
 
+## Whole-Project Research Takeaway
+
+- AlphaJudge has a future, but the best score is unlikely to be a pure Zernike descriptor.
+- On the full benchmark, the strongest existing single features are already confidence/PAE-interface scores:
+  - `interface_LIS`: all-data AUROC about `0.866`
+  - `interface_ipSAE`: all-data AUROC about `0.863`
+  - `interface_pDockQ2`: all-data AUROC about `0.848`
+  - `interface_sc`: all-data AUROC about `0.681`
+  - tuned SC-gated atom-gap rescue: all-data AUROC about `0.720`
+- This means Zernike/SC-style geometry should be treated as complementary evidence and rescue/sanity-check signal, not as the main interaction classifier.
+- A simple untrained rank ensemble of `interface_LIS`, `interface_ipSAE`, `interface_pDockQ2`, and tuned SC-gated atom-gap rescue gave a quick exploratory AUROC around `0.902` on the full benchmark:
+  - Arabidopsis AF2/AF3: about `0.932` / `0.916`
+  - E. coli AF2/AF3: about `0.946` / `0.946`
+  - Human AF2/AF3: about `0.891` / `0.886`
+  - Yeast AF2/AF3: about `0.927` / `0.897`
+- This is not yet a production result because the combination was inspected after the Zernike work and needs proper cross-validation/calibration. It is still the clearest direction: combine confidence-block evidence with a low-resolution geometry rescue, rather than betting on one analytic geometry score.
+- Research framing: AlphaJudge should probably expose several named evidence axes:
+  - `interface_confidence_evidence`: LIS/ipSAE/pDockQ2/PAE-block strength
+  - `interface_geometry_plausibility`: SC, area, solvation, clash/gap/contact-field evidence
+  - `interface_zernike_rescue`: low-resolution geometry evidence for low-SC AF3 cases
+  - `interface_consensus`: agreement across AF models/seeds/backends when available
+  - `interface_specificity`: per-bait/per-target background or promiscuity correction when many candidates are scored together
+
 ## What We Tried
 
 - Initial per-side Zernike descriptor cosine:
