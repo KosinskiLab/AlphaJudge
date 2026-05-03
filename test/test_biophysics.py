@@ -19,8 +19,11 @@ from alphajudge.biophysics.sc import interface_surface_dots
 from alphajudge.biophysics.zernike import (
     GAUSSIAN_WEIGHTED_SCORE,
     GAP_ZERNIKE_BANDPASS_SCORE,
+    GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+    GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
     GAP_ZERNIKE_NONUNIFORM_SCORE,
     GAP_ZERNIKE_RATIO_SCORE,
+    GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
     GAP_ZERNIKE_WEIGHTED_SCORE,
     HARD_CUTOFF_SCORE,
     JOINT_LOW_ORDER_RATIO_SCORE,
@@ -32,6 +35,8 @@ from alphajudge.biophysics.zernike import (
     SURFACE_GAUSSIAN,
     SURFACE_NORMAL_GAP,
     zernike_grids,
+    zernike_gap_coefficient_bundle_from_grids,
+    zernike_gap_score_diagnostics,
     zernike_score_from_grids,
 )
 
@@ -286,6 +291,9 @@ END
         GAP_ZERNIKE_WEIGHTED_SCORE,
         GAP_ZERNIKE_NONUNIFORM_SCORE,
         GAP_ZERNIKE_BANDPASS_SCORE,
+        GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+        GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
+        GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
     ):
         ab = zernike_shape_complementarity(
             residues_a,
@@ -414,6 +422,146 @@ END
     )
 
     assert contacting > separated
+
+
+def test_calibrated_atom_gap_scores_are_translation_and_scale_stable():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CB  ALA A   1       1.300   0.300   0.100  1.00 50.00           C
+ATOM      3  CA  SER B   1       2.700   0.100   0.100  1.00 50.00           C
+ATOM      4  CB  SER B   1       3.800   0.700   0.300  1.00 50.00           C
+TER
+END
+"""
+    )
+    translated_a = _transform_residues(residues_a, shift=(6.0, -4.0, 2.5))
+    translated_b = _transform_residues(residues_b, shift=(6.0, -4.0, 2.5))
+    scaled_a = _transform_residues(residues_a, scale=2.0, shift=(-3.0, 1.0, 0.5))
+    scaled_b = _transform_residues(residues_b, scale=2.0, shift=(-3.0, 1.0, 0.5))
+
+    for score_mode in (
+        GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+        GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
+        GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
+    ):
+        kwargs = {
+            "representation": "atom_gaussian",
+            "grid_size": 16,
+            "order": 4,
+            "sigma": 1.5,
+            "score_mode": score_mode,
+            "fit_order": 12,
+        }
+        baseline = zernike_shape_complementarity(residues_a, residues_b, **kwargs)
+        translated = zernike_shape_complementarity(translated_a, translated_b, **kwargs)
+        scaled = zernike_shape_complementarity(
+            scaled_a,
+            scaled_b,
+            **{
+                **kwargs,
+                "sigma": 3.0,
+                "distance": 16.0,
+                "padding": 4.0,
+            },
+        )
+
+        assert 0.0 <= baseline <= 1.0
+        assert translated == pytest.approx(baseline, abs=1e-6)
+        assert scaled == pytest.approx(baseline, abs=5e-2)
+
+
+def test_calibrated_gap_diagnostics_reuse_order12_coefficients():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      2  CB  ALA A   1       1.400   0.400   0.200  1.00 50.00           C
+ATOM      3  CA  SER B   1       2.900   0.200   0.100  1.00 50.00           C
+ATOM      4  CB  SER B   1       3.900   0.700   0.400  1.00 50.00           C
+TER
+END
+"""
+    )
+    grid1, grid2 = zernike_grids(
+        residues_a,
+        residues_b,
+        representation="atom_gaussian",
+        grid_size=16,
+        sigma=1.5,
+    )
+    gap_coeff, overlap, volume1, volume2, voxel_count = zernike_gap_coefficient_bundle_from_grids(
+        grid1,
+        grid2,
+        fit_order=12,
+    )
+    from_grids = zernike_score_from_grids(
+        grid1,
+        grid2,
+        order=4,
+        score_mode=GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+        fit_order=12,
+    )
+    diagnostics = zernike_gap_score_diagnostics(
+        gap_coeff,
+        overlap,
+        order=4,
+        score_mode=GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+        fit_order=12,
+        side1_effective_volume=volume1,
+        side2_effective_volume=volume2,
+        voxel_count=voxel_count,
+    )
+
+    assert diagnostics["gap_final_score"] == pytest.approx(from_grids, abs=1e-8)
+    assert 0.0 <= diagnostics["gap_excess_overlap"] <= diagnostics["gap_raw_overlap"] <= 1.0
+    assert diagnostics["gap_expected_random_overlap"] >= 0.0
+
+
+def test_lower_n_atom_gap_is_less_sidechain_sensitive_than_higher_n():
+    residues_a, residues_b = _parse_residues(
+        """\
+ATOM      1  N   LYS A   1      -0.200  -0.300   0.000  1.00 50.00           N
+ATOM      2  CA  LYS A   1       0.000   0.000   0.000  1.00 50.00           C
+ATOM      3  C   LYS A   1       0.500   1.300   0.100  1.00 50.00           C
+ATOM      4  O   LYS A   1       0.300   2.300   0.000  1.00 50.00           O
+ATOM      5  CB  LYS A   1       1.400  -0.400   0.300  1.00 50.00           C
+ATOM      6  CG  LYS A   1       2.400   0.300   0.700  1.00 50.00           C
+ATOM      7  CD  LYS A   1       3.500  -0.200   1.100  1.00 50.00           C
+ATOM      8  CE  LYS A   1       4.500   0.500   1.500  1.00 50.00           C
+ATOM      9  NZ  LYS A   1       5.500   0.000   1.800  1.00 50.00           N
+ATOM     10  N   GLU B   1       2.000  -0.200   0.200  1.00 50.00           N
+ATOM     11  CA  GLU B   1       3.000   0.200   0.300  1.00 50.00           C
+ATOM     12  C   GLU B   1       3.400   1.500   0.500  1.00 50.00           C
+ATOM     13  O   GLU B   1       3.200   2.500   0.400  1.00 50.00           O
+ATOM     14  CB  GLU B   1       4.000  -0.500   0.700  1.00 50.00           C
+ATOM     15  CG  GLU B   1       4.900   0.200   1.300  1.00 50.00           C
+ATOM     16  CD  GLU B   1       5.800  -0.500   1.900  1.00 50.00           C
+ATOM     17  OE1 GLU B   1       6.700   0.200   2.300  1.00 50.00           O
+ATOM     18  OE2 GLU B   1       5.700  -1.700   2.000  1.00 50.00           O
+TER
+END
+"""
+    )
+    jittered_a = _jitter_distal_sidechains(residues_a, shift=(1.2, -0.7, 0.5))
+    jittered_b = _jitter_distal_sidechains(residues_b, shift=(-1.0, 0.8, -0.4))
+
+    kwargs = {
+        "representation": "atom_gaussian",
+        "grid_size": 16,
+        "sigma": 1.5,
+        "score_mode": GAP_ZERNIKE_BANDPASS_SCORE,
+        "fit_order": 12,
+    }
+    low_delta = abs(
+        zernike_shape_complementarity(residues_a, residues_b, order=2, **kwargs)
+        - zernike_shape_complementarity(jittered_a, jittered_b, order=2, **kwargs)
+    )
+    high_delta = abs(
+        zernike_shape_complementarity(residues_a, residues_b, order=8, **kwargs)
+        - zernike_shape_complementarity(jittered_a, jittered_b, order=8, **kwargs)
+    )
+
+    assert low_delta <= high_delta
 
 
 def test_normal_gap_zernike_is_bounded_symmetric_and_zero_without_contacts():

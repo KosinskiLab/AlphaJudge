@@ -32,6 +32,9 @@ GAP_ZERNIKE_RATIO_SCORE = "gap_zernike_ratio"
 GAP_ZERNIKE_WEIGHTED_SCORE = "gap_zernike_weighted"
 GAP_ZERNIKE_NONUNIFORM_SCORE = "gap_zernike_nonuniform"
 GAP_ZERNIKE_BANDPASS_SCORE = "gap_zernike_bandpass"
+GAP_ZERNIKE_EXCESS_BANDPASS_SCORE = "gap_zernike_excess_bandpass"
+GAP_ZERNIKE_SOFT_BANDPASS_SCORE = "gap_zernike_soft_bandpass"
+GAP_ZERNIKE_EXCESS_CONTACT_SCORE = "gap_zernike_excess_contact_bandpass"
 NORMAL_GAP_FIELD_SCORE = "normal_gap_field"
 NORMAL_GAP_CONTACT_SCORE = "normal_gap_contact_field"
 
@@ -45,6 +48,9 @@ GAP_SCORE_MODES = {
     GAP_ZERNIKE_WEIGHTED_SCORE,
     GAP_ZERNIKE_NONUNIFORM_SCORE,
     GAP_ZERNIKE_BANDPASS_SCORE,
+    GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+    GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
+    GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
 }
 GRID_SCORE_MODES = {
     SHARED_GRID_OVERLAP_SCORE,
@@ -52,6 +58,9 @@ GRID_SCORE_MODES = {
     GAP_ZERNIKE_WEIGHTED_SCORE,
     GAP_ZERNIKE_NONUNIFORM_SCORE,
     GAP_ZERNIKE_BANDPASS_SCORE,
+    GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+    GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
+    GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
 }
 
 JOINT_REPRESENTATIONS = {
@@ -104,6 +113,8 @@ DEFAULT_NORMAL_GAP_FAR_SCALE = 2.5
 DEFAULT_NORMAL_GAP_CLASH_WEIGHT = 0.75
 DEFAULT_NORMAL_GAP_FAR_WEIGHT = 0.5
 DEFAULT_NORMAL_GAP_CONTACT_SCALE = 500.0
+DEFAULT_GAP_BAND_SOFT_WIDTH = 1.0
+DEFAULT_GAP_CONTACT_SCALE = 0.05
 
 _SHORT_SCORE_TAGS = {
     HARD_CUTOFF_SCORE: "hard",
@@ -114,6 +125,9 @@ _SHORT_SCORE_TAGS = {
     GAP_ZERNIKE_WEIGHTED_SCORE: "gapweighted",
     GAP_ZERNIKE_NONUNIFORM_SCORE: "gapnonuniform",
     GAP_ZERNIKE_BANDPASS_SCORE: "gapband",
+    GAP_ZERNIKE_EXCESS_BANDPASS_SCORE: "gapexcess",
+    GAP_ZERNIKE_SOFT_BANDPASS_SCORE: "gapsoft",
+    GAP_ZERNIKE_EXCESS_CONTACT_SCORE: "gapcontact",
     NORMAL_GAP_FIELD_SCORE: "normalgap",
     NORMAL_GAP_CONTACT_SCORE: "normalcontact",
 }
@@ -166,6 +180,8 @@ class ZernikeSpec:
     normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT
     normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT
     normal_gap_contact_scale: float = DEFAULT_NORMAL_GAP_CONTACT_SCALE
+    gap_band_soft_width: float = DEFAULT_GAP_BAND_SOFT_WIDTH
+    gap_contact_scale: float = DEFAULT_GAP_CONTACT_SCALE
 
     def candidate_id(self) -> str:
         parts = [self.representation, f"g{self.grid_size}", f"o{self.order}"]
@@ -191,6 +207,16 @@ class ZernikeSpec:
             parts.append(f"m{_SHORT_SCORE_TAGS[self.score_mode]}")
         if self.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}:
             parts.append(f"n{_tag_float(self.order_decay_n0)}")
+        if self.score_mode == GAP_ZERNIKE_SOFT_BANDPASS_SCORE and not math.isclose(
+            float(self.gap_band_soft_width),
+            DEFAULT_GAP_BAND_SOFT_WIDTH,
+        ):
+            parts.append(f"w{_tag_float(self.gap_band_soft_width)}")
+        if self.score_mode == GAP_ZERNIKE_EXCESS_CONTACT_SCORE and not math.isclose(
+            float(self.gap_contact_scale),
+            DEFAULT_GAP_CONTACT_SCALE,
+        ):
+            parts.append(f"cs{_tag_float(self.gap_contact_scale)}")
         if self.score_mode in NORMAL_GAP_SCORE_MODES:
             if not math.isclose(float(self.normal_gap_good_scale), DEFAULT_NORMAL_GAP_GOOD_SCALE):
                 parts.append(f"gs{_tag_float(self.normal_gap_good_scale)}")
@@ -708,6 +734,46 @@ def zernike_shared_grid_overlap(grid1: np.ndarray, grid2: np.ndarray) -> float:
     return float(np.clip(overlap, 0.0, 1.0))
 
 
+def zernike_effective_grid_volume(grid: np.ndarray) -> float:
+    """Participation-ratio volume of a non-negative density grid."""
+    norm = zernike_l2_normalized_grid(grid)
+    if float(np.sum(norm)) <= 0.0:
+        return 0.0
+    effective = float(np.sum(norm) ** 2)
+    return float(np.clip(effective, 0.0, float(norm.size)))
+
+
+def zernike_expected_random_overlap(
+    side1_effective_volume: float,
+    side2_effective_volume: float,
+    voxel_count: int,
+) -> float:
+    """Expected L2 overlap for two independently placed densities in one box."""
+    n_voxels = max(int(voxel_count), 1)
+    volume1 = max(float(side1_effective_volume), 0.0)
+    volume2 = max(float(side2_effective_volume), 0.0)
+    expected = math.sqrt(volume1 * volume2) / float(n_voxels)
+    return float(np.clip(expected, 0.0, 1.0))
+
+
+def zernike_excess_grid_overlap(
+    grid_overlap: float,
+    side1_effective_volume: float,
+    side2_effective_volume: float,
+    voxel_count: int,
+) -> float:
+    """Overlap above the random-density expectation, normalized to [0, 1]."""
+    overlap = float(np.clip(float(grid_overlap), 0.0, 1.0))
+    expected = zernike_expected_random_overlap(
+        side1_effective_volume,
+        side2_effective_volume,
+        voxel_count,
+    )
+    if overlap <= expected:
+        return 0.0
+    return float(np.clip((overlap - expected) / max(1.0 - expected, 1e-12), 0.0, 1.0))
+
+
 def zernike_gap_grid(grid1: np.ndarray, grid2: np.ndarray) -> np.ndarray:
     """Build a soft shared-contact density from two L2-normalized side grids."""
     norm1 = zernike_l2_normalized_grid(grid1)
@@ -768,6 +834,32 @@ def zernike_band_energy_ratio(
     return float(np.clip(numer / denom, 0.0, 1.0))
 
 
+def zernike_soft_band_energy_ratio(
+    coeff: np.ndarray,
+    min_order: int,
+    cutoff_order: int,
+    fit_order: int | None = None,
+    soft_width: float = DEFAULT_GAP_BAND_SOFT_WIDTH,
+) -> float:
+    """Band energy with a hard low-order floor and smooth high-order taper."""
+    fit_to = fit_order_value(int(cutoff_order), fit_order)
+    full_prefix = zernike_descriptor_prefix_length(fit_to)
+    full_coeff = np.asarray(coeff[:full_prefix], dtype=float)
+    denom = float(np.dot(full_coeff, full_coeff))
+    if denom <= 0.0:
+        return 0.0
+    orders = zernike_descriptor_orders(fit_to)[:full_prefix]
+    width = max(float(soft_width), 1e-6)
+    weights = np.zeros_like(full_coeff, dtype=float)
+    in_band = (orders >= int(min_order)) & (orders <= int(cutoff_order))
+    high = orders > int(cutoff_order)
+    weights[in_band] = 1.0
+    weights[high] = np.exp(-(((orders[high] - int(cutoff_order)) / width) ** 2))
+    weighted = full_coeff * weights
+    numer = float(np.dot(weighted, weighted))
+    return float(np.clip(numer / denom, 0.0, 1.0))
+
+
 def zernike_joint_grid(grid1: np.ndarray, grid2: np.ndarray) -> np.ndarray:
     joint = np.asarray(grid1, dtype=np.float32) + np.asarray(grid2, dtype=np.float32)
     mass = float(np.sum(joint))
@@ -796,14 +888,17 @@ def zernike_gap_coefficient_bundle_from_grids(
     grid1: np.ndarray,
     grid2: np.ndarray,
     fit_order: int,
-) -> tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float, float, float, int]:
     overlap = zernike_shared_grid_overlap(grid1, grid2)
+    side1_effective_volume = zernike_effective_grid_volume(grid1)
+    side2_effective_volume = zernike_effective_grid_volume(grid2)
+    voxel_count = int(np.asarray(grid1).size)
     gap_grid = zernike_gap_grid(grid1, grid2)
     if float(np.sum(gap_grid)) <= 0.0:
         gap_coeff = np.zeros(zernike_descriptor_prefix_length(int(fit_order)), dtype=float)
     else:
         gap_coeff = zernike_coefficients(gap_grid, int(fit_order))
-    return gap_coeff, overlap
+    return gap_coeff, overlap, side1_effective_volume, side2_effective_volume, voxel_count
 
 
 def zernike_score_from_coefficients(
@@ -843,28 +938,110 @@ def zernike_score_from_gap_coefficients(
     score_mode: str,
     fit_order: int | None = None,
     order_decay_n0: float = DEFAULT_ORDER_DECAY_N0,
+    side1_effective_volume: float | None = None,
+    side2_effective_volume: float | None = None,
+    voxel_count: int | None = None,
+    gap_band_soft_width: float = DEFAULT_GAP_BAND_SOFT_WIDTH,
+    gap_contact_scale: float = DEFAULT_GAP_CONTACT_SCALE,
 ) -> float:
-    overlap = float(np.clip(float(grid_overlap), 0.0, 1.0))
-    if score_mode == SHARED_GRID_OVERLAP_SCORE:
-        return overlap
-    if score_mode == GAP_ZERNIKE_RATIO_SCORE:
-        ratio = zernike_low_order_energy_ratio(gap_coeff, int(order), fit_order)
-        return float(np.clip(overlap * ratio, 0.0, 1.0))
-    if score_mode == GAP_ZERNIKE_WEIGHTED_SCORE:
-        ratio = zernike_weighted_energy_ratio(
-            gap_coeff,
-            int(order),
-            fit_order,
-            order_decay_n0=float(order_decay_n0),
-        )
-        return float(np.clip(overlap * ratio, 0.0, 1.0))
-    if score_mode == GAP_ZERNIKE_NONUNIFORM_SCORE:
-        global_ratio = zernike_low_order_energy_ratio(gap_coeff, int(order), fit_order)
-        return float(np.clip(overlap * (1.0 - global_ratio), 0.0, 1.0))
-    if score_mode == GAP_ZERNIKE_BANDPASS_SCORE:
-        ratio = zernike_band_energy_ratio(gap_coeff, 2, int(order), fit_order)
-        return float(np.clip(overlap * ratio, 0.0, 1.0))
+    diagnostics = zernike_gap_score_diagnostics(
+        gap_coeff,
+        grid_overlap,
+        order=order,
+        score_mode=score_mode,
+        fit_order=fit_order,
+        order_decay_n0=order_decay_n0,
+        side1_effective_volume=side1_effective_volume,
+        side2_effective_volume=side2_effective_volume,
+        voxel_count=voxel_count,
+        gap_band_soft_width=gap_band_soft_width,
+        gap_contact_scale=gap_contact_scale,
+    )
+    if "gap_final_score" in diagnostics:
+        return diagnostics["gap_final_score"]
     raise ValueError(f"Unknown Zernike gap score mode {score_mode!r}")
+
+
+def zernike_gap_score_diagnostics(
+    gap_coeff: np.ndarray,
+    grid_overlap: float,
+    *,
+    order: int,
+    score_mode: str,
+    fit_order: int | None = None,
+    order_decay_n0: float = DEFAULT_ORDER_DECAY_N0,
+    side1_effective_volume: float | None = None,
+    side2_effective_volume: float | None = None,
+    voxel_count: int | None = None,
+    gap_band_soft_width: float = DEFAULT_GAP_BAND_SOFT_WIDTH,
+    gap_contact_scale: float = DEFAULT_GAP_CONTACT_SCALE,
+) -> dict[str, float]:
+    """Return atom/residue/surface gap terms used by shared-box scores."""
+    overlap = float(np.clip(float(grid_overlap), 0.0, 1.0))
+    volume1 = 0.0 if side1_effective_volume is None else max(float(side1_effective_volume), 0.0)
+    volume2 = 0.0 if side2_effective_volume is None else max(float(side2_effective_volume), 0.0)
+    n_voxels = 0 if voxel_count is None else int(voxel_count)
+    expected_overlap = (
+        zernike_expected_random_overlap(volume1, volume2, n_voxels)
+        if n_voxels > 0
+        else 0.0
+    )
+    excess_overlap = (
+        zernike_excess_grid_overlap(overlap, volume1, volume2, n_voxels)
+        if n_voxels > 0
+        else overlap
+    )
+    low_order_ratio = zernike_low_order_energy_ratio(gap_coeff, int(order), fit_order)
+    weighted_ratio = zernike_weighted_energy_ratio(
+        gap_coeff,
+        int(order),
+        fit_order,
+        order_decay_n0=float(order_decay_n0),
+    )
+    band_ratio = zernike_band_energy_ratio(gap_coeff, 2, int(order), fit_order)
+    soft_band_ratio = zernike_soft_band_energy_ratio(
+        gap_coeff,
+        2,
+        int(order),
+        fit_order,
+        soft_width=float(gap_band_soft_width),
+    )
+    contact_scale = max(float(gap_contact_scale), 1e-12)
+    contact_amount = 1.0 - math.exp(-(excess_overlap / contact_scale)) if excess_overlap > 0.0 else 0.0
+
+    if score_mode == SHARED_GRID_OVERLAP_SCORE:
+        final_score = overlap
+    elif score_mode == GAP_ZERNIKE_RATIO_SCORE:
+        final_score = overlap * low_order_ratio
+    elif score_mode == GAP_ZERNIKE_WEIGHTED_SCORE:
+        final_score = overlap * weighted_ratio
+    elif score_mode == GAP_ZERNIKE_NONUNIFORM_SCORE:
+        final_score = overlap * (1.0 - low_order_ratio)
+    elif score_mode == GAP_ZERNIKE_BANDPASS_SCORE:
+        final_score = overlap * band_ratio
+    elif score_mode == GAP_ZERNIKE_EXCESS_BANDPASS_SCORE:
+        final_score = excess_overlap * band_ratio
+    elif score_mode == GAP_ZERNIKE_SOFT_BANDPASS_SCORE:
+        final_score = overlap * soft_band_ratio
+    elif score_mode == GAP_ZERNIKE_EXCESS_CONTACT_SCORE:
+        final_score = contact_amount * band_ratio
+    else:
+        raise ValueError(f"Unknown Zernike gap score mode {score_mode!r}")
+
+    return {
+        "gap_raw_overlap": overlap,
+        "gap_expected_random_overlap": expected_overlap,
+        "gap_excess_overlap": excess_overlap,
+        "gap_side1_effective_volume": volume1,
+        "gap_side2_effective_volume": volume2,
+        "gap_voxel_count": float(n_voxels),
+        "gap_low_order_ratio": low_order_ratio,
+        "gap_weighted_ratio": weighted_ratio,
+        "gap_band_energy_ratio": band_ratio,
+        "gap_soft_band_energy_ratio": soft_band_ratio,
+        "gap_contact_amount": contact_amount,
+        "gap_final_score": float(np.clip(final_score, 0.0, 1.0)),
+    }
 
 
 def zernike_score_from_normal_gap_fields(
@@ -874,6 +1051,8 @@ def zernike_score_from_normal_gap_fields(
     fit_order: int | None = None,
     normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT,
     normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT,
+    normal_gap_contact_scale: float = DEFAULT_NORMAL_GAP_CONTACT_SCALE,
+    score_mode: str = NORMAL_GAP_FIELD_SCORE,
 ) -> float:
     """Score normal-aware contact after low-pass Zernike filtering of all fields."""
     coeffs = zernike_normal_gap_coefficient_bundle(
@@ -886,6 +1065,8 @@ def zernike_score_from_normal_gap_fields(
         fit_order=fit_order,
         normal_gap_clash_weight=normal_gap_clash_weight,
         normal_gap_far_weight=normal_gap_far_weight,
+        normal_gap_contact_scale=normal_gap_contact_scale,
+        score_mode=score_mode,
     )
 
 
@@ -1036,10 +1217,18 @@ def zernike_score_from_grids(
     score_mode: str = DEFAULT_SCORE_MODE,
     fit_order: int | None = None,
     order_decay_n0: float = DEFAULT_ORDER_DECAY_N0,
+    gap_band_soft_width: float = DEFAULT_GAP_BAND_SOFT_WIDTH,
+    gap_contact_scale: float = DEFAULT_GAP_CONTACT_SCALE,
 ) -> float:
     fit_to = fit_order_value(int(order), fit_order)
     if score_mode in GRID_SCORE_MODES:
-        gap_coeff, grid_overlap = zernike_gap_coefficient_bundle_from_grids(grid1, grid2, fit_to)
+        (
+            gap_coeff,
+            grid_overlap,
+            side1_effective_volume,
+            side2_effective_volume,
+            voxel_count,
+        ) = zernike_gap_coefficient_bundle_from_grids(grid1, grid2, fit_to)
         return zernike_score_from_gap_coefficients(
             gap_coeff,
             grid_overlap,
@@ -1047,6 +1236,11 @@ def zernike_score_from_grids(
             score_mode=score_mode,
             fit_order=fit_to,
             order_decay_n0=order_decay_n0,
+            side1_effective_volume=side1_effective_volume,
+            side2_effective_volume=side2_effective_volume,
+            voxel_count=voxel_count,
+            gap_band_soft_width=gap_band_soft_width,
+            gap_contact_scale=gap_contact_scale,
         )
 
     coeff1, coeff2, joint_coeff = zernike_coefficient_bundle_from_grids(grid1, grid2, fit_to)
@@ -1140,6 +1334,8 @@ def zernike_shape_complementarity(
     normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT,
     normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT,
     normal_gap_contact_scale: float = DEFAULT_NORMAL_GAP_CONTACT_SCALE,
+    gap_band_soft_width: float = DEFAULT_GAP_BAND_SOFT_WIDTH,
+    gap_contact_scale: float = DEFAULT_GAP_CONTACT_SCALE,
 ) -> float:
     """
     Compare low-pass 3D Zernike interface descriptors.
@@ -1191,6 +1387,8 @@ def zernike_shape_complementarity(
             score_mode=score_mode,
             fit_order=fit_order,
             order_decay_n0=order_decay_n0,
+            gap_band_soft_width=gap_band_soft_width,
+            gap_contact_scale=gap_contact_scale,
         )
     except Exception:
         return 0.0
@@ -1199,6 +1397,8 @@ def zernike_shape_complementarity(
 __all__ = [
     "ATOM_GAUSSIAN",
     "DEFAULT_DISTANCE",
+    "DEFAULT_GAP_BAND_SOFT_WIDTH",
+    "DEFAULT_GAP_CONTACT_SCALE",
     "DEFAULT_GRID_SIZE",
     "DEFAULT_ORDER",
     "DEFAULT_ORDER_DECAY_N0",
@@ -1219,8 +1419,11 @@ __all__ = [
     "GAUSSIAN_WEIGHTED_SCORE",
     "GAP_SCORE_MODES",
     "GAP_ZERNIKE_BANDPASS_SCORE",
+    "GAP_ZERNIKE_EXCESS_BANDPASS_SCORE",
+    "GAP_ZERNIKE_EXCESS_CONTACT_SCORE",
     "GAP_ZERNIKE_NONUNIFORM_SCORE",
     "GAP_ZERNIKE_RATIO_SCORE",
+    "GAP_ZERNIKE_SOFT_BANDPASS_SCORE",
     "GAP_ZERNIKE_WEIGHTED_SCORE",
     "GRID_SCORE_MODES",
     "HARD_CUTOFF_SCORE",
@@ -1253,8 +1456,12 @@ __all__ = [
     "zernike_descriptor_prefix_length",
     "zernike_descriptors",
     "zernike_descriptors_from_grids",
+    "zernike_effective_grid_volume",
+    "zernike_excess_grid_overlap",
+    "zernike_expected_random_overlap",
     "zernike_gap_coefficient_bundle_from_grids",
     "zernike_gap_grid",
+    "zernike_gap_score_diagnostics",
     "zernike_grids",
     "zernike_grids_from_point_clouds",
     "zernike_joint_grid",
@@ -1273,6 +1480,7 @@ __all__ = [
     "zernike_similarity_from_coefficients",
     "zernike_similarity_from_grids",
     "zernike_source_representation",
+    "zernike_soft_band_energy_ratio",
     "zernike_weighted_energy_ratio",
     "zernike_l2_normalized_grid",
     "zernike_low_order_energy_ratio",

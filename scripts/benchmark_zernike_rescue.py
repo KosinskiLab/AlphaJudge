@@ -31,8 +31,11 @@ from alphajudge.biophysics.zernike import (
     GAUSSIAN_REPRESENTATIONS,
     GAUSSIAN_WEIGHTED_SCORE,
     GAP_ZERNIKE_BANDPASS_SCORE,
+    GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+    GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
     GAP_ZERNIKE_NONUNIFORM_SCORE,
     GAP_ZERNIKE_RATIO_SCORE,
+    GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
     GAP_ZERNIKE_WEIGHTED_SCORE,
     GRID_SCORE_MODES,
     HARD_CUTOFF_SCORE,
@@ -55,6 +58,7 @@ from alphajudge.biophysics.zernike import (
     zernike_candidate_family,
     zernike_coefficient_bundle_from_grids,
     zernike_gap_coefficient_bundle_from_grids,
+    zernike_gap_score_diagnostics,
     zernike_grids_from_point_clouds,
     zernike_normal_gap_coefficient_bundle,
     zernike_normal_gap_field_bundle,
@@ -83,7 +87,11 @@ DIAGNOSTIC_HARD_PER_CLASS = 6
 DIAGNOSTIC_AF3_SAMPLE_SIZE = 200
 SATURATION_SCORE_THRESHOLD = 0.95
 SATURATION_FRACTION_THRESHOLD = 0.80
-MIN_MEDIAN_SEPARATION = 0.02
+MIN_MEDIAN_SEPARATION = 0.01
+CURRENT_ATOM_GAP_BAND_AF3_AUROC = 0.6635652389528358
+CURRENT_ATOM_GAP_BAND_RESCUE_RATE = 0.2193713919178961
+CURRENT_ATOM_GAP_BAND_ALL_AUROC = 0.5701443473355254
+IMPROVED_RESCUE_SPECIALIST_MIN_ALL_AUROC = 0.62
 
 PROTEIN_BACKBONE_ATOMS = {"N", "CA", "C", "O", "OXT"}
 NA_BACKBONE_ATOMS = {
@@ -237,7 +245,7 @@ def _coeff_payload(row: dict, spec: ZernikeSpec) -> dict:
     payload.update(
         {
             "fit_order": fit_order_value(spec),
-            "coefficient_builder": "zernike_coeff_gap_bundle_v1",
+            "coefficient_builder": "zernike_coeff_gap_bundle_v2",
         }
     )
     return payload
@@ -360,7 +368,7 @@ class CoefficientCache:
     def _cache_path(self, row: dict, spec: ZernikeSpec) -> Path:
         return self.cache_dir / f"{hash_payload(_coeff_payload(row, spec))}.npz"
 
-    def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    def get_or_build(self, row: dict, spec: ZernikeSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, float, int]:
         path = self._cache_path(row, spec)
         if path.exists():
             try:
@@ -372,6 +380,9 @@ class CoefficientCache:
                         payload["joint_coeff"],
                         payload["gap_coeff"],
                         float(payload["grid_overlap"]),
+                        float(payload["side1_effective_volume"]),
+                        float(payload["side2_effective_volume"]),
+                        int(payload["voxel_count"]),
                     )
             except Exception:
                 unlink_if_exists(path)
@@ -382,7 +393,13 @@ class CoefficientCache:
             grid2,
             fit_order_value(spec),
         )
-        gap_coeff, grid_overlap = zernike_gap_coefficient_bundle_from_grids(
+        (
+            gap_coeff,
+            grid_overlap,
+            side1_effective_volume,
+            side2_effective_volume,
+            voxel_count,
+        ) = zernike_gap_coefficient_bundle_from_grids(
             grid1,
             grid2,
             fit_order_value(spec),
@@ -394,9 +411,21 @@ class CoefficientCache:
             joint_coeff=joint_coeff,
             gap_coeff=gap_coeff,
             grid_overlap=np.asarray(grid_overlap, dtype=float),
+            side1_effective_volume=np.asarray(side1_effective_volume, dtype=float),
+            side2_effective_volume=np.asarray(side2_effective_volume, dtype=float),
+            voxel_count=np.asarray(voxel_count, dtype=int),
         )
         self.misses += 1
-        return coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap
+        return (
+            coeff1,
+            coeff2,
+            joint_coeff,
+            gap_coeff,
+            grid_overlap,
+            side1_effective_volume,
+            side2_effective_volume,
+            voxel_count,
+        )
 
 
 class NormalGapCoefficientCache:
@@ -547,6 +576,72 @@ def tuned_atom_gap_penalty_specs() -> list[ZernikeSpec]:
     ]
 
 
+def atom_gap_order_curve_specs() -> list[ZernikeSpec]:
+    common = {
+        "representation": ATOM_GAUSSIAN,
+        "grid_size": 32,
+        "sigma": 1.5,
+        "fit_order": MAX_SWEEP_ORDER,
+    }
+    return [
+        ZernikeSpec(
+            **common,
+            order=order,
+            score_mode=GAP_ZERNIKE_BANDPASS_SCORE,
+        )
+        for order in (2, 3, 4, 5, 6, 8, 10)
+    ]
+
+
+def calibrated_atom_gap_specs() -> list[ZernikeSpec]:
+    out: list[ZernikeSpec] = []
+    for grid_size in (24, 32):
+        for sigma in (1.0, 1.5, 2.0):
+            common = {
+                "representation": ATOM_GAUSSIAN,
+                "grid_size": grid_size,
+                "sigma": sigma,
+                "fit_order": MAX_SWEEP_ORDER,
+            }
+            for order in (2, 4, 6):
+                out.append(
+                    ZernikeSpec(
+                        **common,
+                        order=order,
+                        score_mode=GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+                    )
+                )
+                for soft_width in (1.0, 2.0):
+                    out.append(
+                        ZernikeSpec(
+                            **common,
+                            order=order,
+                            score_mode=GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
+                            gap_band_soft_width=soft_width,
+                        )
+                    )
+
+    for grid_size in (24, 32):
+        for sigma in (1.5, 2.0):
+            common = {
+                "representation": ATOM_GAUSSIAN,
+                "grid_size": grid_size,
+                "sigma": sigma,
+                "fit_order": MAX_SWEEP_ORDER,
+                "score_mode": GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
+            }
+            for order in (2, 4, 6):
+                for contact_scale in (0.03, 0.07):
+                    out.append(
+                        ZernikeSpec(
+                            **common,
+                            order=order,
+                            gap_contact_scale=contact_scale,
+                        )
+                    )
+    return out
+
+
 def tuned_surface_normal_gap_specs() -> list[ZernikeSpec]:
     common = {
         "representation": SURFACE_NORMAL_GAP,
@@ -691,10 +786,24 @@ def _append_gap_candidates(
         )
 
 
+def unique_candidate_specs(candidates: list[ZernikeSpec]) -> list[ZernikeSpec]:
+    seen: set[str] = set()
+    out: list[ZernikeSpec] = []
+    for spec in candidates:
+        candidate_id = spec.candidate_id()
+        if candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        out.append(spec)
+    return out
+
+
 def build_full_candidates() -> list[ZernikeSpec]:
     candidates: list[ZernikeSpec] = build_cosine_diagnostic_candidates()
     candidates.append(_tuned_atom_gap_overlap_spec())
     candidates.extend(tuned_atom_gap_penalty_specs())
+    candidates.extend(atom_gap_order_curve_specs())
+    candidates.extend(calibrated_atom_gap_specs())
     candidates.extend(tuned_surface_normal_gap_specs())
     candidates.extend(fast_surface_normal_gap_specs())
     candidates.extend(contact_surface_normal_gap_specs())
@@ -717,14 +826,40 @@ def build_full_candidates() -> list[ZernikeSpec]:
                 surface_probe_radius=2.3,
             )
 
-    return candidates
+    return unique_candidate_specs(candidates)
 
 
 def build_smoke_candidates() -> list[ZernikeSpec]:
-    return [
+    return unique_candidate_specs([
         _atom_cosine_baseline_spec(),
         _tuned_atom_gap_overlap_spec(),
         *tuned_atom_gap_penalty_specs(),
+        ZernikeSpec(
+            representation=ATOM_GAUSSIAN,
+            grid_size=32,
+            order=2,
+            sigma=1.5,
+            score_mode=GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+        ),
+        ZernikeSpec(
+            representation=ATOM_GAUSSIAN,
+            grid_size=32,
+            order=4,
+            sigma=1.5,
+            score_mode=GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+            gap_band_soft_width=2.0,
+        ),
+        ZernikeSpec(
+            representation=ATOM_GAUSSIAN,
+            grid_size=32,
+            order=4,
+            sigma=1.5,
+            score_mode=GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+            gap_contact_scale=0.03,
+        ),
         *tuned_surface_normal_gap_specs(),
         ZernikeSpec(
             representation=RESIDUE_BEAD_GAUSSIAN,
@@ -780,7 +915,7 @@ def build_smoke_candidates() -> list[ZernikeSpec]:
             score_mode=SHARED_GRID_OVERLAP_SCORE,
             fit_order=MAX_SWEEP_ORDER,
         ),
-    ]
+    ])
 
 
 def find_manifest(group_root: Path, manifest_tag: str | None) -> Path:
@@ -1109,6 +1244,8 @@ def baseline_sc_results(rows: list[dict]) -> list[dict]:
                 "score_mode": "baseline",
                 "fit_order": "",
                 "order_decay_n0": "",
+                "gap_band_soft_width": "",
+                "gap_contact_scale": "",
                 "normal_gap_good_scale": "",
                 "normal_gap_far_scale": "",
                 "normal_gap_clash_weight": "",
@@ -1159,6 +1296,12 @@ def _candidate_result_row(
             "order_decay_n0": spec.order_decay_n0
             if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
             else "",
+            "gap_band_soft_width": spec.gap_band_soft_width
+            if spec.score_mode == GAP_ZERNIKE_SOFT_BANDPASS_SCORE
+            else "",
+            "gap_contact_scale": spec.gap_contact_scale
+            if spec.score_mode == GAP_ZERNIKE_EXCESS_CONTACT_SCORE
+            else "",
             "normal_gap_good_scale": spec.normal_gap_good_scale
             if spec.score_mode in NORMAL_GAP_SCORE_MODES
             else "",
@@ -1190,6 +1333,9 @@ def _score_spec_from_coefficients(
     joint_coeff: np.ndarray,
     gap_coeff: np.ndarray,
     grid_overlap: float,
+    side1_effective_volume: float,
+    side2_effective_volume: float,
+    voxel_count: int,
 ) -> float:
     if spec.score_mode in GRID_SCORE_MODES:
         return zernike_score_from_gap_coefficients(
@@ -1199,6 +1345,11 @@ def _score_spec_from_coefficients(
             score_mode=spec.score_mode,
             fit_order=fit_order_value(spec),
             order_decay_n0=spec.order_decay_n0,
+            side1_effective_volume=side1_effective_volume,
+            side2_effective_volume=side2_effective_volume,
+            voxel_count=voxel_count,
+            gap_band_soft_width=spec.gap_band_soft_width,
+            gap_contact_scale=spec.gap_contact_scale,
         )
     if spec.representation in JOINT_REPRESENTATIONS:
         return zernike_score_from_coefficients(
@@ -1256,8 +1407,33 @@ def _evaluate_row_candidate_groups(
                     for spec in spec_group
                 }
             else:
-                coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap = coeff_cache.get_or_build(row, anchor)
-                diagnostics_by_candidate = {}
+                (
+                    coeff1,
+                    coeff2,
+                    joint_coeff,
+                    gap_coeff,
+                    grid_overlap,
+                    side1_effective_volume,
+                    side2_effective_volume,
+                    voxel_count,
+                ) = coeff_cache.get_or_build(row, anchor)
+                diagnostics_by_candidate = {
+                    spec.candidate_id(): zernike_gap_score_diagnostics(
+                        gap_coeff,
+                        grid_overlap,
+                        order=spec.order,
+                        score_mode=spec.score_mode,
+                        fit_order=fit_order_value(spec),
+                        order_decay_n0=spec.order_decay_n0,
+                        side1_effective_volume=side1_effective_volume,
+                        side2_effective_volume=side2_effective_volume,
+                        voxel_count=voxel_count,
+                        gap_band_soft_width=spec.gap_band_soft_width,
+                        gap_contact_scale=spec.gap_contact_scale,
+                    )
+                    for spec in spec_group
+                    if spec.score_mode in GRID_SCORE_MODES
+                }
                 scores = {
                     spec.candidate_id(): _score_spec_from_coefficients(
                         spec,
@@ -1266,6 +1442,9 @@ def _evaluate_row_candidate_groups(
                         joint_coeff,
                         gap_coeff,
                         grid_overlap,
+                        side1_effective_volume,
+                        side2_effective_volume,
+                        voxel_count,
                     )
                     for spec in spec_group
                 }
@@ -1644,6 +1823,8 @@ def zernike_shape_from_spec(residues1, residues2, spec: ZernikeSpec) -> float:
         score_mode=spec.score_mode,
         fit_order=spec.fit_order,
         order_decay_n0=spec.order_decay_n0,
+        gap_band_soft_width=spec.gap_band_soft_width,
+        gap_contact_scale=spec.gap_contact_scale,
         normal_gap_good_scale=spec.normal_gap_good_scale,
         normal_gap_far_scale=spec.normal_gap_far_scale,
         normal_gap_clash_weight=spec.normal_gap_clash_weight,
@@ -1808,6 +1989,8 @@ def summarize_candidates(
             "score_mode": "baseline",
             "fit_order": "",
             "order_decay_n0": "",
+            "gap_band_soft_width": "",
+            "gap_contact_scale": "",
             "af3_failure_rescue_rate": baseline_rescue_rate,
             "delta_rescue_vs_sc": 0.0,
             "pooled_af3_auroc": baseline_af3[0],
@@ -1830,6 +2013,9 @@ def summarize_candidates(
             "production_eligible": 0,
             "diagnostic_only": 0,
             "diagnostic_pass": 0,
+            "stage1_reject": 0,
+            "af3_not_worse_than_current_atom_gap": 1,
+            "improved_rescue_specialist": 0,
             "runtime_ok": 1,
             "robustness_pass": 1,
             "guardrail_pass": 1,
@@ -1851,7 +2037,6 @@ def summarize_candidates(
         distribution = score_distribution_summary(rows)
         production_eligible = is_production_candidate(spec)
         diagnostic_only = not production_eligible
-        diagnostic_pass = production_eligible and int(distribution["saturation_reject"]) == 0
 
         cell_deltas = []
         for key, group in grouped_by(rows, ("organism", "backend")).items():
@@ -1869,6 +2054,20 @@ def summarize_candidates(
         rescue_rate = float(
             np.mean([row["rescued_af3_failure_positive"] for row in failure_slice_rows])
         ) if failure_slice_rows else float("nan")
+        af3_not_worse_than_current_atom_gap = (
+            not math.isfinite(pooled_af3[0])
+            or pooled_af3[0] >= CURRENT_ATOM_GAP_BAND_AF3_AUROC - 0.01
+        )
+        stage1_reject = int(distribution["saturation_reject"]) == 1 or not af3_not_worse_than_current_atom_gap
+        diagnostic_pass = production_eligible and not stage1_reject
+        improved_rescue_specialist = (
+            math.isfinite(pooled_af3[0])
+            and pooled_af3[0] > CURRENT_ATOM_GAP_BAND_AF3_AUROC
+            and math.isfinite(rescue_rate)
+            and rescue_rate > CURRENT_ATOM_GAP_BAND_RESCUE_RATE
+            and math.isfinite(pooled_global[0])
+            and pooled_global[0] >= IMPROVED_RESCUE_SPECIALIST_MIN_ALL_AUROC
+        )
 
         runtime_stats = runtime_by_candidate[candidate_id]
         runtime_ok = (
@@ -1925,6 +2124,12 @@ def summarize_candidates(
                 "order_decay_n0": spec.order_decay_n0
                 if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
                 else "",
+                "gap_band_soft_width": spec.gap_band_soft_width
+                if spec.score_mode == GAP_ZERNIKE_SOFT_BANDPASS_SCORE
+                else "",
+                "gap_contact_scale": spec.gap_contact_scale
+                if spec.score_mode == GAP_ZERNIKE_EXCESS_CONTACT_SCORE
+                else "",
                 "normal_gap_contact_scale": spec.normal_gap_contact_scale
                 if spec.score_mode == NORMAL_GAP_CONTACT_SCORE
                 else "",
@@ -1962,6 +2167,9 @@ def summarize_candidates(
                 "production_eligible": int(production_eligible),
                 "diagnostic_only": int(diagnostic_only),
                 "diagnostic_pass": int(diagnostic_pass),
+                "stage1_reject": int(stage1_reject),
+                "af3_not_worse_than_current_atom_gap": int(af3_not_worse_than_current_atom_gap),
+                "improved_rescue_specialist": int(improved_rescue_specialist),
                 "runtime_ok": int(runtime_ok),
                 "robustness_pass": int(robustness_pass),
                 "guardrail_pass": int(guardrail_pass),
@@ -2087,14 +2295,30 @@ def diagnostic_summary_rows(annotated_outputs: dict[str, list[dict]]) -> list[di
     return out
 
 
-def filter_candidates_from_summary(candidates: list[ZernikeSpec], summary_path: Path) -> list[ZernikeSpec]:
+def filter_candidates_from_summary(
+    candidates: list[ZernikeSpec],
+    summary_path: Path,
+    *,
+    survivor_limit: int | None = 10,
+) -> list[ZernikeSpec]:
     rows = read_csv_rows(summary_path)
-    allowed = {
-        row["candidate_id"]
+    survivor_rows = [
+        row
         for row in rows
         if row.get("candidate_id") != SC_BASELINE_ID
         and row.get("diagnostic_pass") in {"1", "1.0", "true", "True"}
-    }
+    ]
+    survivor_rows.sort(
+        key=lambda row: (
+            safe_float(row.get("rank", float("inf")))
+            if math.isfinite(safe_float(row.get("rank", float("inf"))))
+            else float("inf"),
+            str(row.get("candidate_id", "")),
+        )
+    )
+    if survivor_limit is not None and survivor_limit > 0:
+        survivor_rows = survivor_rows[:survivor_limit]
+    allowed = {row["candidate_id"] for row in survivor_rows}
     atom_baseline = _atom_cosine_baseline_spec()
     atom_baseline_id = atom_baseline.candidate_id()
     filtered = [spec for spec in candidates if spec.candidate_id() in allowed or spec.candidate_id() == atom_baseline_id]
@@ -2151,6 +2375,12 @@ def main() -> int:
         "--survivors-from",
         default=None,
         help="Candidate summary CSV from diagnostic mode; full mode will score only diagnostic-pass candidates plus the atom baseline.",
+    )
+    parser.add_argument(
+        "--survivor-limit",
+        type=int,
+        default=10,
+        help="Maximum ranked diagnostic-pass candidates to keep when --survivors-from is used; use 0 to keep all.",
     )
     parser.add_argument(
         "--candidate-id",
@@ -2213,7 +2443,11 @@ def main() -> int:
 
     candidates = build_smoke_candidates() if args.mode == "smoke" else build_full_candidates()
     if args.survivors_from:
-        candidates = filter_candidates_from_summary(candidates, Path(args.survivors_from))
+        candidates = filter_candidates_from_summary(
+            candidates,
+            Path(args.survivors_from),
+            survivor_limit=args.survivor_limit,
+        )
     if args.candidate_id:
         candidates = filter_candidates_by_id(candidates, args.candidate_id)
 
