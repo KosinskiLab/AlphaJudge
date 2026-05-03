@@ -5,14 +5,25 @@ Last updated: 2026-05-03
 ## Working State
 
 - Branch: `zernike`
-- Latest pushed implementation commit before this update: `4d21eca Benchmark calibrated atom gap Zernike orders`
-- New in this update:
+- Latest pushed commits:
+  - `33264b3 Align parser residue maps with PAE tokens`
+  - `e52030f Benchmark SC-gated atom gap rescue`
+- Current Zernike update:
   - SC-gated atom-gap rescue candidates that add a small Zernike correction only when `interface_sc` is low
   - full 16-cell all-organism benchmark for the tuned SC-gated atom-gap candidate
   - comparative plot against SC and the previous pure atom-gap best candidate
   - important interpretation update: pure Zernike did not beat SC globally, but SC-anchored Zernike rescue improves full-benchmark AUROC
 - Benchmark root: `/g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/predictions`
-- Important local caveat: `src/alphajudge/parsers/__init__.py` has unrelated local edits and should not be reverted or staged unless intentionally working on that file.
+- Expected workspace state after the latest push: clean on `zernike`.
+
+## Quick Start For Future Agents
+
+- Do not assume pure Zernike beat SC. It did not.
+- The strongest result so far is a hybrid rescue score, not a replacement for SC:
+  `atom_gaussian__g32__o0__s1.5__mscoverlap__rs0.4__rf0.01__f12`.
+- The tuned SC-gated candidate improves AUROC in all 8 organism/backend cells and passes AUROC guardrails, but production integration is intentionally paused because runtime, robustness, and threshold behavior still need checking.
+- If asked to continue productively, the next best step is not another broad Zernike sweep. Run runtime plus side-chain jitter robustness for the tuned SC-gated candidate, then decide whether to expose it as a new score such as `interface_sc_zernike_rescue`.
+- If asked for a paper/presentation artifact, use `docs/zernike_sc_gated_atom_gap_full_comparison.svg` and cite the tuned full benchmark CSVs below.
 
 ## Core Hypothesis
 
@@ -350,8 +361,18 @@ Decision:
 Run focused tests:
 
 ```bash
-python -m py_compile src/alphajudge/biophysics/zernike.py scripts/benchmark_zernike_rescue.py
+python -m py_compile \
+  src/alphajudge/biophysics/zernike.py \
+  src/alphajudge/parsers/__init__.py \
+  scripts/benchmark_zernike_rescue.py \
+  scripts/plot_zernike_sc_gated_atom_gap_full.py
 pytest -q test/test_biophysics.py test/test_zernike_benchmark.py
+```
+
+Regenerate the latest comparison plot from committed CSVs:
+
+```bash
+python scripts/plot_zernike_sc_gated_atom_gap_full.py
 ```
 
 Run tiny real smoke:
@@ -380,12 +401,12 @@ python scripts/benchmark_zernike_rescue.py \
 
 ## Next Implementation Ideas
 
-- Atom gap-band has likely hit its current geometry-only ceiling as a standalone score.
-- If continuing atom gap, use it as an auxiliary rescue feature rather than a production replacement:
+- Atom gap-band has likely hit its current geometry-only ceiling as a standalone pure score.
+- If continuing atom gap, use it as an auxiliary rescue feature rather than a standalone production replacement:
   - gate it to low-SC AF3-like failures, or
   - combine it with SC later, if hybrid scores become allowed.
 - The more promising pure-Zernike direction is no longer simple atom density overlap; it is normal/contact-aware fields or a new explicit gap/clash volume with an absolute contact term.
 - For the next pure geometry pass, prefer:
   - contact-gated normal-gap with lower-density cached Connolly dots
   - or atom/residue good-contact, clash, and far-gap fields instead of a single overlap field
-- Do not promote `interface_zernike_sc` until full 16-cell benchmark passes SC guardrails.
+- For the current best hybrid, do not silently overwrite `interface_zernike_sc`. If accepted, add it as a separately named score after runtime, robustness, and threshold checks.
