@@ -25,6 +25,25 @@ Last updated: 2026-05-03
 - If asked to continue productively, the next best step is not another broad Zernike sweep. Run runtime plus side-chain jitter robustness for the tuned SC-gated candidate, then decide whether to expose it as a new score such as `interface_sc_zernike_rescue`.
 - If asked for a paper/presentation artifact, use `docs/zernike_sc_gated_atom_gap_full_comparison.svg` and cite the tuned full benchmark CSVs below.
 
+## Continuation Rules
+
+- Every meaningful code, benchmark, or interpretation change should be reflected in both places:
+  - a Git commit on branch `zernike`
+  - this handoff file, with enough context for a future human, Codex, or Claude Code session to continue without chat history
+- Keep commits small and named by outcome, for example `Benchmark SC-gated atom gap rescue` rather than `update files`.
+- Commit benchmark artifacts needed to reproduce the story:
+  - summary CSVs
+  - per-cell metric CSVs
+  - run metadata JSON
+  - final presentation/paper plots
+- Do not commit bulky per-interface score tables unless they are specifically needed for downstream inspection; prefer `/tmp` or a documented scratch output directory for rerunnable intermediates.
+- Always report the benchmark root, command shape, candidate IDs, dataset slice, and whether runtime/robustness were skipped.
+- Keep `interface_sc` as the explicit baseline in every benchmark summary and report deltas versus SC, not only absolute Zernike metrics.
+- Do not promote or overwrite production `interface_zernike_sc` unless the candidate passes the full 16-cell guardrails and the handoff records the decision.
+- If a score is hybrid SC+Zernike, label it as hybrid. Do not describe it as pure Zernike or geometry-only.
+- Preserve unrelated user/local changes. If cleanup is needed, move ambiguous scratch files to a timestamped `/tmp` backup rather than deleting them.
+- Before committing, run at least the focused compile/test commands in the Useful Commands section unless the change is documentation-only.
+
 ## Core Hypothesis
 
 AlphaFold2/3 often predict the global complex arrangement better than local side-chain geometry. SC can fail on AF3 positives because it is sensitive to local clashes, rotamers, and exact Connolly dot pairing. Zernike should therefore act as a geometry-only low-pass interface score: preserve global contact/gap structure while reducing local noise.
