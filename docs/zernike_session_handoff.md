@@ -64,6 +64,8 @@ Artifacts committed with this branch:
 - `docs/zernike_human_normal_gap_quick_candidate_summary.csv`
 - `docs/zernike_human_normal_gap_quick_candidate_diagnostic_summary.csv`
 - `docs/zernike_human_normal_gap_quick_field_summary.csv`
+- `docs/zernike_human_normal_gap_key_findings.svg`
+- `docs/zernike_human_normal_gap_key_findings.png`
 
 Command shape:
 
