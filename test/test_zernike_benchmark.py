@@ -215,6 +215,7 @@ END
     assert "negative_fraction_ge_0_95" in baseline_row
     assert "saturation_reject" in baseline_row
     assert any(row["production_eligible"] == "1" for row in summary_rows)
+    normal_gap_summary = next(row for row in summary_rows if row["candidate_family"] == "normal_gap")
 
     metric_rows = list(csv.DictReader((out_dir / "candidate_metrics.csv").open()))
     assert "delta_auroc_vs_sc" in metric_rows[0]
@@ -228,6 +229,11 @@ END
 
     score_rows = list(csv.DictReader((out_dir / "scores" / "interface_sc.csv").open()))
     assert {row["backend"] for row in score_rows} == {"af2", "af3"}
+
+    normal_gap_rows = list(csv.DictReader((out_dir / "scores" / f"{normal_gap_summary['candidate_id']}.csv").open()))
+    assert "normal_gap_good_mass" in normal_gap_rows[0]
+    assert "normal_gap_clash_structured_ratio" in normal_gap_rows[0]
+    assert "normal_gap_far_signal" in normal_gap_rows[0]
     assert {row["candidate_status"] for row in score_rows} == {"baseline"}
 
 

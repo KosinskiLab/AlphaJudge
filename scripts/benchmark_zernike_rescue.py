@@ -39,6 +39,7 @@ from alphajudge.biophysics.zernike import (
     JOINT_LOW_ORDER_RATIO_SCORE,
     JOINT_REPRESENTATIONS,
     JOINT_RESIDUE_BEAD_GAUSSIAN,
+    NORMAL_GAP_CONTACT_SCORE,
     NORMAL_GAP_FIELD_SCORE,
     NORMAL_GAP_REPRESENTATIONS,
     NORMAL_GAP_SCORE_MODES,
@@ -57,10 +58,10 @@ from alphajudge.biophysics.zernike import (
     zernike_grids_from_point_clouds,
     zernike_normal_gap_coefficient_bundle,
     zernike_normal_gap_field_bundle,
+    zernike_normal_gap_score_diagnostics,
     zernike_point_clouds,
     zernike_score_from_coefficients,
     zernike_score_from_gap_coefficients,
-    zernike_score_from_normal_gap_coefficients,
     zernike_source_representation,
 )
 
@@ -564,6 +565,57 @@ def tuned_surface_normal_gap_specs() -> list[ZernikeSpec]:
     ]
 
 
+def fast_surface_normal_gap_specs() -> list[ZernikeSpec]:
+    common = {
+        "representation": SURFACE_NORMAL_GAP,
+        "grid_size": 24,
+        "sigma": 1.5,
+        "surface_density": 1.5,
+        "surface_probe_radius": 2.3,
+        "surface_trim_cutoff": 3.0,
+        "score_mode": NORMAL_GAP_FIELD_SCORE,
+        "fit_order": MAX_SWEEP_ORDER,
+    }
+    return [
+        ZernikeSpec(**common, order=4),
+        ZernikeSpec(**common, order=6),
+        ZernikeSpec(**common, order=8),
+    ]
+
+
+def contact_surface_normal_gap_specs() -> list[ZernikeSpec]:
+    variants = [
+        {
+            "grid_size": 32,
+            "surface_density": 3.0,
+        },
+        {
+            "grid_size": 24,
+            "surface_density": 1.5,
+        },
+    ]
+    out: list[ZernikeSpec] = []
+    for variant in variants:
+        common = {
+            "representation": SURFACE_NORMAL_GAP,
+            "grid_size": variant["grid_size"],
+            "sigma": 1.5,
+            "surface_density": variant["surface_density"],
+            "surface_probe_radius": 2.3,
+            "surface_trim_cutoff": 3.0,
+            "score_mode": NORMAL_GAP_CONTACT_SCORE,
+            "fit_order": MAX_SWEEP_ORDER,
+            "normal_gap_contact_scale": 500.0,
+        }
+        out.extend(
+            [
+                ZernikeSpec(**common, order=4),
+                ZernikeSpec(**common, order=6),
+            ]
+        )
+    return out
+
+
 def build_cosine_diagnostic_candidates() -> list[ZernikeSpec]:
     return [
         _atom_cosine_baseline_spec(),
@@ -644,6 +696,8 @@ def build_full_candidates() -> list[ZernikeSpec]:
     candidates.append(_tuned_atom_gap_overlap_spec())
     candidates.extend(tuned_atom_gap_penalty_specs())
     candidates.extend(tuned_surface_normal_gap_specs())
+    candidates.extend(fast_surface_normal_gap_specs())
+    candidates.extend(contact_surface_normal_gap_specs())
     for grid_size in (24, 32):
         for sigma in (2.0, 3.0):
             _append_gap_candidates(candidates, representation=ATOM_GAUSSIAN, grid_size=grid_size, sigma=sigma)
@@ -938,8 +992,9 @@ def human_af3_hard_slice(rows: list[dict], per_class: int = DIAGNOSTIC_HARD_PER_
 
 def af3_mixed_diagnostic_sample(rows: list[dict], sample_size: int = DIAGNOSTIC_AF3_SAMPLE_SIZE) -> list[dict]:
     af3_rows = [row for row in rows if row["backend"] == "af3"]
+    slice_name = f"af3_mixed_{sample_size}"
     if sample_size <= 0 or len(af3_rows) <= sample_size:
-        return [_copy_for_diagnostic_slice(row, "af3_mixed_200") for row in af3_rows]
+        return [_copy_for_diagnostic_slice(row, slice_name) for row in af3_rows]
 
     positives = [row for row in af3_rows if row["label"] == "positive"]
     negatives = [row for row in af3_rows if row["label"] == "negative"]
@@ -971,11 +1026,19 @@ def af3_mixed_diagnostic_sample(rows: list[dict], sample_size: int = DIAGNOSTIC_
         ]
         selected.extend(remainder[: sample_size - len(selected)])
 
-    return [_copy_for_diagnostic_slice(row, "af3_mixed_200") for row in selected[:sample_size]]
+    return [_copy_for_diagnostic_slice(row, slice_name) for row in selected[:sample_size]]
 
 
-def diagnostic_benchmark_rows(rows: list[dict]) -> list[dict]:
-    return human_af3_hard_slice(rows) + af3_mixed_diagnostic_sample(rows)
+def diagnostic_benchmark_rows(
+    rows: list[dict],
+    *,
+    hard_per_class: int = DIAGNOSTIC_HARD_PER_CLASS,
+    af3_sample_size: int = DIAGNOSTIC_AF3_SAMPLE_SIZE,
+) -> list[dict]:
+    return human_af3_hard_slice(rows, per_class=hard_per_class) + af3_mixed_diagnostic_sample(
+        rows,
+        sample_size=af3_sample_size,
+    )
 
 
 def parser_for_model(path: str):
@@ -1050,6 +1113,7 @@ def baseline_sc_results(rows: list[dict]) -> list[dict]:
                 "normal_gap_far_scale": "",
                 "normal_gap_clash_weight": "",
                 "normal_gap_far_weight": "",
+                "normal_gap_contact_scale": "",
                 "candidate_score": safe_float(row.get("interface_sc", float("nan"))),
                 "candidate_status": "baseline",
             }
@@ -1058,7 +1122,13 @@ def baseline_sc_results(rows: list[dict]) -> list[dict]:
     return out
 
 
-def _candidate_result_row(row: dict, spec: ZernikeSpec, score: float, status: str) -> dict:
+def _candidate_result_row(
+    row: dict,
+    spec: ZernikeSpec,
+    score: float,
+    status: str,
+    diagnostics: dict[str, float] | None = None,
+) -> dict:
     out_row = candidate_row_metadata(
         row,
         candidate_id=spec.candidate_id(),
@@ -1101,10 +1171,15 @@ def _candidate_result_row(row: dict, spec: ZernikeSpec, score: float, status: st
             "normal_gap_far_weight": spec.normal_gap_far_weight
             if spec.score_mode in NORMAL_GAP_SCORE_MODES
             else "",
+            "normal_gap_contact_scale": spec.normal_gap_contact_scale
+            if spec.score_mode == NORMAL_GAP_CONTACT_SCORE
+            else "",
             "candidate_score": score,
             "candidate_status": status,
         }
     )
+    if diagnostics:
+        out_row.update(diagnostics)
     return out_row
 
 
@@ -1161,18 +1236,28 @@ def _evaluate_row_candidate_groups(
         try:
             if anchor.representation in NORMAL_GAP_REPRESENTATIONS or anchor.score_mode in NORMAL_GAP_SCORE_MODES:
                 coeffs = normal_gap_cache.get_or_build(row, anchor)
-                scores = {
-                    spec.candidate_id(): zernike_score_from_normal_gap_coefficients(
+                diagnostics_by_candidate = {
+                    spec.candidate_id(): zernike_normal_gap_score_diagnostics(
                         coeffs,
                         order=spec.order,
                         fit_order=fit_order_value(spec),
                         normal_gap_clash_weight=spec.normal_gap_clash_weight,
                         normal_gap_far_weight=spec.normal_gap_far_weight,
+                        normal_gap_contact_scale=spec.normal_gap_contact_scale,
                     )
+                    for spec in spec_group
+                }
+                scores = {
+                    spec.candidate_id(): diagnostics_by_candidate[spec.candidate_id()][
+                        "normal_gap_contact_score_from_fields"
+                        if spec.score_mode == NORMAL_GAP_CONTACT_SCORE
+                        else "normal_gap_score_from_fields"
+                    ]
                     for spec in spec_group
                 }
             else:
                 coeff1, coeff2, joint_coeff, gap_coeff, grid_overlap = coeff_cache.get_or_build(row, anchor)
+                diagnostics_by_candidate = {}
                 scores = {
                     spec.candidate_id(): _score_spec_from_coefficients(
                         spec,
@@ -1186,8 +1271,15 @@ def _evaluate_row_candidate_groups(
                 }
 
             for spec in spec_group:
-                rows_by_candidate[spec.candidate_id()].append(
-                    _candidate_result_row(row, spec, scores[spec.candidate_id()], "success")
+                candidate_id = spec.candidate_id()
+                rows_by_candidate[candidate_id].append(
+                    _candidate_result_row(
+                        row,
+                        spec,
+                        scores[candidate_id],
+                        "success",
+                        diagnostics_by_candidate.get(candidate_id),
+                    )
                 )
                 status_counts["success"] += 1
         except Exception as exc:
@@ -1556,6 +1648,7 @@ def zernike_shape_from_spec(residues1, residues2, spec: ZernikeSpec) -> float:
         normal_gap_far_scale=spec.normal_gap_far_scale,
         normal_gap_clash_weight=spec.normal_gap_clash_weight,
         normal_gap_far_weight=spec.normal_gap_far_weight,
+        normal_gap_contact_scale=spec.normal_gap_contact_scale,
     )
 
 
@@ -1832,6 +1925,9 @@ def summarize_candidates(
                 "order_decay_n0": spec.order_decay_n0
                 if spec.score_mode in {GAUSSIAN_WEIGHTED_SCORE, GAP_ZERNIKE_WEIGHTED_SCORE}
                 else "",
+                "normal_gap_contact_scale": spec.normal_gap_contact_scale
+                if spec.score_mode == NORMAL_GAP_CONTACT_SCORE
+                else "",
                 "af3_failure_rescue_rate": rescue_rate,
                 "delta_rescue_vs_sc": rescue_rate - baseline_rescue_rate
                 if math.isfinite(rescue_rate)
@@ -2032,6 +2128,18 @@ def main() -> int:
         help="Diagnostic mode uses fixed AF3 slices; smoke mode uses a small mixed sample.",
     )
     parser.add_argument("--smoke-sample-size", type=int, default=SMOKE_SAMPLE_SIZE)
+    parser.add_argument(
+        "--diagnostic-af3-sample-size",
+        type=int,
+        default=DIAGNOSTIC_AF3_SAMPLE_SIZE,
+        help="AF3 mixed sample size for diagnostic mode.",
+    )
+    parser.add_argument(
+        "--diagnostic-hard-per-class",
+        type=int,
+        default=DIAGNOSTIC_HARD_PER_CLASS,
+        help="Lowest-SC human AF3 positives and highest-SC human AF3 negatives per class for diagnostic mode.",
+    )
     parser.add_argument("--runtime-sample-size", type=int, default=RUNTIME_SAMPLE_SIZE)
     parser.add_argument(
         "--robustness-sample-size",
@@ -2112,7 +2220,11 @@ def main() -> int:
     if args.mode == "smoke":
         benchmark_rows = balanced_sample(all_rows, args.smoke_sample_size)
     elif args.mode == "diagnostic":
-        benchmark_rows = diagnostic_benchmark_rows(all_rows)
+        benchmark_rows = diagnostic_benchmark_rows(
+            all_rows,
+            hard_per_class=args.diagnostic_hard_per_class,
+            af3_sample_size=args.diagnostic_af3_sample_size,
+        )
     else:
         benchmark_rows = all_rows
 
@@ -2177,6 +2289,8 @@ def main() -> int:
             "rows_scored": len(benchmark_rows),
             "runtime_rows": len(runtime_rows),
             "robustness_rows": len(robustness_rows_sample),
+            "diagnostic_af3_sample_size": args.diagnostic_af3_sample_size,
+            "diagnostic_hard_per_class": args.diagnostic_hard_per_class,
             "candidate_count": len(candidates),
             "reported_score_count": len(candidates) + 1,
             "survivors_from": args.survivors_from,

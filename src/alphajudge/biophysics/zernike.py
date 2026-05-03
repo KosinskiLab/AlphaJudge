@@ -33,9 +33,11 @@ GAP_ZERNIKE_WEIGHTED_SCORE = "gap_zernike_weighted"
 GAP_ZERNIKE_NONUNIFORM_SCORE = "gap_zernike_nonuniform"
 GAP_ZERNIKE_BANDPASS_SCORE = "gap_zernike_bandpass"
 NORMAL_GAP_FIELD_SCORE = "normal_gap_field"
+NORMAL_GAP_CONTACT_SCORE = "normal_gap_contact_field"
 
 NORMAL_GAP_SCORE_MODES = {
     NORMAL_GAP_FIELD_SCORE,
+    NORMAL_GAP_CONTACT_SCORE,
 }
 
 GAP_SCORE_MODES = {
@@ -101,6 +103,7 @@ DEFAULT_NORMAL_GAP_GOOD_SCALE = 1.0
 DEFAULT_NORMAL_GAP_FAR_SCALE = 2.5
 DEFAULT_NORMAL_GAP_CLASH_WEIGHT = 0.75
 DEFAULT_NORMAL_GAP_FAR_WEIGHT = 0.5
+DEFAULT_NORMAL_GAP_CONTACT_SCALE = 500.0
 
 _SHORT_SCORE_TAGS = {
     HARD_CUTOFF_SCORE: "hard",
@@ -112,6 +115,7 @@ _SHORT_SCORE_TAGS = {
     GAP_ZERNIKE_NONUNIFORM_SCORE: "gapnonuniform",
     GAP_ZERNIKE_BANDPASS_SCORE: "gapband",
     NORMAL_GAP_FIELD_SCORE: "normalgap",
+    NORMAL_GAP_CONTACT_SCORE: "normalcontact",
 }
 
 
@@ -161,6 +165,7 @@ class ZernikeSpec:
     normal_gap_far_scale: float = DEFAULT_NORMAL_GAP_FAR_SCALE
     normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT
     normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT
+    normal_gap_contact_scale: float = DEFAULT_NORMAL_GAP_CONTACT_SCALE
 
     def candidate_id(self) -> str:
         parts = [self.representation, f"g{self.grid_size}", f"o{self.order}"]
@@ -195,6 +200,11 @@ class ZernikeSpec:
                 parts.append(f"cw{_tag_float(self.normal_gap_clash_weight)}")
             if not math.isclose(float(self.normal_gap_far_weight), DEFAULT_NORMAL_GAP_FAR_WEIGHT):
                 parts.append(f"fw{_tag_float(self.normal_gap_far_weight)}")
+            if self.score_mode == NORMAL_GAP_CONTACT_SCORE and not math.isclose(
+                float(self.normal_gap_contact_scale),
+                DEFAULT_NORMAL_GAP_CONTACT_SCALE,
+            ):
+                parts.append(f"cs{_tag_float(self.normal_gap_contact_scale)}")
         fit_to = fit_order_value(self)
         if fit_to != int(self.order):
             parts.append(f"f{fit_to}")
@@ -903,7 +913,7 @@ def zernike_normal_gap_coefficient_bundle(
     )
 
 
-def _normal_gap_field_signal(
+def _normal_gap_field_ratio(
     coeff: np.ndarray,
     mass: float,
     *,
@@ -913,10 +923,71 @@ def _normal_gap_field_signal(
     if max(float(mass), 0.0) <= 0.0:
         return 0.0
     if int(order) >= 2:
-        structured_ratio = zernike_band_energy_ratio(coeff, 2, int(order), fit_order)
-    else:
-        structured_ratio = zernike_low_order_energy_ratio(coeff, int(order), fit_order)
-    return max(float(mass), 0.0) * structured_ratio
+        return zernike_band_energy_ratio(coeff, 2, int(order), fit_order)
+    return zernike_low_order_energy_ratio(coeff, int(order), fit_order)
+
+
+def zernike_normal_gap_score_diagnostics(
+    coeffs: NormalGapCoefficientBundle,
+    *,
+    order: int,
+    fit_order: int | None = None,
+    normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT,
+    normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT,
+    normal_gap_contact_scale: float = DEFAULT_NORMAL_GAP_CONTACT_SCALE,
+) -> dict[str, float]:
+    """Return field-level terms used by the normal-aware gap score."""
+    requested_fit = fit_order_value(int(order), fit_order if fit_order is not None else coeffs.fit_order)
+    fit_to = min(requested_fit, int(coeffs.fit_order))
+    score_order = min(int(order), fit_to)
+    good_ratio = _normal_gap_field_ratio(
+        coeffs.good_coeff,
+        coeffs.good_mass,
+        order=score_order,
+        fit_order=fit_to,
+    )
+    clash_ratio = _normal_gap_field_ratio(
+        coeffs.clash_coeff,
+        coeffs.clash_mass,
+        order=score_order,
+        fit_order=fit_to,
+    )
+    far_ratio = _normal_gap_field_ratio(
+        coeffs.far_coeff,
+        coeffs.far_mass,
+        order=score_order,
+        fit_order=fit_to,
+    )
+    good_mass = max(float(coeffs.good_mass), 0.0)
+    clash_mass = max(float(coeffs.clash_mass), 0.0)
+    far_mass = max(float(coeffs.far_mass), 0.0)
+    good_signal = good_mass * good_ratio
+    clash_signal = clash_mass * clash_ratio
+    far_signal = far_mass * far_ratio
+    weighted_clash_signal = max(float(normal_gap_clash_weight), 0.0) * clash_signal
+    weighted_far_signal = max(float(normal_gap_far_weight), 0.0) * far_signal
+    denominator = good_signal + weighted_clash_signal + weighted_far_signal
+    quality_score = good_signal / denominator if denominator > 0.0 else 0.0
+    contact_scale = max(float(normal_gap_contact_scale), 1e-6)
+    contact_amount = 1.0 - math.exp(-(good_signal / contact_scale)) if good_signal > 0.0 else 0.0
+    contact_score = quality_score * contact_amount
+    return {
+        "normal_gap_good_mass": good_mass,
+        "normal_gap_clash_mass": clash_mass,
+        "normal_gap_far_mass": far_mass,
+        "normal_gap_good_structured_ratio": good_ratio,
+        "normal_gap_clash_structured_ratio": clash_ratio,
+        "normal_gap_far_structured_ratio": far_ratio,
+        "normal_gap_good_signal": good_signal,
+        "normal_gap_clash_signal": clash_signal,
+        "normal_gap_far_signal": far_signal,
+        "normal_gap_weighted_clash_signal": weighted_clash_signal,
+        "normal_gap_weighted_far_signal": weighted_far_signal,
+        "normal_gap_signal_denominator": denominator,
+        "normal_gap_contact_amount": float(np.clip(contact_amount, 0.0, 1.0)),
+        "normal_gap_score_from_fields": float(np.clip(quality_score, 0.0, 1.0)),
+        "normal_gap_contact_score_from_fields": float(np.clip(contact_score, 0.0, 1.0)),
+    }
 
 
 def zernike_score_from_normal_gap_coefficients(
@@ -926,39 +997,21 @@ def zernike_score_from_normal_gap_coefficients(
     fit_order: int | None = None,
     normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT,
     normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT,
+    normal_gap_contact_scale: float = DEFAULT_NORMAL_GAP_CONTACT_SCALE,
+    score_mode: str = NORMAL_GAP_FIELD_SCORE,
 ) -> float:
     """Score good-contact signal against Zernike-smoothed clash and far-gap fields."""
-    requested_fit = fit_order_value(int(order), fit_order if fit_order is not None else coeffs.fit_order)
-    fit_to = min(requested_fit, int(coeffs.fit_order))
-    score_order = min(int(order), fit_to)
-    good_signal = _normal_gap_field_signal(
-        coeffs.good_coeff,
-        coeffs.good_mass,
-        order=score_order,
-        fit_order=fit_to,
+    diagnostics = zernike_normal_gap_score_diagnostics(
+        coeffs,
+        order=order,
+        fit_order=fit_order,
+        normal_gap_clash_weight=normal_gap_clash_weight,
+        normal_gap_far_weight=normal_gap_far_weight,
+        normal_gap_contact_scale=normal_gap_contact_scale,
     )
-    if good_signal <= 0.0:
-        return 0.0
-    clash_signal = _normal_gap_field_signal(
-        coeffs.clash_coeff,
-        coeffs.clash_mass,
-        order=score_order,
-        fit_order=fit_to,
-    )
-    far_signal = _normal_gap_field_signal(
-        coeffs.far_coeff,
-        coeffs.far_mass,
-        order=score_order,
-        fit_order=fit_to,
-    )
-    denom = (
-        good_signal
-        + max(float(normal_gap_clash_weight), 0.0) * clash_signal
-        + max(float(normal_gap_far_weight), 0.0) * far_signal
-    )
-    if denom <= 0.0:
-        return 0.0
-    return float(np.clip(good_signal / denom, 0.0, 1.0))
+    if score_mode == NORMAL_GAP_CONTACT_SCORE:
+        return float(diagnostics["normal_gap_contact_score_from_fields"])
+    return float(diagnostics["normal_gap_score_from_fields"])
 
 
 def zernike_descriptors_from_grids(
@@ -1086,6 +1139,7 @@ def zernike_shape_complementarity(
     normal_gap_far_scale: float = DEFAULT_NORMAL_GAP_FAR_SCALE,
     normal_gap_clash_weight: float = DEFAULT_NORMAL_GAP_CLASH_WEIGHT,
     normal_gap_far_weight: float = DEFAULT_NORMAL_GAP_FAR_WEIGHT,
+    normal_gap_contact_scale: float = DEFAULT_NORMAL_GAP_CONTACT_SCALE,
 ) -> float:
     """
     Compare low-pass 3D Zernike interface descriptors.
@@ -1113,6 +1167,8 @@ def zernike_shape_complementarity(
                 fit_order=fit_order,
                 normal_gap_clash_weight=normal_gap_clash_weight,
                 normal_gap_far_weight=normal_gap_far_weight,
+                normal_gap_contact_scale=normal_gap_contact_scale,
+                score_mode=score_mode,
             )
 
         grid1, grid2 = zernike_grids(
@@ -1147,6 +1203,7 @@ __all__ = [
     "DEFAULT_ORDER",
     "DEFAULT_ORDER_DECAY_N0",
     "DEFAULT_NORMAL_GAP_CLASH_WEIGHT",
+    "DEFAULT_NORMAL_GAP_CONTACT_SCALE",
     "DEFAULT_NORMAL_GAP_FAR_SCALE",
     "DEFAULT_NORMAL_GAP_FAR_WEIGHT",
     "DEFAULT_NORMAL_GAP_GOOD_SCALE",
@@ -1172,6 +1229,7 @@ __all__ = [
     "JOINT_RESIDUE_BEAD_GAUSSIAN",
     "JOINT_SURFACE_GAUSSIAN",
     "NORMAL_GAP_FIELD_SCORE",
+    "NORMAL_GAP_CONTACT_SCORE",
     "NORMAL_GAP_REPRESENTATIONS",
     "NORMAL_GAP_SCORE_MODES",
     "PER_SIDE_REPRESENTATIONS",
@@ -1202,6 +1260,7 @@ __all__ = [
     "zernike_joint_grid",
     "zernike_normal_gap_coefficient_bundle",
     "zernike_normal_gap_field_bundle",
+    "zernike_normal_gap_score_diagnostics",
     "zernike_order_weights",
     "zernike_point_clouds",
     "zernike_score_from_coefficients",
