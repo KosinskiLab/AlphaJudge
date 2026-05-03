@@ -35,6 +35,10 @@ GAP_ZERNIKE_BANDPASS_SCORE = "gap_zernike_bandpass"
 GAP_ZERNIKE_EXCESS_BANDPASS_SCORE = "gap_zernike_excess_bandpass"
 GAP_ZERNIKE_SOFT_BANDPASS_SCORE = "gap_zernike_soft_bandpass"
 GAP_ZERNIKE_EXCESS_CONTACT_SCORE = "gap_zernike_excess_contact_bandpass"
+SC_GATED_OVERLAP_SCORE = "sc_gated_overlap_rescue"
+SC_GATED_GAP_NONUNIFORM_SCORE = "sc_gated_gap_nonuniform_rescue"
+SC_GATED_GAP_BANDPASS_SCORE = "sc_gated_gap_bandpass_rescue"
+SC_GATED_GAP_SOFT_SCORE = "sc_gated_gap_soft_rescue"
 NORMAL_GAP_FIELD_SCORE = "normal_gap_field"
 NORMAL_GAP_CONTACT_SCORE = "normal_gap_contact_field"
 
@@ -61,6 +65,12 @@ GRID_SCORE_MODES = {
     GAP_ZERNIKE_EXCESS_BANDPASS_SCORE,
     GAP_ZERNIKE_SOFT_BANDPASS_SCORE,
     GAP_ZERNIKE_EXCESS_CONTACT_SCORE,
+}
+SC_GATED_SCORE_MODES = {
+    SC_GATED_OVERLAP_SCORE,
+    SC_GATED_GAP_NONUNIFORM_SCORE,
+    SC_GATED_GAP_BANDPASS_SCORE,
+    SC_GATED_GAP_SOFT_SCORE,
 }
 
 JOINT_REPRESENTATIONS = {
@@ -115,6 +125,9 @@ DEFAULT_NORMAL_GAP_FAR_WEIGHT = 0.5
 DEFAULT_NORMAL_GAP_CONTACT_SCALE = 500.0
 DEFAULT_GAP_BAND_SOFT_WIDTH = 1.0
 DEFAULT_GAP_CONTACT_SCALE = 0.05
+DEFAULT_SC_RESCUE_WEIGHT = 0.2
+DEFAULT_SC_RESCUE_SCALE = 0.2
+DEFAULT_SC_RESCUE_FLOOR = 0.0
 
 _SHORT_SCORE_TAGS = {
     HARD_CUTOFF_SCORE: "hard",
@@ -128,6 +141,10 @@ _SHORT_SCORE_TAGS = {
     GAP_ZERNIKE_EXCESS_BANDPASS_SCORE: "gapexcess",
     GAP_ZERNIKE_SOFT_BANDPASS_SCORE: "gapsoft",
     GAP_ZERNIKE_EXCESS_CONTACT_SCORE: "gapcontact",
+    SC_GATED_OVERLAP_SCORE: "scoverlap",
+    SC_GATED_GAP_NONUNIFORM_SCORE: "scnonuniform",
+    SC_GATED_GAP_BANDPASS_SCORE: "scgapband",
+    SC_GATED_GAP_SOFT_SCORE: "scgapsoft",
     NORMAL_GAP_FIELD_SCORE: "normalgap",
     NORMAL_GAP_CONTACT_SCORE: "normalcontact",
 }
@@ -182,6 +199,9 @@ class ZernikeSpec:
     normal_gap_contact_scale: float = DEFAULT_NORMAL_GAP_CONTACT_SCALE
     gap_band_soft_width: float = DEFAULT_GAP_BAND_SOFT_WIDTH
     gap_contact_scale: float = DEFAULT_GAP_CONTACT_SCALE
+    sc_rescue_weight: float = DEFAULT_SC_RESCUE_WEIGHT
+    sc_rescue_scale: float = DEFAULT_SC_RESCUE_SCALE
+    sc_rescue_floor: float = DEFAULT_SC_RESCUE_FLOOR
 
     def candidate_id(self) -> str:
         parts = [self.representation, f"g{self.grid_size}", f"o{self.order}"]
@@ -217,6 +237,13 @@ class ZernikeSpec:
             DEFAULT_GAP_CONTACT_SCALE,
         ):
             parts.append(f"cs{_tag_float(self.gap_contact_scale)}")
+        if self.score_mode in SC_GATED_SCORE_MODES:
+            if not math.isclose(float(self.sc_rescue_weight), DEFAULT_SC_RESCUE_WEIGHT):
+                parts.append(f"rw{_tag_float(self.sc_rescue_weight)}")
+            if not math.isclose(float(self.sc_rescue_scale), DEFAULT_SC_RESCUE_SCALE):
+                parts.append(f"rs{_tag_float(self.sc_rescue_scale)}")
+            if not math.isclose(float(self.sc_rescue_floor), DEFAULT_SC_RESCUE_FLOOR):
+                parts.append(f"rf{_tag_float(self.sc_rescue_floor)}")
         if self.score_mode in NORMAL_GAP_SCORE_MODES:
             if not math.isclose(float(self.normal_gap_good_scale), DEFAULT_NORMAL_GAP_GOOD_SCALE):
                 parts.append(f"gs{_tag_float(self.normal_gap_good_scale)}")
@@ -264,6 +291,8 @@ def zernike_source_representation(representation: str) -> str:
 def zernike_candidate_family(representation: str, score_mode: str | None = None) -> str:
     if representation in NORMAL_GAP_REPRESENTATIONS or score_mode in NORMAL_GAP_SCORE_MODES:
         return "normal_gap"
+    if score_mode in SC_GATED_SCORE_MODES:
+        return "sc_gated_rescue"
     if score_mode in GRID_SCORE_MODES:
         return "grid_gap"
     return "joint_volume" if representation in JOINT_REPRESENTATIONS else "per_side"
@@ -1410,6 +1439,9 @@ __all__ = [
     "DEFAULT_PADDING",
     "DEFAULT_PROXIMITY_LENGTH_SCALE",
     "DEFAULT_REPRESENTATION",
+    "DEFAULT_SC_RESCUE_FLOOR",
+    "DEFAULT_SC_RESCUE_SCALE",
+    "DEFAULT_SC_RESCUE_WEIGHT",
     "DEFAULT_SCORE_MODE",
     "DEFAULT_SIGMA",
     "DEFAULT_SURFACE_DENSITY",
@@ -1437,6 +1469,11 @@ __all__ = [
     "NORMAL_GAP_SCORE_MODES",
     "PER_SIDE_REPRESENTATIONS",
     "RESIDUE_BEAD_GAUSSIAN",
+    "SC_GATED_GAP_BANDPASS_SCORE",
+    "SC_GATED_GAP_NONUNIFORM_SCORE",
+    "SC_GATED_GAP_SOFT_SCORE",
+    "SC_GATED_OVERLAP_SCORE",
+    "SC_GATED_SCORE_MODES",
     "SURFACE_BINARY",
     "SURFACE_GAUSSIAN",
     "SURFACE_NORMAL_GAP",

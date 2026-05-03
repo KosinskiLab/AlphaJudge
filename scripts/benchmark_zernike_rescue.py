@@ -47,6 +47,11 @@ from alphajudge.biophysics.zernike import (
     NORMAL_GAP_REPRESENTATIONS,
     NORMAL_GAP_SCORE_MODES,
     RESIDUE_BEAD_GAUSSIAN,
+    SC_GATED_GAP_BANDPASS_SCORE,
+    SC_GATED_GAP_NONUNIFORM_SCORE,
+    SC_GATED_GAP_SOFT_SCORE,
+    SC_GATED_OVERLAP_SCORE,
+    SC_GATED_SCORE_MODES,
     SURFACE_GAUSSIAN,
     SURFACE_NORMAL_GAP,
     SURFACE_REPRESENTATIONS,
@@ -130,6 +135,35 @@ def safe_float(value):
         return float(value)
     except Exception:
         return float("nan")
+
+
+def sc_gated_rescue_score(
+    interface_sc: float,
+    zernike_score: float,
+    *,
+    rescue_weight: float,
+    rescue_scale: float,
+    rescue_floor: float,
+) -> tuple[float, dict[str, float]]:
+    sc = safe_float(interface_sc)
+    if not math.isfinite(sc):
+        sc = 0.0
+    z_score = safe_float(zernike_score)
+    if not math.isfinite(z_score):
+        z_score = 0.0
+    scale = max(float(rescue_scale), 1e-6)
+    gate = math.exp(-((max(sc, 0.0) / scale) ** 2))
+    excess = max(0.0, z_score - max(float(rescue_floor), 0.0))
+    increment = max(float(rescue_weight), 0.0) * gate * excess
+    score = sc + increment
+    return score, {
+        "sc_rescue_baseline_sc": sc,
+        "sc_rescue_zernike_score": z_score,
+        "sc_rescue_gate": gate,
+        "sc_rescue_excess_zernike": excess,
+        "sc_rescue_increment": increment,
+        "sc_rescue_final_score": score,
+    }
 
 
 def write_csv(path: Path, rows: list[dict]) -> None:
@@ -269,6 +303,18 @@ def _normal_gap_coeff_payload(row: dict, spec: ZernikeSpec) -> dict:
         "coefficient_builder": "normal_gap_zernike_coeff_bundle_v1",
     }
     return payload
+
+
+def sc_gated_base_score_mode(score_mode: str) -> str:
+    if score_mode == SC_GATED_OVERLAP_SCORE:
+        return SHARED_GRID_OVERLAP_SCORE
+    if score_mode == SC_GATED_GAP_NONUNIFORM_SCORE:
+        return GAP_ZERNIKE_NONUNIFORM_SCORE
+    if score_mode == SC_GATED_GAP_BANDPASS_SCORE:
+        return GAP_ZERNIKE_BANDPASS_SCORE
+    if score_mode == SC_GATED_GAP_SOFT_SCORE:
+        return GAP_ZERNIKE_SOFT_BANDPASS_SCORE
+    raise ValueError(f"Unknown SC-gated rescue mode {score_mode!r}")
 
 
 class PointCloudCache:
@@ -642,6 +688,76 @@ def calibrated_atom_gap_specs() -> list[ZernikeSpec]:
     return out
 
 
+def sc_gated_atom_gap_rescue_specs() -> list[ZernikeSpec]:
+    """Small benchmark-only sweep where atom gap rescues low-SC cases."""
+    variants = [
+        {
+            "score_mode": SC_GATED_OVERLAP_SCORE,
+            "grid_size": 32,
+            "order": 0,
+            "sigma": 1.5,
+            "weights": (0.1, 0.2),
+            "scales": (0.16, 0.20),
+            "floors": (0.0, 0.01),
+        },
+        {
+            "score_mode": SC_GATED_GAP_NONUNIFORM_SCORE,
+            "grid_size": 32,
+            "order": 0,
+            "sigma": 1.5,
+            "weights": (0.1, 0.2),
+            "scales": (0.16, 0.20),
+            "floors": (0.0, 0.01),
+        },
+        {
+            "score_mode": SC_GATED_GAP_SOFT_SCORE,
+            "grid_size": 24,
+            "order": 6,
+            "sigma": 1.5,
+            "gap_band_soft_width": 2.0,
+            "weights": (0.1, 0.2),
+            "scales": (0.16, 0.20),
+            "floors": (0.0, 0.01),
+        },
+    ]
+    out: list[ZernikeSpec] = []
+    for variant in variants:
+        for weight in variant["weights"]:
+            for scale in variant["scales"]:
+                for floor in variant["floors"]:
+                    out.append(
+                        ZernikeSpec(
+                            representation=ATOM_GAUSSIAN,
+                            grid_size=variant["grid_size"],
+                            order=variant["order"],
+                            sigma=variant["sigma"],
+                            score_mode=variant["score_mode"],
+                            fit_order=MAX_SWEEP_ORDER,
+                            gap_band_soft_width=float(variant.get("gap_band_soft_width", 1.0)),
+                            sc_rescue_weight=weight,
+                            sc_rescue_scale=scale,
+                            sc_rescue_floor=floor,
+                        )
+                    )
+    # Offline full-benchmark calibration of the first sweep found that a wider
+    # SC gate preserves global ranking while recovering slightly more AF3
+    # low-SC positives. Keep this explicit instead of exploding the default grid.
+    out.append(
+        ZernikeSpec(
+            representation=ATOM_GAUSSIAN,
+            grid_size=32,
+            order=0,
+            sigma=1.5,
+            score_mode=SC_GATED_OVERLAP_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+            sc_rescue_weight=0.2,
+            sc_rescue_scale=0.4,
+            sc_rescue_floor=0.01,
+        )
+    )
+    return out
+
+
 def tuned_surface_normal_gap_specs() -> list[ZernikeSpec]:
     common = {
         "representation": SURFACE_NORMAL_GAP,
@@ -804,6 +920,7 @@ def build_full_candidates() -> list[ZernikeSpec]:
     candidates.extend(tuned_atom_gap_penalty_specs())
     candidates.extend(atom_gap_order_curve_specs())
     candidates.extend(calibrated_atom_gap_specs())
+    candidates.extend(sc_gated_atom_gap_rescue_specs())
     candidates.extend(tuned_surface_normal_gap_specs())
     candidates.extend(fast_surface_normal_gap_specs())
     candidates.extend(contact_surface_normal_gap_specs())
@@ -834,6 +951,16 @@ def build_smoke_candidates() -> list[ZernikeSpec]:
         _atom_cosine_baseline_spec(),
         _tuned_atom_gap_overlap_spec(),
         *tuned_atom_gap_penalty_specs(),
+        ZernikeSpec(
+            representation=ATOM_GAUSSIAN,
+            grid_size=32,
+            order=0,
+            sigma=1.5,
+            score_mode=SC_GATED_OVERLAP_SCORE,
+            fit_order=MAX_SWEEP_ORDER,
+            sc_rescue_weight=0.2,
+            sc_rescue_scale=0.2,
+        ),
         ZernikeSpec(
             representation=ATOM_GAUSSIAN,
             grid_size=32,
@@ -1246,6 +1373,9 @@ def baseline_sc_results(rows: list[dict]) -> list[dict]:
                 "order_decay_n0": "",
                 "gap_band_soft_width": "",
                 "gap_contact_scale": "",
+                "sc_rescue_weight": "",
+                "sc_rescue_scale": "",
+                "sc_rescue_floor": "",
                 "normal_gap_good_scale": "",
                 "normal_gap_far_scale": "",
                 "normal_gap_clash_weight": "",
@@ -1302,6 +1432,15 @@ def _candidate_result_row(
             "gap_contact_scale": spec.gap_contact_scale
             if spec.score_mode == GAP_ZERNIKE_EXCESS_CONTACT_SCORE
             else "",
+            "sc_rescue_weight": spec.sc_rescue_weight
+            if spec.score_mode in SC_GATED_SCORE_MODES
+            else "",
+            "sc_rescue_scale": spec.sc_rescue_scale
+            if spec.score_mode in SC_GATED_SCORE_MODES
+            else "",
+            "sc_rescue_floor": spec.sc_rescue_floor
+            if spec.score_mode in SC_GATED_SCORE_MODES
+            else "",
             "normal_gap_good_scale": spec.normal_gap_good_scale
             if spec.score_mode in NORMAL_GAP_SCORE_MODES
             else "",
@@ -1336,7 +1475,30 @@ def _score_spec_from_coefficients(
     side1_effective_volume: float,
     side2_effective_volume: float,
     voxel_count: int,
+    interface_sc: float | None = None,
 ) -> float:
+    if spec.score_mode in SC_GATED_SCORE_MODES:
+        z_score = zernike_score_from_gap_coefficients(
+            gap_coeff,
+            grid_overlap,
+            order=spec.order,
+            score_mode=sc_gated_base_score_mode(spec.score_mode),
+            fit_order=fit_order_value(spec),
+            order_decay_n0=spec.order_decay_n0,
+            side1_effective_volume=side1_effective_volume,
+            side2_effective_volume=side2_effective_volume,
+            voxel_count=voxel_count,
+            gap_band_soft_width=spec.gap_band_soft_width,
+            gap_contact_scale=spec.gap_contact_scale,
+        )
+        score, _ = sc_gated_rescue_score(
+            safe_float(interface_sc),
+            z_score,
+            rescue_weight=spec.sc_rescue_weight,
+            rescue_scale=spec.sc_rescue_scale,
+            rescue_floor=spec.sc_rescue_floor,
+        )
+        return score
     if spec.score_mode in GRID_SCORE_MODES:
         return zernike_score_from_gap_coefficients(
             gap_coeff,
@@ -1417,23 +1579,48 @@ def _evaluate_row_candidate_groups(
                     side2_effective_volume,
                     voxel_count,
                 ) = coeff_cache.get_or_build(row, anchor)
-                diagnostics_by_candidate = {
-                    spec.candidate_id(): zernike_gap_score_diagnostics(
-                        gap_coeff,
-                        grid_overlap,
-                        order=spec.order,
-                        score_mode=spec.score_mode,
-                        fit_order=fit_order_value(spec),
-                        order_decay_n0=spec.order_decay_n0,
-                        side1_effective_volume=side1_effective_volume,
-                        side2_effective_volume=side2_effective_volume,
-                        voxel_count=voxel_count,
-                        gap_band_soft_width=spec.gap_band_soft_width,
-                        gap_contact_scale=spec.gap_contact_scale,
-                    )
-                    for spec in spec_group
-                    if spec.score_mode in GRID_SCORE_MODES
-                }
+                diagnostics_by_candidate = {}
+                for spec in spec_group:
+                    if spec.score_mode in GRID_SCORE_MODES:
+                        diagnostics_by_candidate[spec.candidate_id()] = zernike_gap_score_diagnostics(
+                            gap_coeff,
+                            grid_overlap,
+                            order=spec.order,
+                            score_mode=spec.score_mode,
+                            fit_order=fit_order_value(spec),
+                            order_decay_n0=spec.order_decay_n0,
+                            side1_effective_volume=side1_effective_volume,
+                            side2_effective_volume=side2_effective_volume,
+                            voxel_count=voxel_count,
+                            gap_band_soft_width=spec.gap_band_soft_width,
+                            gap_contact_scale=spec.gap_contact_scale,
+                        )
+                    elif spec.score_mode in SC_GATED_SCORE_MODES:
+                        base_mode = sc_gated_base_score_mode(spec.score_mode)
+                        gap_diagnostics = zernike_gap_score_diagnostics(
+                            gap_coeff,
+                            grid_overlap,
+                            order=spec.order,
+                            score_mode=base_mode,
+                            fit_order=fit_order_value(spec),
+                            order_decay_n0=spec.order_decay_n0,
+                            side1_effective_volume=side1_effective_volume,
+                            side2_effective_volume=side2_effective_volume,
+                            voxel_count=voxel_count,
+                            gap_band_soft_width=spec.gap_band_soft_width,
+                            gap_contact_scale=spec.gap_contact_scale,
+                        )
+                        _, rescue_diagnostics = sc_gated_rescue_score(
+                            safe_float(row.get("interface_sc", float("nan"))),
+                            gap_diagnostics["gap_final_score"],
+                            rescue_weight=spec.sc_rescue_weight,
+                            rescue_scale=spec.sc_rescue_scale,
+                            rescue_floor=spec.sc_rescue_floor,
+                        )
+                        diagnostics_by_candidate[spec.candidate_id()] = {
+                            **gap_diagnostics,
+                            **rescue_diagnostics,
+                        }
                 scores = {
                     spec.candidate_id(): _score_spec_from_coefficients(
                         spec,
@@ -1445,6 +1632,7 @@ def _evaluate_row_candidate_groups(
                         side1_effective_volume,
                         side2_effective_volume,
                         voxel_count,
+                        safe_float(row.get("interface_sc", float("nan"))),
                     )
                     for spec in spec_group
                 }
@@ -1807,6 +1995,11 @@ def jitter_sidechains(residues, rng: np.random.Generator, std: float):
 def zernike_shape_from_spec(residues1, residues2, spec: ZernikeSpec) -> float:
     from alphajudge.biophysics.zernike import zernike_shape_complementarity
 
+    score_mode = (
+        sc_gated_base_score_mode(spec.score_mode)
+        if spec.score_mode in SC_GATED_SCORE_MODES
+        else spec.score_mode
+    )
     return zernike_shape_complementarity(
         residues1,
         residues2,
@@ -1820,7 +2013,7 @@ def zernike_shape_from_spec(residues1, residues2, spec: ZernikeSpec) -> float:
         surface_trim_cutoff=spec.surface_trim_cutoff,
         surface_probe_radius=spec.surface_probe_radius,
         proximity_length_scale=spec.proximity_length_scale,
-        score_mode=spec.score_mode,
+        score_mode=score_mode,
         fit_order=spec.fit_order,
         order_decay_n0=spec.order_decay_n0,
         gap_band_soft_width=spec.gap_band_soft_width,
@@ -1991,6 +2184,9 @@ def summarize_candidates(
             "order_decay_n0": "",
             "gap_band_soft_width": "",
             "gap_contact_scale": "",
+            "sc_rescue_weight": "",
+            "sc_rescue_scale": "",
+            "sc_rescue_floor": "",
             "af3_failure_rescue_rate": baseline_rescue_rate,
             "delta_rescue_vs_sc": 0.0,
             "pooled_af3_auroc": baseline_af3[0],
@@ -2129,6 +2325,15 @@ def summarize_candidates(
                 else "",
                 "gap_contact_scale": spec.gap_contact_scale
                 if spec.score_mode == GAP_ZERNIKE_EXCESS_CONTACT_SCORE
+                else "",
+                "sc_rescue_weight": spec.sc_rescue_weight
+                if spec.score_mode in SC_GATED_SCORE_MODES
+                else "",
+                "sc_rescue_scale": spec.sc_rescue_scale
+                if spec.score_mode in SC_GATED_SCORE_MODES
+                else "",
+                "sc_rescue_floor": spec.sc_rescue_floor
+                if spec.score_mode in SC_GATED_SCORE_MODES
                 else "",
                 "normal_gap_contact_scale": spec.normal_gap_contact_scale
                 if spec.score_mode == NORMAL_GAP_CONTACT_SCORE

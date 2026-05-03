@@ -5,13 +5,12 @@ Last updated: 2026-05-03
 ## Working State
 
 - Branch: `zernike`
-- Latest pushed implementation commit before this update: `f228d5a Add Zernike normal-gap findings plot`
+- Latest pushed implementation commit before this update: `4d21eca Benchmark calibrated atom gap Zernike orders`
 - New in this update:
-  - atom gap-band `N` sweep candidates
-  - excess-overlap, soft-bandpass, and contact-gated excess atom gap modes
-  - per-row atom-gap diagnostics: raw overlap, expected random overlap, excess overlap, effective volumes, band ratios, and final score
-  - Stage 1 AF3 diagnostic outputs and a paper-readable order-curve plot
-  - Stage 2 full-human survivor check for the top diagnostic-pass atom-gap candidates
+  - SC-gated atom-gap rescue candidates that add a small Zernike correction only when `interface_sc` is low
+  - full 16-cell all-organism benchmark for the tuned SC-gated atom-gap candidate
+  - comparative plot against SC and the previous pure atom-gap best candidate
+  - important interpretation update: pure Zernike did not beat SC globally, but SC-anchored Zernike rescue improves full-benchmark AUROC
 - Benchmark root: `/g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/predictions`
 - Important local caveat: `src/alphajudge/parsers/__init__.py` has unrelated local edits and should not be reverted or staged unless intentionally working on that file.
 
@@ -258,7 +257,93 @@ Stage 2 result on full human AF2+AF3:
 - Decision:
   - Do not run Stage 3 full 16-cell for these atom-gap survivors yet.
   - None of the calibrated atom gap modes solves the main problem: AF3 rescue exists, but AF2/global discrimination collapses.
-  - The new score modes are useful diagnostics, not production candidates.
+
+## 2026-05-03 SC-Gated Atom-Gap Full Benchmark
+
+Artifacts from this update:
+
+- `docs/zernike_sc_gated_atom_gap_full_candidate_summary.csv`
+- `docs/zernike_sc_gated_atom_gap_full_candidate_metrics.csv`
+- `docs/zernike_sc_gated_atom_gap_full_run_metadata.json`
+- `docs/zernike_sc_gated_atom_gap_tuned_full_candidate_summary.csv`
+- `docs/zernike_sc_gated_atom_gap_tuned_full_candidate_metrics.csv`
+- `docs/zernike_sc_gated_atom_gap_tuned_full_run_metadata.json`
+- `docs/zernike_sc_gated_atom_gap_full_comparison.svg`
+- `docs/zernike_sc_gated_atom_gap_full_comparison.png`
+
+Formula tested:
+
+```text
+score = interface_sc
+        + weight * exp(-(max(interface_sc, 0) / scale)^2)
+        * max(0, atom_gap_overlap - floor)
+```
+
+Interpretation:
+
+- This is no longer a pure Zernike score. It is an SC-anchored rescue score: SC remains the baseline, and the low-resolution atom-gap Zernike/overlap signal is allowed to add evidence mainly for low-SC cases.
+- This directly addresses the failure mode of the pure atom-gap candidates, which rescued AF3 positives but also inflated many negatives and damaged AF2/global discrimination.
+- The tuned full-benchmark candidate is `atom_gaussian__g32__o0__s1.5__mscoverlap__rs0.4__rf0.01__f12`.
+- Parameters:
+  - atom Gaussian shared-box overlap
+  - grid `32`
+  - sigma `1.5`
+  - Zernike fit order `12` for cached shared representation, but final rescue uses the raw shared-grid overlap base signal
+  - rescue weight `0.2`
+  - rescue scale `0.4`
+  - rescue floor `0.01`
+
+Full benchmark command shape:
+
+```bash
+python scripts/benchmark_zernike_rescue.py \
+  --bench-root /g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/predictions \
+  --out-dir /tmp/alphajudge_sc_gated_atom_gap_tuned_full \
+  --mode full \
+  --runtime-sample-size 0 \
+  --robustness-sample-size 0 \
+  --jobs 32 \
+  --progress-every 1000 \
+  --candidate-id atom_gaussian__g32__o0__s1.5__mscoverlap__rs0.4__rf0.01__f12
+```
+
+Headline result versus `interface_sc`:
+
+- Pooled all-data AUROC: `0.720` vs SC `0.681`, delta `+0.039`.
+- Pooled AF3 AUROC: `0.665` vs SC `0.628`, delta `+0.037`.
+- Pooled AF2 AUROC: `0.783` vs SC `0.758`, delta `+0.026`.
+- AF3 low-SC failure-slice rescue rate: `0.204` vs SC `0.000` by construction of the failure slice.
+- Positive-minus-negative median score separation is still small: `0.0135`, close to SC `0.0142`, so the win is mainly ranking/AUROC rather than a dramatic threshold-separated score scale.
+- Guardrail pass is `1`; accepted-for-production remains `0` only because this family is intentionally marked benchmark-only and runtime/robustness were skipped for the full run.
+
+Per-cell AUROC deltas versus SC:
+
+| Organism | Backend | Delta AUROC | Delta AP |
+| --- | --- | ---: | ---: |
+| Arabidopsis | AF2 | `+0.030` | `-0.019` |
+| Arabidopsis | AF3 | `+0.049` | `+0.038` |
+| E. coli | AF2 | `+0.006` | `-0.001` |
+| E. coli | AF3 | `+0.054` | `+0.058` |
+| Human | AF2 | `+0.023` | `+0.013` |
+| Human | AF3 | `+0.032` | `+0.036` |
+| Yeast | AF2 | `+0.032` | `+0.009` |
+| Yeast | AF3 | `+0.034` | `+0.050` |
+
+Answer to the practical question:
+
+- It is better than SC for full-benchmark ranking/discrimination: every organism/backend AUROC improves, so the candidate gives more true-positive-vs-false-positive separation across thresholds.
+- It is not proven to have fewer false positives at every single operating threshold. AP drops slightly in Arabidopsis AF2 and E. coli AF2, so fixed-threshold deployment needs threshold-specific validation.
+- At the AF3 low-SC rescue threshold definition, false-positive rate is controlled by each candidate's negative 90th percentile; under that controlled-FP comparison, the tuned SC-gated candidate rescues about `20%` of SC-failure positives.
+
+Decision:
+
+- This is the first Zernike-derived candidate that is clearly worth a production-design discussion.
+- Do not replace `interface_zernike_sc` yet without an explicit decision, because the candidate is hybrid SC+Zernike rather than pure geometry-only Zernike.
+- The new SC-gated score modes are benchmark-only until runtime, robustness, and threshold behavior are checked.
+- Next if we want production integration:
+  - run runtime sample and side-chain jitter robustness for this tuned candidate
+  - choose whether to expose it as a new score name, for example `interface_sc_zernike_rescue`, rather than silently replacing the existing Zernike score
+  - validate operating thresholds if the downstream use is threshold-based rather than rank-based
 
 ## Useful Commands
 
