@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Any, Callable
 from abc import ABC, abstractmethod
 import json
-import numpy as np
 from Bio.PDB import PDBParser, MMCIFParser
 from ..confidence import Confidence
+from ..geometry import is_pae_token_residue, representative_atom
 
 @dataclass
 class Run:
@@ -46,30 +46,41 @@ class BaseParser(ABC):
 
     @staticmethod
     def _maps(struct):
-        model = next(struct.get_models()); chains = list(model.get_chains())
+        # Index PAE-token residues only (proteins with CA, nucleics with C1').
+        # This keeps `rim` / `cid` aligned with the residue-by-residue PAE matrix
+        # and with Complex._build_maps(), so plddt_residue[i] and pae_matrix[i, :]
+        # refer to the same residue.
+        model = next(struct.get_models())
+        chains = list(model.get_chains())
         rim, cid, idx = {}, {}, 0
         for ch in chains:
-            idxs = []
+            idxs: list[int] = []
             for res in ch:
+                if not is_pae_token_residue(res):
+                    continue
                 rim[(ch.id, res.id)] = idx
-                idxs.append(idx); idx += 1
+                idxs.append(idx)
+                idx += 1
+            # Always register the chain so AF3 PAE normalisation can iterate over
+            # `chains` and call cid[c.id] without KeyError; empty list is fine.
             cid[ch.id] = idxs
         return chains, rim, cid
 
     @staticmethod
     def _plddt(chains, rim) -> list[float]:
-        n = len(rim); out = [float('nan')] * n
+        # Use representative_atom (CB->CA for proteins, C1' for nucleics) so this
+        # matches Interface._avg_plddt_union(): same residue, same B-factor.
+        n = len(rim)
+        out = [float("nan")] * n
         for ch in chains:
             for res in ch:
                 i = rim.get((ch.id, res.id))
-                if i is None: continue
+                if i is None:
+                    continue
                 try:
-                    out[i] = float(res["CA"].get_bfactor()); continue
-                except Exception:
-                    pass
-                vals = [float(a.get_bfactor()) for a in res.get_atoms()
-                        if a.element and a.element.upper()!="H"]
-                out[i] = float(np.mean(vals)) if vals else float('nan')
+                    out[i] = float(representative_atom(res).get_bfactor())
+                except (KeyError, AttributeError):
+                    continue
         return out
 
     @staticmethod
@@ -119,4 +130,3 @@ manager.register(AF3Parser)
 
 pick_parser = manager.pick
 register_parser = manager.register
-
