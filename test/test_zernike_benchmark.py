@@ -200,7 +200,7 @@ END
     )
 
     summary_rows = list(csv.DictReader((out_dir / "candidate_summary.csv").open()))
-    assert len(summary_rows) == 17
+    assert len(summary_rows) == 20
     assert {row["candidate_family"] for row in summary_rows} == {
         "sc_baseline",
         "per_side",

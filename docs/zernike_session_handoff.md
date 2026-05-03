@@ -5,12 +5,13 @@ Last updated: 2026-05-03
 ## Working State
 
 - Branch: `zernike`
-- Latest pushed implementation commit before this update: `8ea886e Cache normal-gap Zernike benchmark coefficients`
+- Latest pushed implementation commit before this update: `f228d5a Add Zernike normal-gap findings plot`
 - New in this update:
-  - per-row normal-gap field diagnostics in benchmark score CSVs
-  - adjustable diagnostic subset sizes via `--diagnostic-af3-sample-size` and `--diagnostic-hard-per-class`
-  - fast lower-density normal-gap candidates
-  - contact-signal normal-gap candidates that keep absolute low-pass contact amount instead of using only a normalized quality ratio
+  - atom gap-band `N` sweep candidates
+  - excess-overlap, soft-bandpass, and contact-gated excess atom gap modes
+  - per-row atom-gap diagnostics: raw overlap, expected random overlap, excess overlap, effective volumes, band ratios, and final score
+  - Stage 1 AF3 diagnostic outputs and a paper-readable order-curve plot
+  - Stage 2 full-human survivor check for the top diagnostic-pass atom-gap candidates
 - Benchmark root: `/g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/predictions`
 - Important local caveat: `src/alphajudge/parsers/__init__.py` has unrelated local edits and should not be reverted or staged unless intentionally working on that file.
 
@@ -153,6 +154,112 @@ Interpretation:
   - avoid normalizing away interface size completely
 - Production `interface_zernike_sc` should remain unchanged.
 
+## 2026-05-03 Atom Gap-Band N Sweep
+
+Artifacts committed with this branch:
+
+- `docs/zernike_atom_gap_n_sweep_candidate_summary.csv`
+- `docs/zernike_atom_gap_n_sweep_candidate_metrics.csv`
+- `docs/zernike_atom_gap_n_sweep_candidate_diagnostic_summary.csv`
+- `docs/zernike_atom_gap_n_sweep_order_curve.svg`
+- `docs/zernike_atom_gap_n_sweep_order_curve.png`
+- `docs/zernike_atom_gap_n_sweep_order_curve_selected_candidates.csv`
+- `docs/zernike_atom_gap_n_sweep_human_candidate_summary.csv`
+- `docs/zernike_atom_gap_n_sweep_human_candidate_metrics.csv`
+
+Implementation additions:
+
+- New benchmark-only score modes:
+  - `gap_zernike_excess_bandpass`: subtracts expected random density overlap before multiplying by Zernike band energy.
+  - `gap_zernike_soft_bandpass`: keeps `n >= 2`, keeps orders up to `N`, and smoothly tapers higher orders.
+  - `gap_zernike_excess_contact_bandpass`: uses excess overlap as absolute contact amount, then multiplies by band quality.
+- New sweep parameters:
+  - `gap_band_soft_width`
+  - `gap_contact_scale`
+- Cached gap coefficients still use `fit_order=12`; lower `N` candidates reuse the same order-12 fit.
+
+Stage 1 command shape:
+
+```bash
+python scripts/benchmark_zernike_rescue.py \
+  --bench-root /g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/predictions \
+  --out-dir /tmp/alphajudge_zernike_atom_gap_n_sweep_diagnostic \
+  --mode diagnostic \
+  --backend af3 \
+  --diagnostic-hard-per-class 6 \
+  --diagnostic-af3-sample-size 200 \
+  --runtime-sample-size 0 \
+  --robustness-sample-size 0 \
+  --jobs 16 \
+  --progress-every 25 \
+  --candidate-id ...atom-gap-only candidates...
+```
+
+Stage 1 dataset:
+
+- 212 real AF3 rows:
+  - human AF3 hard slice: 6 lowest-SC positives + 6 highest-SC negatives
+  - fixed 200-row AF3 mixed sample across organisms
+- SC is intentionally inverted on this hard diagnostic:
+  - pooled AF3 AUROC `0.143`
+  - positive median SC `0.068`
+  - negative median SC `0.100`
+
+Stage 1 result:
+
+- Best rescue rate was contact-gated excess:
+  - `atom_gaussian__g32__o6__s1.5__mgapcontact__cs0.07__f12`
+  - rescue `0.311`
+  - AF3 AUROC `0.638`
+  - rejected because AF3 AUROC is more than `0.01` below the current atom gap-band reference.
+- Best non-saturated diagnostic-pass rows were old overlap/nonuniform and soft-band variants:
+  - `atom_gaussian__g32__o0__s1.5__mgapnonuniform__f12`: AF3 AUROC `0.687`, rescue `0.272`
+  - `atom_gaussian__g32__o0__s1.5__moverlap__f12`: AF3 AUROC `0.687`, rescue `0.272`
+  - `atom_gaussian__g32__o6__s1__mgapsoft__f12`: AF3 AUROC `0.670`, rescue `0.252`
+  - `atom_gaussian__g32__o6__s1__mgapsoft__w2__f12`: AF3 AUROC `0.671`, rescue `0.233`
+- Diagnostic interpretation:
+  - Increasing hard bandpass `N` helped this deliberately hard AF3 slice, but this contradicts the earlier full all-organism result where higher `N` hurt.
+  - Excess-overlap normalization alone did not create a clear win.
+  - Soft bandpass is the only new family worth checking beyond Stage 1.
+
+Stage 2 full-human survivor command shape:
+
+```bash
+python scripts/benchmark_zernike_rescue.py \
+  --bench-root /g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/predictions \
+  --out-dir /tmp/alphajudge_zernike_atom_gap_n_sweep_human \
+  --mode full \
+  --organism human \
+  --survivors-from docs/zernike_atom_gap_n_sweep_candidate_summary.csv \
+  --survivor-limit 10 \
+  --runtime-sample-size 0 \
+  --robustness-sample-size 0 \
+  --jobs 16 \
+  --progress-every 200
+```
+
+Stage 2 result on full human AF2+AF3:
+
+- SC baseline:
+  - AF3 AUROC `0.620`
+  - AF2 AUROC `0.735`
+  - all-human AUROC `0.673`
+- Best soft-band survivor:
+  - `atom_gaussian__g24__o6__s1.5__mgapsoft__w2__f12`
+  - AF3 AUROC `0.622`, only `+0.002` vs SC
+  - AF2 AUROC `0.524`
+  - all-human AUROC `0.557`
+  - rescue `0.197`
+- Old overlap still has slightly higher AF3 AUROC but bad score direction and very bad AF2:
+  - `atom_gaussian__g32__o0__s1.5__moverlap__f12`
+  - AF3 AUROC `0.628`
+  - AF2 AUROC `0.470`
+  - all-human AUROC `0.524`
+- Decision:
+  - Do not run Stage 3 full 16-cell for these atom-gap survivors yet.
+  - None of the calibrated atom gap modes solves the main problem: AF3 rescue exists, but AF2/global discrimination collapses.
+  - The new score modes are useful diagnostics, not production candidates.
+
 ## Useful Commands
 
 Run focused tests:
@@ -188,17 +295,12 @@ python scripts/benchmark_zernike_rescue.py \
 
 ## Next Implementation Ideas
 
-- Run a larger human AF3 diagnostic for the contact-signal normal-gap candidates only, preferably through Slurm:
-  - `surface_normal_gap__g24__o4__s1.5__d1.5__tr3__pr2.3__mnormalcontact__f12`
-  - `surface_normal_gap__g24__o6__s1.5__d1.5__tr3__pr2.3__mnormalcontact__f12`
-  - `surface_normal_gap__g32__o4__s1.5__d3__tr3__pr2.3__mnormalcontact__f12`
-  - atom gap-band comparator
-- Explore contact-scale sensitivity for `normal_gap_contact_field`:
-  - current scale is `500`
-  - try `250`, `750`, and `1000`
-  - keep it analytic; do not learn weights from labels
-- Consider an even cleaner normal-gap score:
-  - `contact_amount * good_signal / (good_signal + clash + far)`
-  - or separate contact amount from quality in plots instead of collapsing immediately
-- Use lower `surface_density=1.5`, `grid_size=24` as the default exploratory normal-gap geometry unless larger benchmarks show it loses real accuracy.
+- Atom gap-band has likely hit its current geometry-only ceiling as a standalone score.
+- If continuing atom gap, use it as an auxiliary rescue feature rather than a production replacement:
+  - gate it to low-SC AF3-like failures, or
+  - combine it with SC later, if hybrid scores become allowed.
+- The more promising pure-Zernike direction is no longer simple atom density overlap; it is normal/contact-aware fields or a new explicit gap/clash volume with an absolute contact term.
+- For the next pure geometry pass, prefer:
+  - contact-gated normal-gap with lower-density cached Connolly dots
+  - or atom/residue good-contact, clash, and far-gap fields instead of a single overlap field
 - Do not promote `interface_zernike_sc` until full 16-cell benchmark passes SC guardrails.
