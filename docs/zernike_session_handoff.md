@@ -51,6 +51,8 @@ AlphaFold2/3 often predict the global complex arrangement better than local side
 ## Whole-Project Research Takeaway
 
 - AlphaJudge has a future, but the best score is unlikely to be a pure Zernike descriptor.
+- The Zernike line itself has a future only as a hybrid rescue/sanity-check feature. As a pure replacement for SC, it should be considered exhausted for now.
+- The reason is probably structural, not just poor tuning: AF2/AF3 false positives often already look interface-like because the model has optimized a plausible complex. Scores that mainly ask whether surfaces fit, including SC, atom-gap overlap, and low-pass Zernike descriptors, are partly scoring the same thing AF already made plausible.
 - On the full benchmark, the strongest existing single features are already confidence/PAE-interface scores:
   - `interface_LIS`: all-data AUROC about `0.866`
   - `interface_ipSAE`: all-data AUROC about `0.863`
@@ -64,6 +66,12 @@ AlphaFold2/3 often predict the global complex arrangement better than local side
   - Human AF2/AF3: about `0.891` / `0.886`
   - Yeast AF2/AF3: about `0.927` / `0.897`
 - This is not yet a production result because the combination was inspected after the Zernike work and needs proper cross-validation/calibration. It is still the clearest direction: combine confidence-block evidence with a low-resolution geometry rescue, rather than betting on one analytic geometry score.
+- Freeze broad Zernike tuning after the current SC-gated rescue candidate. Do runtime/robustness checks, expose it as a separate score if accepted, and then pivot effort to better orthogonal evidence.
+- Recommended next baseline: train a small cross-validated classifier on the existing AlphaJudge features, with AF2/AF3-aware calibration and organism/backend holdouts. This is the honest baseline any new hand-built score must beat.
+- Best next out-of-the-box signals:
+  - inverse-folding/interface sequence likelihood, for example ESM-IF or ProteinMPNN-style residue compatibility at interface positions
+  - MSA conservation/coevolution residuals at predicted interface residues, normalized against exposed non-interface surface residues
+  - conformational consistency across AF model/seed ensembles: interface-residue overlap, interface RMSD spread, largest interface cluster size, and gap to the second cluster
 - Research framing: AlphaJudge should probably expose several named evidence axes:
   - `interface_confidence_evidence`: LIS/ipSAE/pDockQ2/PAE-block strength
   - `interface_geometry_plausibility`: SC, area, solvation, clash/gap/contact-field evidence
