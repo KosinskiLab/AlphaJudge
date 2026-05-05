@@ -215,6 +215,17 @@ test_data/**/interfaces.csv
 # Local validation scratch space
 tmp/
 
+# Private manuscript draft (not for public github.com/KosinskiLab/AlphaJudge)
+docs/paper_alphajudge.tex
+docs/paper_alphajudge.pdf
+docs/paper_alphajudge.aux
+docs/paper_alphajudge.log
+docs/paper_alphajudge.out
+docs/paper_alphajudge.bbl
+docs/paper_alphajudge.blg
+docs/paper_alphajudge.synctex.gz
+docs/figures/
+
 # Ignore all test_data by default, then include only what's required for tests
 test_data/**
 !test_data/

@@ -1,6 +1,104 @@
 # Zernike Prototype Handoff
 
-Last updated: 2026-05-03
+Last updated: 2026-05-05
+
+## 2026-05-05 Paper Draft Snapshot
+
+A LaTeX manuscript draft and supporting figures were added locally and are
+intentionally NOT committed to the public repo. They are gitignored:
+
+- `docs/paper_alphajudge.tex` — manuscript draft (single source of truth for
+  the current paper outline, figure references, captions, and `\todo{}` notes)
+- `docs/figures/` — paper figures copied from
+  `/g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/`:
+  - `flowchart.png`             — `data/exports/flowchart.png`
+  - `scores_histos.png`         — `data/exports/scores_histos.png`
+  - `dimers_venn_human.png`     — `data/exports/dimers_venn_human_canon.png`
+  - `ipsae_cutoff_roc_<organism>.png` — `ipsae_scan/roc/roc__<organism>__all_cutoffs.png`
+  - `classifier_roc_models.png` — `classifier/clf_out/roc_models.png`
+  - `classifier_perm_importance.png` — `classifier/clf_out/perm_importance_plot.png`
+
+Editorial decisions for this draft:
+
+- **Zernike is intentionally NOT mentioned in the paper.** The decision is to
+  leave Zernike out of the manuscript story entirely; the SC-gated atom-gap
+  rescue candidate documented below is not in the paper either. Keep this
+  branch and these notes alive only for internal continuity.
+- **Shape complementarity (SC, `interface_sc`) is described as the strongest
+  biophysical single score** (pooled AUROC `0.681`, the top of the biophysical
+  tier). SC is the chosen biophysical reference in the paper, and the AF3
+  degradation of SC is highlighted as a finding.
+- The leading single-score predictors in the paper are PAE-derived:
+  `interface_LIS` (`0.866`), `interface_ipSAE` (`0.863`),
+  `interface_pDockQ2` (`0.848`).
+- Tuned ipSAE PAE cutoff result: optimal cutoffs are `20`–`30 Å`, well above
+  the original ipSAE defaults; per-organism tuned AUROC up to `0.93`.
+- Multivariate classifier panel (`classifier/clf_out_repeats_all/`) reaches
+  mean AUROC `~0.87` over `20` random grouped splits; ipSAE-only baseline is
+  `0.856` over the same splits — i.e. the multivariate gain is ~`0.02` AUROC.
+- Permutation importance: `interface_ipSAE` dominates;
+  `average_interface_pae`, `pDockQ/mpDockQ`, `interface_LIS` follow;
+  biophysical features carry near-zero marginal importance once PAE features
+  are present.
+
+Canonical numbers used in the paper (recomputed `2026-05-05` from
+`/g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/merged_best_interfaces_all_models.csv`,
+`n=7345` rows, `3833` AF2 / `3512` AF3, `3823` pos / `3522` neg):
+
+```
+Pooled AUROC:
+  interface_LIS        0.866
+  interface_ipSAE      0.863
+  interface_pDockQ2    0.848
+  iptm                 0.841
+  average_interface_pae 0.839 (sign-flipped)
+  iptm_ptm             0.828
+  interface_score      0.810
+  pDockQ/mpDockQ       0.810
+  interface_area       0.692
+  interface_sc         0.681
+  interface_sb         0.664
+  interface_hb         0.653
+
+Per (organism, backend) interface_sc AUROC (the AF3 degradation finding):
+  arabidopsis af2 0.794 -> af3 0.619
+  ecoli       af2 0.812 -> af3 0.611
+  human       af2 0.735 -> af3 0.620
+  yeast       af2 0.788 -> af3 0.651
+```
+
+Tuned ipSAE PAE-cutoff results from
+`ipsae_scan/roc/best_cutoff_per_organism.csv`:
+
+```
+arabidopsis  PAE 20  AUROC 0.897   n_pos 182  n_neg 180
+ecoli        PAE 30  AUROC 0.931   n_pos 96   n_neg 93
+human        PAE 25  AUROC 0.859   n_pos 1100 n_neg 852
+yeast        PAE 25  AUROC 0.876   n_pos 514  n_neg 495
+```
+
+Multivariate classifier validation AUROC (`20` random grouped splits) from
+`classifier/clf_out_repeats_all/auc_summary_all_repeats.csv`:
+
+```
+LogReg       0.877 ± 0.012
+SGD-log      0.874 ± 0.011
+HistGB       0.871 ± 0.010
+RF           0.871 ± 0.010
+MLP          0.870 ± 0.011
+ipSAE-only   0.856 ± 0.009
+ipTM-only    0.853 ± 0.014
+Chance       0.500
+```
+
+Continuation rules for the paper draft:
+
+- The `.tex` and `docs/figures/` are gitignored. Do NOT commit them.
+- Anything new for the paper goes through the same gitignored paths.
+- If figures are regenerated in `benchmark_26/`, re-copy them with
+  `cp` to `docs/figures/` so the local `.tex` keeps building.
+- If the paper claims change, update both the `.tex` and this section so
+  future sessions see consistent numbers.
 
 ## Working State
 
@@ -69,9 +167,17 @@ AlphaFold2/3 often predict the global complex arrangement better than local side
 - Freeze broad Zernike tuning after the current SC-gated rescue candidate. Do runtime/robustness checks, expose it as a separate score if accepted, and then pivot effort to better orthogonal evidence.
 - Recommended next baseline: train a small cross-validated classifier on the existing AlphaJudge features, with AF2/AF3-aware calibration and organism/backend holdouts. This is the honest baseline any new hand-built score must beat.
 - Best next out-of-the-box signals:
-  - inverse-folding/interface sequence likelihood, for example ESM-IF or ProteinMPNN-style residue compatibility at interface positions
-  - MSA conservation/coevolution residuals at predicted interface residues, normalized against exposed non-interface surface residues
-  - conformational consistency across AF model/seed ensembles: interface-residue overlap, interface RMSD spread, largest interface cluster size, and gap to the second cluster
+  - **Inverse-folding interface sequence likelihood.** Score each interface residue by the log-likelihood a structure-conditioned sequence model assigns to the actual amino acid, conditioning the model on its own chain backbone alone and then on both chains together; the gap is an interface-specificity term. Rationale: a real interface accommodates the residues it carries, so a designer model rates them as likely; AF false-positive interfaces often look geometrically plausible but place residues no inverse-folding model would pick at that site. Tools:
+    - ESM-IF1 / GVPTransformer — Hsu et al. 2022, [paper](https://www.biorxiv.org/content/10.1101/2022.04.10.487779v1), [code](https://github.com/facebookresearch/esm/tree/main/examples/inverse_folding)
+    - ProteinMPNN — Dauparas et al. 2022, [paper](https://www.science.org/doi/10.1126/science.add2187), [code](https://github.com/dauparas/ProteinMPNN)
+  - **MSA conservation/coevolution residuals at predicted interface residues.** Build a paired MSA over the two chains, compute per-residue conservation (e.g. Shannon entropy / ConSurf-style) and inter-chain coupling strength (DCA/EVcomplex), then report the residual: interface-residue score minus the matched background of exposed *non-interface* surface residues from the same protein. Rationale: real binding patches are evolutionarily constrained and carry excess inter-chain couplings versus random surface; subtracting the same-protein surface background cancels protein-wide conservation bias and isolates interface-specific signal. Tools:
+    - MSA building — HHblits ([hh-suite](https://github.com/soedinglab/hh-suite)), JackHMMER ([HMMER](http://hmmer.org/))
+    - Conservation — [ConSurf](https://consurf.tau.ac.il/)
+    - Inter-chain coevolution — EVcomplex / EVcouplings, Hopf et al. 2014, [paper](https://elifesciences.org/articles/03430), [code](https://github.com/debbiemarkslab/EVcouplings); MSA Transformer (Rao et al. 2021), [code](https://github.com/facebookresearch/esm)
+  - **Conformational consistency across AF model/seed ensembles.** For each pair, generate an ensemble (the 5 AF2 model weights, multiple AF3 seeds, optionally dropout-on aggressive sampling) and quantify interface stability across runs: Jaccard overlap of predicted interface-residue sets, per-residue interface-RMSD spread after partner-aligned superposition, and a cluster pass on interface-CA RMSD reporting the largest cluster fraction and the gap to the second cluster. Rationale: true PPIs converge to one consistent interface across stochastic re-runs; spurious ones drift or split across incompatible binding modes, so consensus geometry is an orthogonal confidence axis the per-model PAE/pLDDT scores already in the benchmark do not capture. Cheap path: reuse the 5 AF2 models we already have for an `interface_consensus` score. Expensive path: AFsample-style aggressive sampling. Tools:
+    - AlphaFold-Multimer — Evans et al. 2022, [biorxiv](https://www.biorxiv.org/content/10.1101/2021.10.04.463034)
+    - AFsample — Wallner 2023, [paper](https://academic.oup.com/bioinformatics/article/39/9/btad573/7274860), code at [wallnerlab](https://github.com/wallnerlab)
+    - AFsample2 (induced conformational diversity) — [code](https://github.com/wallnerlab/AFsample2)
 - Research framing: AlphaJudge should probably expose several named evidence axes:
   - `interface_confidence_evidence`: LIS/ipSAE/pDockQ2/PAE-block strength
   - `interface_geometry_plausibility`: SC, area, solvation, clash/gap/contact-field evidence
@@ -406,6 +512,32 @@ Decision:
   - choose whether to expose it as a new score name, for example `interface_sc_zernike_rescue`, rather than silently replacing the existing Zernike score
   - validate operating thresholds if the downstream use is threshold-based rather than rank-based
 
+## 2026-05-05 Metascore-First Decision
+
+- Implemented the branch wrap-up direction as a transparent production metascore rather than another broad Zernike/orthogonal-signal sweep.
+- New production column: `interface_meta_score`.
+- Inputs:
+  - higher is better: `interface_LIS`, `interface_ipSAE`, `interface_pDockQ2`, `iptm`, `confidence_score`, `pDockQ/mpDockQ`, `interface_sc`, `interface_area`
+  - inverted before calibration: `average_interface_pae`, `interface_solv_en`
+- Calibration:
+  - frozen benchmark deciles from the full all-organism benchmark-26 best-interface run
+  - each input maps to a `0-1` percentile and missing/non-finite values are ignored
+  - final score is the mean of available calibrated percentiles
+- The SC-gated atom-gap/Zernike rescue remains benchmark-only and is not part of `interface_meta_score`.
+- Reproducible diagnostic script:
+
+```bash
+python scripts/analyze_interface_meta_score.py \
+  --input-csv /g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/benchmark_best.20260422_111918_904fef5.csv
+```
+
+Investigation evidence:
+
+- Best single current score on the full tuned-run CSV was `interface_LIS` at AUROC about `0.866`.
+- A selected current-score rank metascore reached about `0.873` AUROC / `0.910` AP before frozen-decile approximation.
+- The production frozen-decile `interface_meta_score` is intentionally simpler and should be treated as a ranking/prioritization score, not a universal binary threshold.
+- PCA remains diagnostic only: PC1 is mostly the confidence/PAE block, while geometry/Zernike-like axes live in later PCs and are weaker alone.
+
 ## Useful Commands
 
 Run focused tests:
@@ -413,10 +545,12 @@ Run focused tests:
 ```bash
 python -m py_compile \
   src/alphajudge/biophysics/zernike.py \
+  src/alphajudge/meta_score.py \
   src/alphajudge/parsers/__init__.py \
   scripts/benchmark_zernike_rescue.py \
+  scripts/analyze_interface_meta_score.py \
   scripts/plot_zernike_sc_gated_atom_gap_full.py
-pytest -q test/test_biophysics.py test/test_zernike_benchmark.py
+pytest -q test/test_meta_score.py test/test_biophysics.py test/test_zernike_benchmark.py
 ```
 
 Regenerate the latest comparison plot from committed CSVs:
