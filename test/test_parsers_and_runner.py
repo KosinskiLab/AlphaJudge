@@ -48,6 +48,7 @@ EXPECTED_OUTPUT_COLUMNS = {
     "interface_zernike_sc",
     "interface_area",
     "interface_solv_en",
+    "interface_meta_score",
 }
 
 # columns that are expected to be numeric (but may be NaN)
