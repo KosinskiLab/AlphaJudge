@@ -1,30 +1,50 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
-import csv, numpy as np
+import csv
+import logging
+import numpy as np
 from . import BaseParser, Run
 from ..confidence import Confidence
+
+logger = logging.getLogger(__name__)
 
 class AF3Parser(BaseParser):
     name = "af3"
 
-    def detect(self, d: Path) -> bool:
-        return (d / "ranking_scores.csv").exists()
+    @staticmethod
+    def detect(d: Path) -> bool:
+        return AF3Parser._ranking_scores_file(d) is not None
 
     def parse_run(self, d: Path) -> Run:
-        order = self._read_csv_order(d / "ranking_scores.csv")
+        ranking_file = self._ranking_scores_file(d)
+        if ranking_file is None:
+            raise ValueError(f"AF3 ranking scores file not found in {d}")
+        order, ranking_scores = self._read_csv_order(ranking_file)
+        job_prefix = self._job_prefix_from_ranking_file(ranking_file)
 
         def load_model(model: str):
             model_dir = d / model
-            struct = self._load_structure(self._guess_struct(d, model))
+            is_best_model = bool(order and model == order[0])
+            struct = self._load_structure(
+                self._guess_af3_struct(d, model, job_prefix, is_best_model)
+            )
             chains, rim, cid = self._maps(struct)
 
-            summary = self._read_json(model_dir / "summary_confidences.json")
-            matrix  = self._read_json(model_dir / "confidences.json") or summary
+            summary = self._read_json(
+                self._find_af3_json(
+                    d, model, "summary_confidences", job_prefix, is_best_model
+                )
+            )
+            matrix = self._read_json(
+                self._find_af3_json(d, model, "confidences", job_prefix, is_best_model)
+            ) or summary
 
             iptm = self._safe_float(summary.get("iptm"))
             ptm  = self._safe_float(summary.get("ptm"))
             ranking_score = self._safe_float(summary.get("ranking_score"))
+            if ranking_score is None:
+                ranking_score = ranking_scores.get(model)
             iptm_ptm = 0.2 * ptm + 0.8 * iptm if (iptm is not None and ptm is not None) else None
 
             chain_pair_iptm_raw = summary.get("chain_pair_iptm")
@@ -44,14 +64,97 @@ class AF3Parser(BaseParser):
 
     # ---- AF3-specific helpers ----
     @staticmethod
-    def _read_csv_order(p: Path) -> list[str]:
+    def _ranking_scores_file(d: Path) -> Path | None:
+        plain = d / "ranking_scores.csv"
+        if plain.exists():
+            return plain
+        hits = sorted(d.glob("*_ranking_scores.csv"))
+        return hits[0] if hits else None
+
+    @staticmethod
+    def _job_prefix_from_ranking_file(p: Path) -> str | None:
+        if p.name == "ranking_scores.csv":
+            return None
+        suffix = "_ranking_scores"
+        if p.stem.endswith(suffix):
+            return p.stem[: -len(suffix)]
+        return None
+
+    @staticmethod
+    def _read_csv_order(p: Path) -> tuple[list[str], dict[str, float]]:
         with p.open(newline="") as f:
             rows = [r for r in csv.DictReader(f) if r]
         def pf(x: str | None) -> float:
             try: return float(x)  # type: ignore[arg-type]
             except Exception: return float("nan")
         rows.sort(key=lambda r: pf(r.get("ranking_score")), reverse=True)
-        return [f"seed-{r['seed']}_sample-{r['sample']}" for r in rows if 'seed' in r and 'sample' in r]
+        order: list[str] = []
+        scores: dict[str, float] = {}
+        for r in rows:
+            if "seed" not in r or "sample" not in r:
+                continue
+            model = f"seed-{r['seed']}_sample-{r['sample']}"
+            order.append(model)
+            score = pf(r.get("ranking_score"))
+            if np.isfinite(score):
+                scores[model] = score
+        return order, scores
+
+    @staticmethod
+    def _find_existing(paths: list[Path]) -> Path | None:
+        for p in paths:
+            if p.exists():
+                return p
+        return None
+
+    @classmethod
+    def _find_af3_json(
+        cls,
+        d: Path,
+        model: str,
+        kind: str,
+        job_prefix: str | None,
+        is_best_model: bool,
+    ) -> Path:
+        model_dir = d / model
+        candidates = [model_dir / f"{kind}.json"]
+        if job_prefix:
+            candidates.append(model_dir / f"{job_prefix}_{model}_{kind}.json")
+            if is_best_model:
+                candidates.append(d / f"{job_prefix}_{kind}.json")
+        if model_dir.is_dir():
+            candidates.extend(sorted(model_dir.glob(f"*_{kind}.json")))
+        if is_best_model:
+            candidates.append(d / f"ranked_0_{kind}.json")
+        return cls._find_existing(candidates) or candidates[0]
+
+    @classmethod
+    def _guess_af3_struct(
+        cls,
+        d: Path,
+        model: str,
+        job_prefix: str | None,
+        is_best_model: bool,
+    ) -> str:
+        model_dir = d / model
+        candidates: list[Path] = []
+        for ext in ("cif", "pdb"):
+            candidates.append(model_dir / f"model.{ext}")
+            if job_prefix:
+                candidates.append(model_dir / f"{job_prefix}_{model}_model.{ext}")
+        if model_dir.is_dir():
+            for ext in ("cif", "pdb"):
+                candidates.extend(sorted(model_dir.glob(f"*{model}*_model.{ext}")))
+                candidates.extend(sorted(model_dir.glob(f"*.{ext}")))
+        if job_prefix and is_best_model:
+            for ext in ("cif", "pdb"):
+                candidates.append(d / f"{job_prefix}_model.{ext}")
+        for ext in ("cif", "pdb"):
+            candidates.extend(sorted(d.glob(f"*{model}*.{ext}")))
+        found = cls._find_existing(candidates)
+        if found is not None:
+            return str(found)
+        raise ValueError(f"struct for model {model} not found")
 
     @staticmethod
     def _normalize_pae_af3(matrix: dict, chains, cid) -> tuple[np.ndarray, float]:
@@ -62,7 +165,14 @@ class AF3Parser(BaseParser):
         if "predicted_aligned_error" in matrix:
             # some AF3 builds still store a full matrix in confidences.json
             m = np.array(matrix["predicted_aligned_error"], dtype=float)
-            if m.size: pae[:, :] = m
+            if m.size:
+                if m.shape == pae.shape:
+                    pae[:, :] = m
+                else:
+                    logger.warning(
+                        f"predicted_aligned_error shape {m.shape} != expected {pae.shape}; "
+                        "skipping PAE assignment."
+                    )
             max_pae = float(matrix.get("max_predicted_aligned_error", np.nan))
             if not np.isfinite(max_pae):
                 max_pae = float(np.nanmax(m)) if m.size else float('nan')
@@ -107,6 +217,9 @@ class AF3Parser(BaseParser):
                     if ri and rj:
                         pae[np.ix_(ri, rj)] = 100.0 if val is None else val
         else:
-            raise ValueError("unknown AF3 confidences schema")
+            logger.warning(
+                "No recognised PAE keys in confidences.json/summary_confidences.json; "
+                "using default PAE=100 for all residue pairs."
+            )
 
         return pae, float(max_pae)
