@@ -160,7 +160,7 @@ AlphaJudge expects standard prediction run outputs.
 - AF3: AlphaPulldown/normalized layout with `ranking_scores.csv` and per-model `summary_confidences.json`/`confidences.json`, or official DeepMind AF3 layout with `<job_name>_ranking_scores.csv` and prefixed per-sample files such as `<job_name>_seed-<seed>_sample-<sample>_model.cif`
 - Boltz-2: prediction directory with ranked files such as `<input>_model_0.cif`, `confidence_<input>_model_0.json`, and optional `pae_<input>_model_0.npz` / `plddt_<input>_model_0.npz`
 
-The tool searches for `model.cif` inside each model subdirectory first; otherwise it tries to match `*<model>*.cif` or `*<model>*.pdb` at the run root. For Boltz-2 protein-ligand outputs, PAE and pLDDT arrays may include trailing small-molecule tokens; AlphaJudge trims those arrays to the protein/nucleic residue block it scores.
+The tool searches for `model.cif` inside each model subdirectory first; otherwise it tries to match `*<model>*.cif` or `*<model>*.pdb` at the run root. AlphaJudge currently scores protein and nucleic-acid interfaces; ligands present in AF3 or Boltz-2 structures are ignored for interface construction. When confidence arrays include ligand tokens, supported parsers align or trim them to the scored protein/nucleic-acid residue block.
 
 ---
 
