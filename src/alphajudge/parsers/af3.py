@@ -217,9 +217,9 @@ class AF3Parser(BaseParser):
                     if ri and rj:
                         pae[np.ix_(ri, rj)] = 100.0 if val is None else val
         else:
-            logger.warning(
-                "No recognised PAE keys in confidences.json/summary_confidences.json; "
-                "using default PAE=100 for all residue pairs."
+            raise ValueError(
+                "unknown AF3 confidences schema: expected predicted_aligned_error, "
+                "pae with token_chain_ids, or chain_pair_pae_min"
             )
 
         return pae, float(max_pae)
