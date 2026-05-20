@@ -348,7 +348,7 @@ def test_af3_job_prefix_from_ranking_file_handles_plain_prefixed_and_weird():
     )
 
 
-def test_af3_pae_warning_paths_fall_back_to_default(caplog: pytest.LogCaptureFixture):
+def test_af3_pae_shape_warns_but_unknown_schema_raises(caplog: pytest.LogCaptureFixture):
     class Chain:
         def __init__(self, chain_id: str):
             self.id = chain_id
@@ -369,12 +369,8 @@ def test_af3_pae_warning_paths_fall_back_to_default(caplog: pytest.LogCaptureFix
     assert "predicted_aligned_error shape" in caplog.text
 
     caplog.clear()
-    pae, max_pae = AF3Parser._normalize_pae_af3({"unexpected_schema": True}, chains, cid)
-
-    assert pae.shape == (2, 2)
-    assert np.all(pae == 100.0)
-    assert math.isnan(max_pae)
-    assert "No recognised PAE keys" in caplog.text
+    with pytest.raises(ValueError, match="unknown AF3 confidences schema"):
+        AF3Parser._normalize_pae_af3({"unexpected_schema": True}, chains, cid)
 
 
 def test_af3_parser_accepts_alphapulldown_layout(af3_dir_src: Path):
