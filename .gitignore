@@ -256,3 +256,11 @@ test_data/**
 !test_data/af3/neg_dimers/
 !test_data/af3/neg_dimers/Q14974+Q13033/
 !test_data/af3/neg_dimers/Q14974+Q13033/**
+
+# Boltz-2 real prediction fixture
+!test_data/boltz2/
+!test_data/boltz2/6OGE_ABC_DSSO_CDI_seed_3/
+!test_data/boltz2/6OGE_ABC_DSSO_CDI_seed_3/6OGE_ABC_DSSO_CDI_Boltz2_model_0.cif
+!test_data/boltz2/6OGE_ABC_DSSO_CDI_seed_3/confidence_6OGE_ABC_DSSO_CDI_Boltz2_model_0.json
+!test_data/boltz2/6OGE_ABC_DSSO_CDI_seed_3/pae_6OGE_ABC_DSSO_CDI_Boltz2_model_0.npz
+!test_data/boltz2/6OGE_ABC_DSSO_CDI_seed_3/plddt_6OGE_ABC_DSSO_CDI_Boltz2_model_0.npz

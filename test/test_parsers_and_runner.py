@@ -117,6 +117,37 @@ def copy_run_dir(src: Path, dst_root: Path) -> Path:
     return dst
 
 
+def make_official_af3_layout(src: Path, dst_root: Path, job_name: str = "hello_fold") -> Path:
+    dst = dst_root / job_name
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+    root_renames = {
+        "ranking_scores.csv": f"{job_name}_ranking_scores.csv",
+        "ranked_0_model.cif": f"{job_name}_model.cif",
+        "ranked_0_confidences.json": f"{job_name}_confidences.json",
+        "ranked_0_summary_confidences.json": f"{job_name}_summary_confidences.json",
+    }
+    for old_name, new_name in root_renames.items():
+        old = dst / old_name
+        if old.exists():
+            old.rename(dst / new_name)
+
+    for model_dir in sorted(p for p in dst.glob("seed-*_sample-*") if p.is_dir()):
+        sample_renames = {
+            "model.cif": f"{job_name}_{model_dir.name}_model.cif",
+            "confidences.json": f"{job_name}_{model_dir.name}_confidences.json",
+            "summary_confidences.json": f"{job_name}_{model_dir.name}_summary_confidences.json",
+        }
+        for old_name, new_name in sample_renames.items():
+            old = model_dir / old_name
+            if old.exists():
+                old.rename(model_dir / new_name)
+
+    return dst
+
+
 def _expected_models_for(run, models_to_analyse: str) -> list[str]:
     return [run.order[0]] if models_to_analyse == "best" else list(run.order)
 
@@ -191,6 +222,11 @@ def af2_dir_src() -> Path:
 @pytest.fixture(scope="module")
 def af3_dir_src() -> Path:
     return _ensure_exists(_repo_path("test_data/af3/pos_dimers/Q13148+Q92900"))
+
+
+@pytest.fixture(scope="module")
+def boltz2_dir_src() -> Path:
+    return _ensure_exists(_repo_path("test_data/boltz2/6OGE_ABC_DSSO_CDI_seed_3"))
 
 
 @pytest.fixture(scope="module")
@@ -362,6 +398,61 @@ def test_af3_runner_outputs_have_expected_scores(tmp_path: Path, af3_dir_src: Pa
         # AF3: iptm_ptm is its own metric; compare to its corresponding key
         if exp_iptm_ptm is not None:
             assert nearly_equal(got_iptm_ptm, float(exp_iptm_ptm)), f"AF3 iptm_ptm mismatch for {m}"
+
+
+def test_af3_parser_accepts_official_prefixed_layout(tmp_path: Path, af3_dir_src: Path):
+    af3_dir = make_official_af3_layout(af3_dir_src, tmp_path, job_name="hello_fold")
+
+    assert not (af3_dir / "ranking_scores.csv").exists()
+    parser = pick_parser(af3_dir)
+    assert parser.name == "af3"
+
+    run = parser.parse_run(af3_dir)
+    assert run.order
+
+    process(
+        str(af3_dir),
+        8.0,
+        100.0,
+        "all",
+        10.0,
+        per_run_csv_name="interfaces_official_af3.csv",
+        skip_pae_png=True,
+        skip_biophysical_scores=True,
+    )
+
+    rows = read_csv_rows(af3_dir / "interfaces_official_af3.csv")
+    assert rows
+    assert set(_get_rows_by_model(rows)) == set(run.order)
+
+
+def test_boltz2_parser_processes_ranked_prediction_dir(tmp_path: Path, boltz2_dir_src: Path):
+    boltz_dir = copy_run_dir(boltz2_dir_src, tmp_path)
+
+    parser = pick_parser(boltz_dir)
+    assert parser.name == "boltz2"
+    run = parser.parse_run(boltz_dir)
+    assert run.order == ["6OGE_ABC_DSSO_CDI_Boltz2_model_0"]
+
+    _, conf = run.load_model(run.order[0])
+    assert conf.pae_matrix.shape == (1058, 1058)
+    assert len(conf.plddt_residue) == 1058
+    assert nearly_equal(conf.confidence_score, 0.8897088170051575)
+
+    process(
+        str(boltz_dir),
+        8.0,
+        100.0,
+        "best",
+        10.0,
+        per_run_csv_name="interfaces_boltz2.csv",
+        skip_pae_png=True,
+        skip_biophysical_scores=True,
+    )
+
+    rows = read_csv_rows(boltz_dir / "interfaces_boltz2.csv")
+    assert rows
+    assert set(_get_rows_by_model(rows)) == {"6OGE_ABC_DSSO_CDI_Boltz2_model_0"}
 
 
 # -------------------------

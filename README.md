@@ -13,7 +13,7 @@ AlphaJudge evaluates AlphaFold-predicted protein complexes by merging AI-derived
 
 ## What it does
 
-AlphaJudge parses AF2 and AF3 outputs and summarizes per-model / per-interface metrics:
+AlphaJudge parses AF2, AF3, and Boltz-2 outputs and summarizes per-model / per-interface metrics:
 
 | category | metrics (examples) | notes |
 | --- | --- | --- |
@@ -28,10 +28,10 @@ Use cases: rank poses, sanity-check AF confidences, or export features for ML.
 ## Pipeline overview
 
 ```
-AlphaFold models (AF2 or AF3)  →  AlphaJudge  →  interfaces.csv
+AlphaFold or Boltz models  →  AlphaJudge  →  interfaces.csv
 ```
 
-- Detects AF2 vs AF3 automatically from the run directory
+- Detects AF2, AF3, and Boltz-2 automatically from the run directory
 - Loads structure and confidences, computes interface descriptors
 - Writes `interfaces.csv` into the same directory
 
@@ -105,8 +105,11 @@ Examples
 # Single AF2 run (directory contains ranking_debug.json, pae_*.json, and model files)
 alphajudge test_data/af2/pos_dimers/Q13148+Q92900
 
-# Single AF3 run (directory contains ranking_scores.csv, per-model summary/confidence files, and model files)
+# Single AF3 run (AlphaPulldown-style or official DeepMind AF3 output layout)
 alphajudge test_data/af3/pos_dimers/Q13148+Q92900 --models_to_analyse all
+
+# Boltz-2 prediction directory (for example out_dir/predictions/my_input)
+alphajudge out_dir/predictions/my_input --models_to_analyse all
 
 # Aggregate multiple runs into one summary
 alphajudge test_data/af2/pos_dimers/Q13148+Q92900 \
@@ -151,12 +154,13 @@ Key outputs per interface include: `average_interface_pae`, `interface_average_p
 
 ## Expected input layout
 
-AlphaJudge expects standard AlphaFold run outputs.
+AlphaJudge expects standard prediction run outputs.
 
 - AF2: directory with `ranking_debug.json`, `pae_<model>.json`, and model structure files (`model.cif` or `*.pdb/*.cif`)
-- AF3: directory with `ranking_scores.csv`, per-model `summary_confidences.json` and `confidences.json` (or top-level `ranked_0_summary_confidences.json`), and structure files
+- AF3: AlphaPulldown/normalized layout with `ranking_scores.csv` and per-model `summary_confidences.json`/`confidences.json`, or official DeepMind AF3 layout with `<job_name>_ranking_scores.csv` and prefixed per-sample files such as `<job_name>_seed-<seed>_sample-<sample>_model.cif`
+- Boltz-2: prediction directory with ranked files such as `<input>_model_0.cif`, `confidence_<input>_model_0.json`, and optional `pae_<input>_model_0.npz` / `plddt_<input>_model_0.npz`
 
-The tool searches for `model.cif` inside each model subdirectory first; otherwise it tries to match `*<model>*.cif` or `*<model>*.pdb` at the run root.
+The tool searches for `model.cif` inside each model subdirectory first; otherwise it tries to match `*<model>*.cif` or `*<model>*.pdb` at the run root. For Boltz-2 protein-ligand outputs, PAE and pLDDT arrays may include trailing small-molecule tokens; AlphaJudge trims those arrays to the protein/nucleic residue block it scores.
 
 ---
 
@@ -184,7 +188,7 @@ pip install -e ".[test]"
 pytest -q
 ```
 
-Tests exercise both AF2 and AF3 parsers and validate the CSV fields against bundled fixtures in `test_data/`. The slow CCP4 SC regression suite is opt-in and can be enabled with `ALPHAJUDGE_RUN_SLOW_SC_REFERENCE=1`; CI always runs it across Python 3.10–3.13.
+Tests exercise AF2, AF3, and Boltz-2 parsers and validate the CSV fields against bundled fixtures in `test_data/`. The slow CCP4 SC regression suite is opt-in and can be enabled with `ALPHAJUDGE_RUN_SLOW_SC_REFERENCE=1`; CI always runs it across Python 3.10–3.13.
 
 ---
 
