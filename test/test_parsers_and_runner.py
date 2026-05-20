@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import math
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from alphajudge.parsers import pick_parser
+from alphajudge.parsers.af3 import AF3Parser
 from alphajudge.runner import process, process_many
 
 
@@ -171,6 +174,12 @@ def _load_json(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
+def _load_npz_array(path: Path, preferred_key: str) -> np.ndarray:
+    with np.load(path) as payload:
+        key = preferred_key if preferred_key in payload else payload.files[0]
+        return np.array(payload[key], dtype=float)
+
+
 def _af3_expected_rank(summary: dict[str, Any]) -> Any:
     # AF3: ranking_score is the ranking metric; some files may expose iptm+ptm too
     if summary.get("ranking_score") is not None:
@@ -327,6 +336,62 @@ def test_af2_runner_outputs_have_expected_scores(tmp_path: Path, af2_dir_src: Pa
 # AF3 runner: best/all + score checks
 # -------------------------
 
+def test_af3_job_prefix_from_ranking_file_handles_plain_prefixed_and_weird():
+    assert AF3Parser._job_prefix_from_ranking_file(Path("ranking_scores.csv")) is None
+    assert (
+        AF3Parser._job_prefix_from_ranking_file(Path("hello_fold_ranking_scores.csv"))
+        == "hello_fold"
+    )
+    assert (
+        AF3Parser._job_prefix_from_ranking_file(Path("hello_fold_ranking_scores_backup.csv"))
+        is None
+    )
+
+
+def test_af3_pae_warning_paths_fall_back_to_default(caplog: pytest.LogCaptureFixture):
+    class Chain:
+        def __init__(self, chain_id: str):
+            self.id = chain_id
+
+    chains = [Chain("A"), Chain("B")]
+    cid = {"A": [0], "B": [1]}
+
+    caplog.set_level(logging.WARNING, logger="alphajudge.parsers.af3")
+    pae, max_pae = AF3Parser._normalize_pae_af3(
+        {"predicted_aligned_error": [[3.0]], "max_predicted_aligned_error": 3.0},
+        chains,
+        cid,
+    )
+
+    assert pae.shape == (2, 2)
+    assert np.all(pae == 100.0)
+    assert max_pae == 3.0
+    assert "predicted_aligned_error shape" in caplog.text
+
+    caplog.clear()
+    pae, max_pae = AF3Parser._normalize_pae_af3({"unexpected_schema": True}, chains, cid)
+
+    assert pae.shape == (2, 2)
+    assert np.all(pae == 100.0)
+    assert math.isnan(max_pae)
+    assert "No recognised PAE keys" in caplog.text
+
+
+def test_af3_parser_accepts_alphapulldown_layout(af3_dir_src: Path):
+    assert (af3_dir_src / "ranking_scores.csv").exists()
+
+    parser = pick_parser(af3_dir_src)
+    assert parser.name == "af3"
+
+    run = parser.parse_run(af3_dir_src)
+    assert len(run.order) == 5
+    assert run.order[0] == "seed-19698302_sample-1"
+
+    _, conf = run.load_model(run.order[0])
+    assert conf.pae_matrix.shape[0] == len(conf.plddt_residue)
+    assert np.isfinite(conf.confidence_score)
+
+
 @pytest.mark.parametrize("models_to_analyse", ["best", "all"])
 def test_af3_runner_outputs_have_expected_scores(tmp_path: Path, af3_dir_src: Path, models_to_analyse: str):
     af3_dir = copy_run_dir(af3_dir_src, tmp_path)
@@ -428,15 +493,25 @@ def test_af3_parser_accepts_official_prefixed_layout(tmp_path: Path, af3_dir_src
 
 def test_boltz2_parser_processes_ranked_prediction_dir(tmp_path: Path, boltz2_dir_src: Path):
     boltz_dir = copy_run_dir(boltz2_dir_src, tmp_path)
+    model_name = "6OGE_ABC_DSSO_CDI_Boltz2_model_0"
+
+    raw_pae = _load_npz_array(boltz_dir / f"pae_{model_name}.npz", "pae")
+    raw_plddt = _load_npz_array(boltz_dir / f"plddt_{model_name}.npz", "plddt")
+    assert raw_pae.shape == (1070, 1070)
+    assert raw_plddt.shape == (1070,)
 
     parser = pick_parser(boltz_dir)
     assert parser.name == "boltz2"
     run = parser.parse_run(boltz_dir)
-    assert run.order == ["6OGE_ABC_DSSO_CDI_Boltz2_model_0"]
+    assert run.order == [model_name]
 
     _, conf = run.load_model(run.order[0])
     assert conf.pae_matrix.shape == (1058, 1058)
     assert len(conf.plddt_residue) == 1058
+    assert conf.pae_matrix.shape[0] < raw_pae.shape[0]
+    assert len(conf.plddt_residue) < raw_plddt.size
+    assert np.allclose(conf.pae_matrix, raw_pae[:1058, :1058])
+    assert np.allclose(conf.plddt_residue, raw_plddt[:1058])
     assert nearly_equal(conf.confidence_score, 0.8897088170051575)
 
     process(
@@ -452,7 +527,7 @@ def test_boltz2_parser_processes_ranked_prediction_dir(tmp_path: Path, boltz2_di
 
     rows = read_csv_rows(boltz_dir / "interfaces_boltz2.csv")
     assert rows
-    assert set(_get_rows_by_model(rows)) == {"6OGE_ABC_DSSO_CDI_Boltz2_model_0"}
+    assert set(_get_rows_by_model(rows)) == {model_name}
 
 
 # -------------------------
