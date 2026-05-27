@@ -867,13 +867,22 @@ def _per_interface_page(
         number=section_no, title="Per-interface raw scores",
     )
 
-    intro_ax = fig.add_axes((0.10, 0.84, 0.80, 0.05))
+    intro_ax = fig.add_axes((0.10, 0.83, 0.80, 0.06))
     intro_ax.axis("off")
     intro_ax.text(
         0.0,
         1.0,
-        "Each row is one chain pair detected by AlphaJudge. The Meta column is the "
-        "averaged percentile across the 10 metascore features (higher is better).",
+        "Each row is one chain pair detected by AlphaJudge.",
+        fontsize=9,
+        ha="left",
+        va="top",
+        transform=intro_ax.transAxes,
+    )
+    intro_ax.text(
+        0.0,
+        0.55,
+        "The Meta column is the averaged percentile across the 10 metascore "
+        "features (higher is better).",
         fontsize=9,
         ha="left",
         va="top",
@@ -881,8 +890,13 @@ def _per_interface_page(
     )
 
     headers = ["Model", "Interface", "Residues", "Meta", "LIS", "ipSAE", "pDockQ2", "ipTM", "PAE", "Sc"]
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: (_row_meta_score(r) if _row_meta_score(r) is not None else -1.0),
+        reverse=True,
+    )
     body: list[list[str]] = []
-    for r in rows:
+    for r in sorted_rows:
         body.append(
             [
                 _truncate(str(r.get("model_used") or ""), 26),
@@ -898,16 +912,16 @@ def _per_interface_page(
             ]
         )
 
-    col_fracs = [0.21, 0.09, 0.08, 0.08, 0.08, 0.09, 0.10, 0.07, 0.08, 0.12]
+    col_fracs = [0.18, 0.10, 0.10, 0.08, 0.08, 0.09, 0.10, 0.07, 0.08, 0.12]
     _draw_fixed_table(
         fig,
         x=0.07,
-        y_top=0.80,
+        y_top=0.78,
         w=0.86,
         headers=headers,
         rows=body,
         col_fracs=col_fracs,
-        row_height=0.026,
+        row_height=0.024,
     )
 
     _add_page_footer(fig, page_no=page_no, total=total, last=last)
@@ -1207,8 +1221,10 @@ def generate_per_run_report(
     other_models = [m for m in by_model if m and m != best_model]
 
     pae_png = _find_pae_png(run_dir, best_model)
+    unique_interfaces = {str(r.get("interface") or "") for r in rows}
+    show_interface_table = len(unique_interfaces) > 1
 
-    total = 2 + (1 if pae_png else 0) + len(other_models)
+    total = 2 + (1 if show_interface_table else 0) + (1 if pae_png else 0) + len(other_models)
 
     entry_id = _truncate(run_dir.name, 36)
     chains = _detect_chain_set(rows)
@@ -1268,21 +1284,36 @@ def generate_per_run_report(
             last=(page_no == total),
         )
 
+        next_section = 2
+        if show_interface_table:
+            page_no += 1
+            _per_interface_page(
+                pdf,
+                title=_REPORT_TITLE,
+                entry_id=entry_id,
+                section_no=str(next_section),
+                rows=rows,
+                page_no=page_no,
+                total=total,
+                last=(page_no == total),
+            )
+            next_section += 1
+
         if pae_png is not None:
             page_no += 1
             _pae_page(
                 pdf,
                 title=_REPORT_TITLE,
                 entry_id=entry_id,
-                section_no="2",
+                section_no=str(next_section),
                 image_path=pae_png,
                 model_label=best_model,
                 page_no=page_no,
                 total=total,
                 last=(page_no == total),
             )
+            next_section += 1
 
-        next_section = 3 if pae_png is not None else 2
         for m in other_models:
             m_rows = by_model[m]
             m_best = _best_row(m_rows) or m_rows[0]
