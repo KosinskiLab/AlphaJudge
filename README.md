@@ -105,6 +105,8 @@ Outputs:
 - If `--summary` is provided, also writes a union-header CSV at the given path containing rows from all runs.
 - If `--aggregate_report` is provided, also writes a multi-page PDF with one slider page per interface across the whole cohort, plus a cover with the meta-score histogram, summary statistics, and a top-N interfaces table.
 
+Report generation is backend-agnostic: AF2, AF3, and Boltz-2 runs all flow through the same scoring path, so `--report` and `--aggregate_report` work identically for any mix of supported predictions in one cohort. Multimers contribute one slider page per detected chain pair; dimers contribute one.
+
 A separate `alphajudge-report` console entry is also available; it dispatches to per-run mode when given a run directory and to aggregate mode when given a summary CSV:
 
 ```bash
@@ -132,8 +134,9 @@ alphajudge test_data/af2/pos_dimers/Q13148+Q92900 \
 # Recursively discover runs under roots and write a combined summary
 alphajudge test_data/af2/pos_dimers test_data/af3/pos_dimers -r -o interfaces_summary.csv
 
-# Score a cohort and emit a cohort-wide validation PDF (one slider page per interface)
-alphajudge test_data/af2/pos_dimers -r \
+# Score a cohort (any mix of AF2 / AF3 / Boltz-2 run dirs) and emit a cohort-wide
+# validation PDF with one slider page per detected interface
+alphajudge test_data/af2/pos_dimers test_data/af3/pos_dimers -r \
   -o interfaces_summary.csv \
   --aggregate_report aggregate_report.pdf
 ```
