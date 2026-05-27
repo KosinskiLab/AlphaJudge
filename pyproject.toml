@@ -49,6 +49,7 @@ test = [
 
 [project.scripts]
 alphajudge = "alphajudge.cli:main"
+alphajudge-report = "alphajudge.report:main_aggregate"
 
 [project.urls]
 Homepage = "https://github.com/KosinskiLab/AlphaJudge"

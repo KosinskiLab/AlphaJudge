@@ -218,6 +218,7 @@ def _process_one_run(
     per_run_csv_name: str,
     skip_pae_png: bool,
     skip_biophysical_scores: bool,
+    write_per_run_report: bool = False,
 ) -> tuple[str, list[dict]]:
     """
     Worker: process a single run dir (or reuse interfaces.csv) and optionally return rows for aggregation.
@@ -234,6 +235,8 @@ def _process_one_run(
             rows = _read_csv_rows(existing_csv)
             if rows:
                 logger.info(f"reused existing {existing_csv} for aggregation")
+                if write_per_run_report:
+                    _safe_write_per_run_report(d, csv_name=per_run_csv_name)
                 return (d_str, rows)
             logger.info(f"existing {existing_csv} is empty; recomputing")
         except Exception as e:
@@ -242,6 +245,8 @@ def _process_one_run(
     # If no summary requested but interfaces.csv exists, skip recompute
     if not want_summary and existing_csv.exists() and not force_recompute:
         logger.info(f"reused existing {existing_csv}; skipping recompute")
+        if write_per_run_report:
+            _safe_write_per_run_report(d, csv_name=per_run_csv_name)
         return (d_str, [])
 
     out_path = process(
@@ -255,6 +260,9 @@ def _process_one_run(
         skip_biophysical_scores=skip_biophysical_scores,
     )
 
+    if write_per_run_report and out_path is not None:
+        _safe_write_per_run_report(d, csv_name=per_run_csv_name)
+
     if want_summary and out_path is not None:
         try:
             return (d_str, _read_csv_rows(Path(out_path)))
@@ -262,6 +270,17 @@ def _process_one_run(
             logger.error(f"failed reading {out_path} for aggregation: {e}")
 
     return (d_str, [])
+
+
+def _safe_write_per_run_report(run_dir: Path, *, csv_name: str = "interfaces.csv") -> None:
+    """Generate report.pdf next to the per-run CSV, swallowing import/runtime errors."""
+    try:
+        # Import here so a missing matplotlib backend, etc., never blocks scoring.
+        from .report import generate_per_run_report
+
+        generate_per_run_report(run_dir, csv_name=csv_name)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"per-run report failed for {run_dir}: {e}")
 
 
 def process_many(
@@ -277,6 +296,7 @@ def process_many(
     per_run_csv_name: str = "interfaces.csv",
     skip_pae_png: bool = False,
     skip_biophysical_scores: bool = False,
+    write_per_run_report: bool = False,
 ) -> Path | None:
     """
     Process one or more directories. Optionally recurse into nested directories
@@ -349,6 +369,7 @@ def process_many(
                     per_run_csv_name,
                     skip_pae_png,
                     skip_biophysical_scores,
+                    write_per_run_report,
                 )
                 if summary_csv and rows:
                     aggregated_rows.extend(rows)
@@ -372,6 +393,7 @@ def process_many(
                     per_run_csv_name,
                     skip_pae_png,
                     skip_biophysical_scores,
+                    write_per_run_report,
                 )
                 for d in unique_run_dirs
             ]
