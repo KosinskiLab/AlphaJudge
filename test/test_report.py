@@ -86,7 +86,7 @@ def test_per_run_report_returns_none_on_missing_csv(tmp_path: Path) -> None:
     assert generate_per_run_report(tmp_path) is None
 
 
-def test_aggregate_report_writes_cover_plus_one_page_per_complex(tmp_path: Path) -> None:
+def test_aggregate_report_writes_cover_plus_one_page_per_interface(tmp_path: Path) -> None:
     rows = [
         dict(_BASE_ROW),
         {**_BASE_ROW, "jobs": "PROT_C_PROT_D",
@@ -100,8 +100,8 @@ def test_aggregate_report_writes_cover_plus_one_page_per_complex(tmp_path: Path)
     result = generate_aggregate_report(summary, out_pdf=out)
     assert result == out
     assert out.exists() and out.stat().st_size > 0
-    # cover + 2 complex pages
-    assert _pdf_page_count(out) == 3
+    # cover + one page per scorable interface row (3 here)
+    assert _pdf_page_count(out) == 4
 
 
 def test_aggregate_report_handles_missing_meta_score_via_recompute(tmp_path: Path) -> None:
@@ -119,4 +119,4 @@ def test_aggregate_report_handles_missing_meta_score_via_recompute(tmp_path: Pat
     result = generate_aggregate_report(summary, out_pdf=out)
     assert result is not None
     assert out.exists()
-    assert _pdf_page_count(out) == 3  # cover + 2 complexes
+    assert _pdf_page_count(out) == 3  # cover + 2 interfaces

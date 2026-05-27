@@ -971,7 +971,7 @@ def _aggregate_cover_page(
     *,
     summary_csv: Path,
     n_complexes: int,
-    n_rows: int,
+    n_interfaces: int,
     scores: Sequence[float],
     top_rows: Sequence[tuple[str, float, Mapping[str, Any]]],
     backends: Mapping[str, int],
@@ -1001,7 +1001,7 @@ def _aggregate_cover_page(
     sub_ax.text(
         0.5,
         0.5,
-        f"Aggregate report – {n_complexes} complexes",
+        f"Aggregate report – {n_interfaces} interfaces across {n_complexes} complexes",
         ha="center",
         va="center",
         fontsize=11,
@@ -1013,7 +1013,7 @@ def _aggregate_cover_page(
         ("Source", _shorten_path(str(summary_csv), max_len=58)),
         ("Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
         ("Complexes", str(n_complexes)),
-        ("Interface rows", str(n_rows)),
+        ("Interfaces", str(n_interfaces)),
     ]
     if backends:
         meta.append(("Backends", ", ".join(f"{k}={v}" for k, v in backends.items())))
@@ -1030,8 +1030,8 @@ def _aggregate_cover_page(
     if scores:
         hist_ax.hist(scores, bins=24, range=(0.0, 1.0), color="#5688c7", edgecolor="white")
     hist_ax.set_xlim(0.0, 1.0)
-    hist_ax.set_xlabel("Interface meta score (best per complex)", fontsize=9, labelpad=2)
-    hist_ax.set_ylabel("Complexes", fontsize=9)
+    hist_ax.set_xlabel("Interface meta score (one point per interface)", fontsize=9, labelpad=2)
+    hist_ax.set_ylabel("Interfaces", fontsize=9)
     hist_ax.set_title("Distribution across cohort", fontsize=10, loc="left")
     hist_ax.tick_params(labelsize=8)
 
@@ -1057,20 +1057,20 @@ def _aggregate_cover_page(
     title2_ax.text(
         0.5,
         0.5,
-        f"Top {len(top_rows)} complexes by interface meta score",
+        f"Top {len(top_rows)} interfaces by meta score",
         ha="center",
         va="center",
         fontsize=11,
         fontweight="bold",
         transform=title2_ax.transAxes,
     )
-    headers = ["Rank", "Complex", "Meta", "LIS", "ipSAE", "ipTM", "PAE", "Sc"]
+    headers = ["Rank", "Complex / interface", "Meta", "LIS", "ipSAE", "ipTM", "PAE", "Sc"]
     body: list[list[str]] = []
     for i, (name, score, row) in enumerate(top_rows, start=1):
         body.append(
             [
                 str(i),
-                _truncate(name, 28),
+                _truncate(name, 34),
                 _format_raw(score),
                 _format_raw(_safe_float(row.get("interface_LIS"))),
                 _format_raw(_safe_float(row.get("interface_ipSAE"))),
@@ -1079,7 +1079,7 @@ def _aggregate_cover_page(
                 _format_raw(_safe_float(row.get("interface_sc"))),
             ]
         )
-    col_fracs = [0.07, 0.30, 0.10, 0.10, 0.10, 0.10, 0.10, 0.13]
+    col_fracs = [0.07, 0.34, 0.09, 0.09, 0.10, 0.09, 0.10, 0.12]
     _draw_fixed_table(
         fig,
         x=0.07,
@@ -1096,21 +1096,22 @@ def _aggregate_cover_page(
     plt.close(fig)
 
 
-def _complex_summary_page(
+def _interface_summary_page(
     pdf: PdfPages,
     *,
     complex_name: str,
-    rows: Sequence[Mapping[str, Any]],
+    interface_label: str,
+    row: Mapping[str, Any],
     cohort_position: tuple[int, int] | None,
     page_no: int,
     total: int,
     last: bool,
 ) -> None:
-    best = _best_row(rows) or rows[0]
     fig = _new_figure()
+    entry = f"{_truncate(complex_name, 26)} / {interface_label}"
     _add_page_header(
         fig, page_no=page_no, total=total,
-        title=_REPORT_TITLE, entry=_truncate(complex_name, 40),
+        title=_REPORT_TITLE, entry=_truncate(entry, 40),
     )
 
     title_ax = fig.add_axes((0.07, 0.91, 0.86, 0.05))
@@ -1118,7 +1119,7 @@ def _complex_summary_page(
     title_ax.text(
         0.5,
         0.5,
-        complex_name,
+        _truncate(complex_name, 60),
         ha="center",
         va="center",
         fontsize=17,
@@ -1129,12 +1130,12 @@ def _complex_summary_page(
     sub_ax = fig.add_axes((0.07, 0.875, 0.86, 0.025))
     sub_ax.axis("off")
     bits = [
-        f"Model {best.get('model_used', '?')}",
-        f"Interface {best.get('interface', '?')}",
+        f"Interface {interface_label}",
+        f"Model {row.get('model_used', '?')}",
     ]
     if cohort_position is not None:
         bits.append(f"Rank {cohort_position[0]} of {cohort_position[1]}")
-    n_res = best.get("interface_num_intf_residues")
+    n_res = row.get("interface_num_intf_residues")
     if n_res:
         bits.append(f"{n_res} interface residues")
     sub_ax.text(0.5, 0.5, "  •  ".join(bits), ha="center", va="center", fontsize=10, color="#222", transform=sub_ax.transAxes)
@@ -1144,14 +1145,14 @@ def _complex_summary_page(
         number="1", title="Overall quality at a glance",
     )
 
-    _draw_slider_panel(fig, top=0.79, height=0.62, row=best, include_overall=True)
+    _draw_slider_panel(fig, top=0.79, height=0.62, row=row, include_overall=True)
 
     note_ax = fig.add_axes((0.10, 0.07, 0.80, 0.06))
     note_ax.axis("off")
     note_ax.text(
         0.5,
         1.0,
-        "Black marker shows this complex's percentile rank against the AlphaJudge benchmark "
+        "Black marker shows this interface's percentile rank against the AlphaJudge benchmark "
         "(higher = better).",
         ha="center",
         va="top",
@@ -1370,7 +1371,11 @@ def generate_aggregate_report(
     top_n: int = 10,
     max_complexes: int | None = None,
 ) -> Path | None:
-    """Build a multi-page aggregate validation PDF from a merged interfaces CSV."""
+    """Build a multi-page aggregate validation PDF from a merged interfaces CSV.
+
+    Statistics are computed **per interface** (one data point per chain pair
+    in the merged CSV). A multimer with 15 interfaces contributes 15 points.
+    """
 
     _setup_rcparams()
 
@@ -1383,34 +1388,38 @@ def generate_aggregate_report(
         logger.warning("empty summary CSV: %s", summary_csv)
         return None
 
-    grouped = _group_complex_rows(rows)
-    if not grouped:
-        logger.warning("no grouping key (jobs/pair) in %s", summary_csv)
-        return None
-
-    ranked: list[tuple[str, float, Mapping[str, Any]]] = []
-    for name, complex_rows in grouped.items():
-        best = _best_row(complex_rows)
-        if best is None:
+    # One entry per scorable interface row.
+    ranked: list[tuple[str, str, str, float, Mapping[str, Any]]] = []
+    for r in rows:
+        cname = str(r.get("jobs") or r.get("pair") or r.get("complex") or "")
+        iface = str(r.get("interface") or "")
+        if not cname:
             continue
-        score = _row_meta_score(best)
+        score = _row_meta_score(r)
         if score is None:
             continue
-        ranked.append((name, score, best))
-    ranked.sort(key=lambda t: t[1], reverse=True)
+        label = f"{cname} · {iface}" if iface else cname
+        ranked.append((label, cname, iface, score, r))
+    if not ranked:
+        logger.warning("no scorable interface rows in %s", summary_csv)
+        return None
+    ranked.sort(key=lambda t: t[3], reverse=True)
 
-    top_rows = ranked[:top_n]
-    if max_complexes is not None:
-        ranked_per_page = ranked[:max_complexes]
-    else:
-        ranked_per_page = ranked
+    top_rows = [(label, score, r) for label, _, _, score, r in ranked[:top_n]]
+    ranked_per_page = ranked if max_complexes is None else ranked[:max_complexes]
 
+    # Backends counted per complex (so a multimer doesn't multi-count).
+    seen_backend: dict[str, str] = {}
+    for _label, cname, _iface, _score, r in ranked:
+        if cname not in seen_backend:
+            seen_backend[cname] = _detect_backend([r])
     backends: dict[str, int] = {}
-    for name, complex_rows in grouped.items():
-        b = _detect_backend(complex_rows)
+    for b in seen_backend.values():
         backends[b] = backends.get(b, 0) + 1
 
-    scores = [s for (_, s, _) in ranked]
+    scores = [s for _, _, _, s, _ in ranked]
+    n_complexes = len(seen_backend)
+    n_interfaces = len(ranked)
     total = 1 + len(ranked_per_page)
 
     out_pdf = Path(out_pdf)
@@ -1419,20 +1428,20 @@ def generate_aggregate_report(
         _aggregate_cover_page(
             pdf,
             summary_csv=summary_csv,
-            n_complexes=len(grouped),
-            n_rows=len(rows),
+            n_complexes=n_complexes,
+            n_interfaces=n_interfaces,
             scores=scores,
             top_rows=top_rows,
             backends=backends,
             page_no=1,
             total=total,
         )
-        for rank, (name, _score, _best) in enumerate(ranked_per_page, start=1):
-            complex_rows = grouped[name]
-            _complex_summary_page(
+        for rank, (_label, cname, iface, _score, r) in enumerate(ranked_per_page, start=1):
+            _interface_summary_page(
                 pdf,
-                complex_name=name,
-                rows=complex_rows,
+                complex_name=cname,
+                interface_label=iface or "?",
+                row=r,
                 cohort_position=(rank, len(ranked_per_page)),
                 page_no=1 + rank,
                 total=total,
