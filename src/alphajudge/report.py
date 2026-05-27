@@ -1221,10 +1221,23 @@ def generate_per_run_report(
     other_models = [m for m in by_model if m and m != best_model]
 
     pae_png = _find_pae_png(run_dir, best_model)
-    unique_interfaces = {str(r.get("interface") or "") for r in rows}
-    show_interface_table = len(unique_interfaces) > 1
+    # Pick the best model's rows for the per-interface slider pages; sort by
+    # metascore descending so the strongest interface comes first.
+    best_model_rows = by_model.get(best_model, list(rows))
+    interface_rows = sorted(
+        best_model_rows,
+        key=lambda r: (_row_meta_score(r) if _row_meta_score(r) is not None else -1.0),
+        reverse=True,
+    )
+    show_interface_table = len(interface_rows) > 1
 
-    total = 2 + (1 if show_interface_table else 0) + (1 if pae_png else 0) + len(other_models)
+    total = (
+        1  # cover
+        + (1 if show_interface_table else 0)  # overview table
+        + len(interface_rows)  # one slider page per interface
+        + (1 if pae_png else 0)  # PAE heatmap
+        + len(other_models)  # non-best-model appendix
+    )
 
     entry_id = _truncate(run_dir.name, 36)
     chains = _detect_chain_set(rows)
@@ -1243,8 +1256,9 @@ def generate_per_run_report(
     ]
     info_lines = [
         "AlphaJudge interface validation report.",
-        "Each metric is converted to its archive percentile using the frozen benchmark",
-        "deciles; the overall meta score is the unweighted mean over available features.",
+        "Each metric is converted to its archive percentile against the frozen",
+        "benchmark distribution; the overall meta score is the unweighted mean over",
+        "available features.",
     ]
     software_lines: list[tuple[str, str]] = [
         ("Reference distribution", _BENCHMARK_TAG),
@@ -1267,24 +1281,7 @@ def generate_per_run_report(
             total=total,
         )
 
-        page_no += 1
-        _quality_page(
-            pdf,
-            title=_REPORT_TITLE,
-            entry_id=entry_id,
-            section_no="1",
-            section_title="Overall quality at a glance",
-            pre_lines=[
-                f"Best model: {best_model}",
-                f"Best interface: {best.get('interface', '?')}    Residues at interface: {best.get('interface_num_intf_residues', '?')}",
-            ],
-            row=best,
-            page_no=page_no,
-            total=total,
-            last=(page_no == total),
-        )
-
-        next_section = 2
+        next_section = 1
         if show_interface_table:
             page_no += 1
             _per_interface_page(
@@ -1298,6 +1295,34 @@ def generate_per_run_report(
                 last=(page_no == total),
             )
             next_section += 1
+
+        quality_section_no = next_section
+        for i, row in enumerate(interface_rows):
+            page_no += 1
+            iface_label = str(row.get("interface") or "?")
+            n_res = row.get("interface_num_intf_residues") or "?"
+            if show_interface_table:
+                section_title = f"Interface {iface_label}"
+                section_no = f"{quality_section_no}.{i + 1}"
+            else:
+                section_title = "Overall quality at a glance"
+                section_no = str(quality_section_no)
+            _quality_page(
+                pdf,
+                title=_REPORT_TITLE,
+                entry_id=entry_id,
+                section_no=section_no,
+                section_title=section_title,
+                pre_lines=[
+                    f"Model: {row.get('model_used', best_model)}",
+                    f"Chain pair: {iface_label}    Residues at interface: {n_res}",
+                ],
+                row=row,
+                page_no=page_no,
+                total=total,
+                last=(page_no == total),
+            )
+        next_section = quality_section_no + 1
 
         if pae_png is not None:
             page_no += 1
