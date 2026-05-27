@@ -7,8 +7,8 @@ The visual layout mirrors the wwPDB / RCSB "Full Validation Report" PDF
 * a smooth red -> yellow -> green percentile slider with a single black
   marker for the entry's archive percentile;
 * a numbered "Overall quality at a glance" page with a metric/value table;
-* a page header rule with title + page number + entry id, and a
-  thin bottom rule with the page number.
+* a page header rule with title + entry id, and a thin bottom rule
+  with the page number.
 
 Two entry points:
 
@@ -227,8 +227,7 @@ def _new_figure() -> plt.Figure:
 def _add_page_header(fig: plt.Figure, *, page_no: int, total: int, title: str, entry: str) -> None:
     ax = fig.add_axes((0.07, 0.965, 0.86, 0.018))
     ax.axis("off")
-    ax.text(0.0, 0.5, f"Page {page_no}", fontsize=8, color="#333", va="center", transform=ax.transAxes)
-    ax.text(0.5, 0.5, title, fontsize=8, color="#333", va="center", ha="center", transform=ax.transAxes)
+    ax.text(0.0, 0.5, title, fontsize=8, color="#333", va="center", transform=ax.transAxes)
     ax.text(1.0, 0.5, entry, fontsize=8, color="#333", va="center", ha="right", transform=ax.transAxes)
     rule = fig.add_axes((0.07, 0.957, 0.86, 0.003))
     rule.axis("off")
