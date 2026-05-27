@@ -8,7 +8,7 @@ The visual layout mirrors the wwPDB / RCSB "Full Validation Report" PDF
   marker for the entry's archive percentile;
 * a numbered "Overall quality at a glance" page with a metric/value table;
 * a page header rule with title + page number + entry id, and a
-  bottom rule with a "Continued on next page" note.
+  thin bottom rule with the page number.
 
 Two entry points:
 
@@ -241,33 +241,11 @@ def _add_page_footer(fig: plt.Figure, *, page_no: int, total: int, last: bool) -
     rule.axhline(0.5, color=_HEADER_RULE, linewidth=0.6)
     ax = fig.add_axes((0.07, 0.018, 0.86, 0.018))
     ax.axis("off")
-    if not last and page_no < total:
-        ax.text(
-            0.5,
-            0.5,
-            "Continued on next page…",
-            ha="center",
-            va="center",
-            fontsize=8,
-            color="#666",
-            style="italic",
-            transform=ax.transAxes,
-        )
     ax.text(
         1.0,
         0.5,
         f"{page_no} / {total}",
         ha="right",
-        va="center",
-        fontsize=8,
-        color="#555",
-        transform=ax.transAxes,
-    )
-    ax.text(
-        0.0,
-        0.5,
-        "AlphaJudge",
-        ha="left",
         va="center",
         fontsize=8,
         color="#555",
@@ -829,20 +807,6 @@ def _quality_page(
         )
 
     _draw_slider_panel(fig, top=0.76, height=0.60, row=row, include_overall=True)
-
-    explanation_ax = fig.add_axes((0.10, 0.06, 0.80, 0.06))
-    explanation_ax.axis("off")
-    explanation_ax.text(
-        0.5,
-        0.9,
-        "Percentile ranks are computed against the AlphaJudge benchmark distribution; "
-        "higher is better for every metric (sign-flipped where needed).",
-        ha="center",
-        va="top",
-        fontsize=9,
-        color="#555",
-        transform=explanation_ax.transAxes,
-    )
 
     _add_page_footer(fig, page_no=page_no, total=total, last=last)
     pdf.savefig(fig)
