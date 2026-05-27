@@ -14,6 +14,7 @@ import numpy as np
 
 from .parsers import pick_parser
 from .complex import Complex
+from .meta_score import interface_meta_score
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +102,7 @@ def process(
                     f"{iface.chain1[0].get_parent().id}_{iface.chain2[0].get_parent().id}"
                 )
                 iptm_val = iface.iptm_chainpair if iface.iptm_chainpair is not None else confidence.iptm
-                
-                row_data = {
+                row = {
                     "jobs": job,
                     "model_used": m,
                     "interface": label,
@@ -129,10 +129,10 @@ def process(
                     "interface_ipSAE": iface.ipsae(),
                     "interface_LIS": iface.lis(),
                 }
-                
+
                 # Add expensive metrics only if not skipped
                 if not skip_biophysical_scores:
-                    row_data.update({
+                    row.update({
                         "interface_hb": iface.hb,
                         "interface_sb": iface.sb,
                         "interface_ss": iface.ss,
@@ -140,8 +140,9 @@ def process(
                         "interface_area": iface.int_area,
                         "interface_solv_en": iface.int_solv_en,
                     })
-                
-                rows.append(row_data)
+
+                row["interface_meta_score"] = interface_meta_score(row)
+                rows.append(row)
 
             # Compute chain boundaries for separator lines on PAE heatmap
             chain_boundaries: list[float] = []
