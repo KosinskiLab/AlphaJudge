@@ -82,7 +82,9 @@ alphajudge PATH [PATH ...] \
   --ipsae_pae_cutoff 10.0 \
   [-r|--recursive] \
   [-o|--summary SUMMARY.csv] \
-  [--cores]
+  [--cores] \
+  [--report | --no-report] \
+  [--aggregate_report AGGREGATE.pdf]
 ```
 
 - **PATH**: One or more run directories or roots to search
@@ -93,11 +95,22 @@ alphajudge PATH [PATH ...] \
 - **-r / --recursive**: Recursively discover runs under each PATH
 - **-o / --summary**: Write an aggregated CSV across all processed runs
 - **--cores**: Number of processes to use across run directories (0 = all available cores)
+- **--report / --no-report**: Write an RCSB-style `report.pdf` next to each per-run `interfaces.csv`. Default is on for single-run scoring and off when `--summary` is used, so benchmark aggregations stay fast.
+- **--aggregate_report AGGREGATE.pdf**: After scoring, build a multi-page validation PDF from the `--summary` CSV with one slider page per interface ranked by meta score (requires `--summary`).
 
 Outputs:
 - Always writes `interfaces.csv` inside each processed run directory.
 - For each processed model, also writes a PAE heatmap PNG `pae_<model>.png` next to `interfaces.csv`.
+- If `--report` is on, also writes `report.pdf` next to `interfaces.csv` -- an RCSB-style validation report with a percentile slider panel for every detected interface.
 - If `--summary` is provided, also writes a union-header CSV at the given path containing rows from all runs.
+- If `--aggregate_report` is provided, also writes a multi-page PDF with one slider page per interface across the whole cohort, plus a cover with the meta-score histogram, summary statistics, and a top-N interfaces table.
+
+A separate `alphajudge-report` console entry is also available; it dispatches to per-run mode when given a run directory and to aggregate mode when given a summary CSV:
+
+```bash
+alphajudge-report path/to/run_dir --out-pdf path/to/report.pdf
+alphajudge-report path/to/summary.csv --out-pdf path/to/aggregate.pdf
+```
 
 Examples
 
@@ -118,6 +131,11 @@ alphajudge test_data/af2/pos_dimers/Q13148+Q92900 \
 
 # Recursively discover runs under roots and write a combined summary
 alphajudge test_data/af2/pos_dimers test_data/af3/pos_dimers -r -o interfaces_summary.csv
+
+# Score a cohort and emit a cohort-wide validation PDF (one slider page per interface)
+alphajudge test_data/af2/pos_dimers -r \
+  -o interfaces_summary.csv \
+  --aggregate_report aggregate_report.pdf
 ```
 
 ---
