@@ -72,7 +72,7 @@ def main() -> None:
     if write_per_run_report is None:
         write_per_run_report = args.summary is None
 
-    process_many(
+    summary_path = process_many(
         args.paths,
         args.contact_thresh,
         args.pae_filter,
@@ -91,7 +91,13 @@ def main() -> None:
     if args.aggregate_report:
         if not args.summary:
             p.error("--aggregate_report requires --summary")
-        generate_aggregate_report(args.summary, out_pdf=args.aggregate_report)
+        if summary_path is None:
+            p.error(
+                f"--aggregate_report requested but no summary was written to "
+                f"{args.summary}; refusing to build a report from a possibly "
+                "stale CSV"
+            )
+        generate_aggregate_report(summary_path, out_pdf=args.aggregate_report)
 
 
 if __name__ == "__main__":
