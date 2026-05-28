@@ -94,6 +94,7 @@ _FEATURE_DISPLAY = {
     "average_interface_pae": "Avg. interface PAE",
     "pDockQ/mpDockQ": "pDockQ / mpDockQ",
     "interface_sc": "Shape complementarity",
+    "interface_hb": "Hydrogen bonds",
     "interface_area": "Interface area",
     "interface_solv_en": "Solvation energy",
 }
@@ -118,7 +119,7 @@ _AF_DERIVED_FEATURES = (
 )
 _BIOPHYSICAL_FEATURES = (
     "interface_sc",
-    "interface_area",
+    "interface_hb",
     "interface_solv_en",
 )
 
@@ -418,17 +419,8 @@ def _add_page_header(fig: plt.Figure, *, page_no: int, total: int, title: str, e
 
 
 def _add_page_footer(fig: plt.Figure, *, page_no: int, total: int, last: bool) -> None:
-    """Small centered AlphaJudge mark; no third-party wordmark."""
-    if page_no <= 1:
-        return
-    _draw_alphajudge_logo(
-        fig,
-        x=0.5,
-        y=0.028,
-        w=0.170,
-        h=0.034,
-        compact=True,
-    )
+    """No footer mark; the running header already identifies the report."""
+    return
 
 
 def _draw_info_box(fig: plt.Figure, *, x: float, y: float, w: float, h: float, lines: Sequence[str]) -> None:

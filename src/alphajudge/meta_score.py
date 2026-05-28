@@ -14,7 +14,7 @@ META_SCORE_FEATURES = (
     "average_interface_pae",
     "pDockQ/mpDockQ",
     "interface_sc",
-    "interface_area",
+    "interface_hb",
     "interface_solv_en",
 )
 
@@ -27,6 +27,7 @@ FEATURE_DIRECTIONS = {
     "average_interface_pae": -1.0,
     "pDockQ/mpDockQ": 1.0,
     "interface_sc": 1.0,
+    "interface_hb": 1.0,
     "interface_area": 1.0,
     "interface_solv_en": -1.0,
 }
@@ -153,6 +154,24 @@ BENCHMARK_QUANTILES = {
         0.54187397531551566,
         0.59373881458964451,
         0.74402412409164909,
+    ),
+    # Deciles for interface_hb computed on the benchmark_26 final-sync table
+    # (7,756 best-interface rows). Replaces interface_area in METASCORE: H-bond
+    # count is interpretable, only weakly correlated with interface_sc, and
+    # captures specific polar interactions, whereas area was strongly
+    # redundant with solvation energy (Pearson rho = -0.80).
+    "interface_hb": (
+        0.0,
+        2.0,
+        4.0,
+        6.0,
+        8.0,
+        10.0,
+        12.0,
+        15.0,
+        20.0,
+        28.0,
+        129.0,
     ),
     "interface_area": (
         12.696379714313343,
