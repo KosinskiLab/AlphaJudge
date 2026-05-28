@@ -15,6 +15,7 @@ import numpy as np
 from .parsers import pick_parser
 from .complex import Complex
 from .meta_score import interface_meta_score
+from .report import render_pae_png
 
 logger = logging.getLogger(__name__)
 
@@ -23,41 +24,29 @@ def _save_pae_heatmap(
     pae_matrix,
     out_file: Path,
     chain_boundaries: list[float] | None = None,
-    figsize: tuple[int, int] = (10, 10),
+    figsize: tuple[int, int] = (8, 8),
+    model_label: str | None = None,
 ) -> None:
     """
     Save a PAE heatmap PNG for a given residue×residue PAE matrix.
 
-    Optionally draw vertical and horizontal separator lines at positions
-    provided in `chain_boundaries` (typically between different chains).
+    Uses ``alphajudge.report.render_pae_png`` so the standalone PNG matches
+    the in-report PAE page exactly (AlphaFold-DB-like green palette, horizontal
+    "Expected position error (Å)" colour bar, Scored/Aligned residue axes).
+
+    Optionally draws thin grey separator lines at positions provided in
+    ``chain_boundaries`` (between different chains).
     """
+    if pae_matrix is None:
+        return
     try:
-        # pae_matrix is already a numpy array for memory efficiency
-        mtx = pae_matrix if isinstance(pae_matrix, np.ndarray) else np.array(pae_matrix, dtype=float)
-        if mtx.size == 0:
-            logger.warning(f"empty PAE matrix; skipping heatmap for {out_file}")
-            return
-
-        # Ensure parent exists (safe no-op if already exists)
-        out_file.parent.mkdir(parents=True, exist_ok=True)
-
-        fig, ax = plt.subplots(figsize=figsize)
-        im = ax.imshow(mtx, cmap="Greens_r", vmin=0, vmax=30)
-        ax.set_xlabel("Scored residue", fontsize=12)
-        ax.set_ylabel("Aligned residue", fontsize=12)
-        ax.set_title("Predicted Aligned Error (PAE)", fontsize=14, fontweight="bold")
-
-        if chain_boundaries:
-            for b in chain_boundaries:
-                ax.axhline(b, color="black", linewidth=0.5)
-                ax.axvline(b, color="black", linewidth=0.5)
-
-        cbar = fig.colorbar(im, ax=ax)
-        cbar.set_label("Expected position error (Å)", rotation=270, labelpad=20)
-
-        fig.tight_layout()
-        fig.savefig(out_file, dpi=300)
-        plt.close(fig)
+        render_pae_png(
+            out_file,
+            pae_matrix,
+            model_label=model_label,
+            chain_boundaries=chain_boundaries,
+            figsize=figsize,
+        )
         logger.info(f"wrote {out_file}")
     except Exception as e:
         logger.error(f"Could not create PAE heatmap {out_file}: {e}")

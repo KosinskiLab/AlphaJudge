@@ -1,19 +1,14 @@
-"""RCSB-style validation reports for AlphaJudge interface scores.
+"""AlphaJudge validation reports for AlphaJudge interface scores.
 
-The visual layout mirrors the wwPDB / RCSB "Full Validation Report" PDF
-(see e.g. ``https://files.rcsb.org/validation/view/<id>_full_validation.pdf``):
+The layout uses a compact scientific validation-report format with only
+AlphaJudge branding. No external organisation logo, PDB/wwPDB wordmark,
+AlphaFold logo, or EMBL-EBI logo is embedded.
 
-* serif typography (DejaVu Serif, the available Computer-Modern lookalike);
-* a smooth red -> yellow -> green percentile slider with a single black
-  marker for the entry's archive percentile;
-* a numbered "Overall quality at a glance" page with a metric/value table;
-* a page header rule with title + entry id, and a thin bottom rule
-  with the page number.
-
-Two entry points:
-
-* :func:`generate_per_run_report` -- one ``report.pdf`` per run directory.
-* :func:`generate_aggregate_report` -- a multi-page PDF over a merged CSV.
+The percentile pages use a compact red -> white -> blue percentile graphic.
+The PAE page is rendered, when raw PAE values are available, in the visual
+style of the AlphaFold Database PAE panel: a green square heatmap with
+Scored residue / Aligned residue axes and a horizontal expected-position-error
+colour bar.
 """
 
 from __future__ import annotations
@@ -35,7 +30,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.patches import Circle, FancyBboxPatch, Rectangle
+from matplotlib.patches import Circle, Rectangle
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from .meta_score import (
     BENCHMARK_QUANTILES,
@@ -50,10 +46,9 @@ logger = logging.getLogger(__name__)
 
 _A4 = (8.27, 11.69)
 
-# RCSB/wwPDB percentile graphic: red -> pale center -> blue.
-# Do not use RdYlGn here; the wwPDB report uses a red/blue percentile bar.
+# Percentile graphic: red -> pale centre -> blue.
 _SLIDER_CMAP = LinearSegmentedColormap.from_list(
-    "wwpdb_percentile",
+    "alphajudge_percentile",
     [
         (0.00, "#ff1a1a"),
         (0.35, "#ffd1d1"),
@@ -63,14 +58,32 @@ _SLIDER_CMAP = LinearSegmentedColormap.from_list(
     ],
 )
 
+# AlphaFold-DB-like PAE palette: low error = dark green, high error = pale.
+_PAE_CMAP = LinearSegmentedColormap.from_list(
+    "alphafold_db_like_pae",
+    [
+        (0.00, "#005f2f"),
+        (0.20, "#16813e"),
+        (0.45, "#56ad55"),
+        (0.72, "#cdebc5"),
+        (1.00, "#f7fbf1"),
+    ],
+)
+
 _INFO_BG = "#ffb3b3"
 _INFO_EDGE = "#ff0000"
 _HEADER_RULE = "#303030"
 _TABLE_RULE = "#202020"
-_RCSB_BLUE = "#0000ff"
 
-_REPORT_TITLE = "AlphaJudge Interface Validation Report"
+_AJ_BLUE = "#1f4e79"
+_AJ_GREEN = "#2e8b57"
+_AJ_GOLD = "#d08c00"
+_AJ_DARK = "#111111"
+
+_REPORT_TITLE = "AlphaJudge Interface validation Report"
 _BENCHMARK_TAG = "benchmark_26 (final_sync_20260523, n=7,756 AF2/AF3 rows)"
+
+_GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
 
 _FEATURE_DISPLAY = {
     "interface_LIS": "Interface LIS",
@@ -90,6 +103,24 @@ _FEATURE_UNITS = {
     "interface_area": "Å²",
     "interface_solv_en": "kcal/mol",
 }
+
+# Metric grouping for the slider panel. Lines are drawn only WITHIN each group
+# (AF-derived vs. biophysical); the Q-score is kept separate and never joined
+# to a polyline.
+_AF_DERIVED_FEATURES = (
+    "interface_LIS",
+    "interface_ipSAE",
+    "interface_pDockQ2",
+    "iptm",
+    "confidence_score",
+    "average_interface_pae",
+    "pDockQ/mpDockQ",
+)
+_BIOPHYSICAL_FEATURES = (
+    "interface_sc",
+    "interface_area",
+    "interface_solv_en",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +286,7 @@ def _new_figure() -> plt.Figure:
 
 
 def _draw_info_icon(fig: plt.Figure, *, x: float, y: float, r: float = 0.010) -> None:
-    """Small blue circled 'i' like the wwPDB validation report."""
+    """Small circled 'i' marker using AlphaJudge brand colour."""
     ax = fig.add_axes((x - r, y - r, 2 * r, 2 * r))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -266,7 +297,7 @@ def _draw_info_icon(fig: plt.Figure, *, x: float, y: float, r: float = 0.010) ->
             (0.5, 0.5),
             0.47,
             facecolor="white",
-            edgecolor=_RCSB_BLUE,
+            edgecolor=_AJ_BLUE,
             linewidth=1.0,
             transform=ax.transAxes,
         )
@@ -278,61 +309,65 @@ def _draw_info_icon(fig: plt.Figure, *, x: float, y: float, r: float = 0.010) ->
         ha="center",
         va="center",
         fontsize=8,
-        color=_RCSB_BLUE,
+        color=_AJ_BLUE,
         fontweight="bold",
         transform=ax.transAxes,
     )
 
 
-def _draw_wordmark(
+def _draw_alphajudge_logo(
     fig: plt.Figure,
     *,
     x: float = 0.5,
     y: float = 0.93,
-    w: float = 0.20,
-    h: float = 0.060,
-    scale: float = 1.0,
+    w: float = 0.30,
+    h: float = 0.080,
+    compact: bool = False,
 ) -> None:
-    """A lightweight text stand-in for the small wwPDB/PDB wordmark.
+    """Plain-text AlphaJudge mark.
 
-    Use an approved logo image here if you have one; this avoids bundling any
-    external logo asset while still matching the spatial rhythm of the report.
+    Renders just "AlphaJudge report" (and a small "interface validation"
+    sub-line in the non-compact form). Intentionally text-only to avoid
+    any resemblance to third-party logos.
     """
     ax = fig.add_axes((x - w / 2, y - h / 2, w, h))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
+
+    if compact:
+        ax.text(
+            0.5,
+            0.5,
+            "AlphaJudge report",
+            ha="center",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+            color=_AJ_DARK,
+            transform=ax.transAxes,
+        )
+        return
+
     ax.text(
         0.5,
-        0.88,
-        "W O R L D W I D E",
+        0.62,
+        "AlphaJudge report",
         ha="center",
         va="center",
-        fontsize=6.5 * scale,
+        fontsize=22,
         fontweight="bold",
-        color="#202020",
+        color=_AJ_DARK,
         transform=ax.transAxes,
     )
     ax.text(
         0.5,
-        0.50,
-        "PDB",
+        0.28,
+        "interface validation",
         ha="center",
         va="center",
-        fontsize=24 * scale,
-        fontweight="bold",
-        color="#5b9b5b",
-        transform=ax.transAxes,
-    )
-    ax.text(
-        0.5,
-        0.13,
-        "PROTEIN DATA BANK",
-        ha="center",
-        va="center",
-        fontsize=5.8 * scale,
-        fontweight="bold",
-        color="#202020",
+        fontsize=9,
+        color="#444444",
         transform=ax.transAxes,
     )
 
@@ -383,10 +418,17 @@ def _add_page_header(fig: plt.Figure, *, page_no: int, total: int, title: str, e
 
 
 def _add_page_footer(fig: plt.Figure, *, page_no: int, total: int, last: bool) -> None:
-    """RCSB-style footer: small centered wordmark, no bottom page-number rule."""
+    """Small centered AlphaJudge mark; no third-party wordmark."""
     if page_no <= 1:
         return
-    _draw_wordmark(fig, x=0.5, y=0.030, w=0.090, h=0.038, scale=0.42)
+    _draw_alphajudge_logo(
+        fig,
+        x=0.5,
+        y=0.028,
+        w=0.170,
+        h=0.034,
+        compact=True,
+    )
 
 
 def _draw_info_box(fig: plt.Figure, *, x: float, y: float, w: float, h: float, lines: Sequence[str]) -> None:
@@ -499,12 +541,7 @@ def _draw_section_heading(
 # slider primitive
 # ---------------------------------------------------------------------------
 
-# High-resolution gradient; bars are deliberately thin.
-_GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
-
-
-# Compact RCSB-like chart layout in figure coordinates.
-# These positions intentionally mimic the page-2 wwPDB chart proportions.
+# Compact chart layout in figure coordinates.
 _RCSB_SLIDER_LAYOUT = {
     "label_right": 0.235,
     "bar_x": 0.240,
@@ -561,15 +598,22 @@ def _metric_rows_for_slider_panel(
     row: Mapping[str, Any],
     *,
     include_overall: bool,
-) -> list[tuple[str, float | None, float | None, str]]:
-    rows: list[tuple[str, float | None, float | None, str]] = []
+) -> list[tuple[str, float | None, float | None, str, str]]:
+    """Return (label, raw, percentile, units, group) per slider row.
+
+    Group is one of "overall" (the Q-score header row), "af" (AlphaFold-
+    derived confidence features) or "biophys" (biophysical features). The
+    grouping is used by ``_draw_slider_panel`` to add vertical spacing
+    between groups and to draw polylines only within a group.
+    """
+    rows: list[tuple[str, float | None, float | None, str, str]] = []
 
     if include_overall:
         score = _row_meta_score(row)
-        rows.append(("Overall meta score", score, score, ""))
+        rows.append(("Meta score", score, score, "", "overall"))
 
     fv = _feature_view(row)
-    for feat in META_SCORE_FEATURES:
+    for feat in _AF_DERIVED_FEATURES:
         raw, pct = fv[feat]
         rows.append(
             (
@@ -577,6 +621,18 @@ def _metric_rows_for_slider_panel(
                 raw,
                 pct,
                 _FEATURE_UNITS.get(feat, ""),
+                "af",
+            )
+        )
+    for feat in _BIOPHYSICAL_FEATURES:
+        raw, pct = fv[feat]
+        rows.append(
+            (
+                _FEATURE_DISPLAY.get(feat, feat),
+                raw,
+                pct,
+                _FEATURE_UNITS.get(feat, ""),
+                "biophys",
             )
         )
 
@@ -629,8 +685,12 @@ def _draw_slider_panel(
 ) -> float:
     """Draw a compact wwPDB-style percentile graphic.
 
-    Returns the bottom y coordinate of the graphic, useful if a table should be
-    placed below it.
+    The Q-score row (if included) is rendered first and visually offset
+    from the rest. AlphaFold-derived confidence features and biophysical
+    features are drawn as two separate groups, each connected by its own
+    polyline; lines never cross the Q-score or the group boundary.
+
+    Returns the bottom y coordinate of the graphic.
     """
     rows = _metric_rows_for_slider_panel(row, include_overall=include_overall)
     n_rows = len(rows)
@@ -644,10 +704,15 @@ def _draw_slider_panel(
     value_x = L["value_x"]
     bar_h = L["bar_height"]
 
-    # Keep the RCSB compact feel even when many AlphaJudge metrics are shown.
-    row_h = min(L["row_height"], max(0.026, (height - 0.075) / max(1, n_rows)))
+    # Vertical layout: row height shrinks if the panel has to fit many rows.
+    # Inter-group gap pushes Q-score / AF / biophys apart.
+    group_gap = 0.012
+    n_group_changes = sum(
+        1 for i in range(1, n_rows) if rows[i][4] != rows[i - 1][4]
+    )
+    available = height - 0.075 - n_group_changes * group_gap
+    row_h = min(L["row_height"], max(0.026, available / max(1, n_rows)))
     header_y = top - 0.012
-    first_center = top - 0.048
 
     # Column headers - no beige band, no boxed cells.
     fig.text(
@@ -678,10 +743,23 @@ def _draw_slider_panel(
         color="#111111",
     )
 
-    # Rows: label, thin gradient bar, raw value.
-    pct_positions: list[tuple[int, float]] = []
-    for i, (label, raw, pct, units) in enumerate(rows):
-        center_y = first_center - i * row_h
+    # Compute per-row centres with extra spacing at group transitions.
+    first_center = top - 0.048
+    centers: list[float] = []
+    cur_y = first_center
+    prev_group: str | None = None
+    for _label, _raw, _pct, _units, group in rows:
+        if prev_group is not None and group != prev_group:
+            cur_y -= group_gap
+        centers.append(cur_y)
+        cur_y -= row_h
+        prev_group = group
+
+    # Rows: label, thin gradient bar, raw value. All rows share the same
+    # typography (PDB-validation-style uniform treatment); the inter-group
+    # gap is what separates the overall metascore from the feature rows.
+    pct_positions: list[tuple[int, float, str]] = []
+    for i, ((label, raw, pct, units, group), center_y) in enumerate(zip(rows, centers)):
         pct_clipped = _clip_pct(pct)
 
         fig.text(
@@ -712,48 +790,35 @@ def _draw_slider_panel(
         )
 
         if pct_clipped is not None:
-            pct_positions.append((i, pct_clipped))
+            pct_positions.append((i, pct_clipped, group))
 
-    # Overlay a transparent axis over all bars so the RCSB-style black marker
-    # polyline connects the per-metric percentiles.
-    chart_top = first_center + row_h * 0.50
-    chart_bottom = first_center - (n_rows - 1) * row_h - row_h * 0.50
+    chart_top = centers[0] + row_h * 0.50
+    chart_bottom = centers[-1] - row_h * 0.50
 
     line_ax = fig.add_axes((bar_x, chart_bottom, bar_w, chart_top - chart_bottom), zorder=20)
     line_ax.set_xlim(0.0, 1.0)
-    line_ax.set_ylim(0.0, float(n_rows))
+    line_ax.set_ylim(chart_bottom, chart_top)
     line_ax.axis("off")
     line_ax.patch.set_alpha(0.0)
 
     def _row_y(idx: int) -> float:
-        return n_rows - idx - 0.5
+        return centers[idx]
 
-    # Draw contiguous polyline segments only across valid percentile rows.
-    current_segment: list[tuple[float, float]] = []
-    segments: list[list[tuple[float, float]]] = []
-    valid_by_idx = {idx: pct for idx, pct in pct_positions}
+    # Polyline segments per metric group (skip "overall" - no line through Q-score).
+    by_group: dict[str, list[tuple[float, float]]] = {"af": [], "biophys": []}
+    for idx, pct, group in pct_positions:
+        if group in by_group:
+            by_group[group].append((pct, _row_y(idx)))
 
-    for idx in range(n_rows):
-        pct = valid_by_idx.get(idx)
-        if pct is None:
-            if current_segment:
-                segments.append(current_segment)
-                current_segment = []
-            continue
-        current_segment.append((pct, _row_y(idx)))
-
-    if current_segment:
-        segments.append(current_segment)
-
-    for seg in segments:
-        if len(seg) >= 2:
-            xs = [p for p, _y in seg]
-            ys = [_y for _p, _y in seg]
+    for points in by_group.values():
+        if len(points) >= 2:
+            xs = [p for p, _y in points]
+            ys = [y for _p, y in points]
             line_ax.plot(xs, ys, color="#0b0b0b", linewidth=0.75, zorder=4)
 
     marker_w = 0.012
-    marker_h = max(0.42, min(0.56, (bar_h / row_h) * 1.35))
-    for idx, pct in pct_positions:
+    marker_h = max(0.0042, min(0.0070, bar_h * 1.35))
+    for idx, pct, group in pct_positions:
         y = _row_y(idx)
         line_ax.add_patch(
             Rectangle(
@@ -768,7 +833,7 @@ def _draw_slider_panel(
             )
         )
 
-    # Worse / Better labels directly beneath the bars, as in wwPDB reports.
+    # Worse / Better labels directly beneath the bars.
     wb_y = chart_bottom - 0.011
     fig.text(
         bar_x,
@@ -917,10 +982,8 @@ def _cover_page(
 ) -> None:
     fig = _new_figure()
 
-    # RCSB cover has no running header; it starts with the wordmark.
-    _draw_wordmark(fig, x=0.50, y=0.865, w=0.24, h=0.075, scale=1.15)
-
-    title_ax = fig.add_axes((0.07, 0.785, 0.86, 0.060))
+    # Cover: no running header. Just the report title (no separate logo/wordmark).
+    title_ax = fig.add_axes((0.07, 0.830, 0.86, 0.060))
     title_ax.axis("off")
     title_ax.text(
         0.5,
@@ -929,11 +992,10 @@ def _cover_page(
         ha="center",
         va="center",
         fontsize=22,
-        fontweight="normal",
+        fontweight="bold",
         color="#101010",
         transform=title_ax.transAxes,
     )
-    _draw_info_icon(fig, x=0.865, y=0.815, r=0.013)
 
     sub_ax = fig.add_axes((0.07, 0.690, 0.86, 0.040))
     sub_ax.axis("off")
@@ -1121,13 +1183,128 @@ def _per_interface_page(
     plt.close(fig)
 
 
+def _format_residue_tick(value: float, _pos: int | None = None) -> str:
+    if not math.isfinite(value):
+        return ""
+    v = int(round(value))
+    if v >= 1000:
+        text = f"{v / 1000:g}k"
+        return text.replace(".0k", "k")
+    return str(v)
+
+
+def _pae_vmax(matrix: np.ndarray, max_error: float | None) -> float:
+    if max_error is not None and math.isfinite(max_error) and max_error > 0:
+        # AlphaFold DB commonly displays a 0-30 Å scale for static examples.
+        if 28.0 <= max_error <= 32.5:
+            return 30.0
+        return float(math.ceil(max_error / 5.0) * 5.0)
+
+    finite = matrix[np.isfinite(matrix)]
+    if finite.size == 0:
+        return 30.0
+
+    observed = float(np.nanmax(finite))
+    if observed <= 32.5:
+        return 30.0
+    return float(math.ceil(observed / 5.0) * 5.0)
+
+
+def render_pae_png(
+    out_path: str | Path,
+    pae_matrix: Any,
+    *,
+    max_error: float | None = None,
+    model_label: str | None = None,
+    chain_boundaries: Sequence[float] | None = None,
+    figsize: tuple[float, float] = (8.0, 8.6),
+    dpi: int = 200,
+) -> Path | None:
+    """Write a standalone AFDB-style PAE heatmap PNG.
+
+    Used both by the scoring runner (so per-model ``pae_<model>.png`` files
+    look like the in-report graphic) and indirectly by reports that embed
+    the resulting PNG.
+    """
+    _setup_rcparams()
+
+    try:
+        matrix = pae_matrix if isinstance(pae_matrix, np.ndarray) else np.asarray(pae_matrix, dtype=float)
+    except Exception as e:
+        logger.error("PAE PNG: could not coerce input to array (%s)", e)
+        return None
+    if matrix.ndim == 3 and matrix.shape[0] == 1:
+        matrix = matrix[0]
+    if matrix.ndim != 2 or matrix.shape[0] == 0 or matrix.shape[0] != matrix.shape[1]:
+        logger.warning("PAE PNG: matrix shape %s is not a square 2D array", matrix.shape)
+        return None
+    matrix = np.where(np.isfinite(matrix), matrix, np.nan)
+
+    n_res = int(matrix.shape[0])
+    vmax = _pae_vmax(matrix, max_error)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    im = ax.imshow(
+        matrix,
+        cmap=_PAE_CMAP,
+        vmin=0.0,
+        vmax=vmax,
+        origin="upper",
+        interpolation="nearest",
+        extent=(0.0, float(n_res), float(n_res), 0.0),
+        aspect="equal",
+    )
+    ax.set_xlim(0.0, float(n_res))
+    ax.set_ylim(float(n_res), 0.0)
+    ax.set_xlabel("Scored residue", fontsize=12, labelpad=8)
+    ax.set_ylabel("Aligned residue", fontsize=12, labelpad=8)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
+    ax.xaxis.set_major_formatter(FuncFormatter(_format_residue_tick))
+    ax.yaxis.set_major_formatter(FuncFormatter(_format_residue_tick))
+    ax.tick_params(axis="both", labelsize=10, length=3, width=0.7, colors="#111111")
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(0.8)
+        spine.set_edgecolor("#777777")
+
+    if chain_boundaries:
+        for b in chain_boundaries:
+            ax.axhline(b, color="black", linewidth=0.8)
+            ax.axvline(b, color="black", linewidth=0.8)
+
+    title = "Predicted aligned error (PAE)"
+    if model_label:
+        title = f"{title} – {model_label}"
+    ax.set_title(title, fontsize=14, pad=12)
+
+    cbar = fig.colorbar(im, ax=ax, orientation="horizontal", fraction=0.05, pad=0.10)
+    ticks = np.arange(0.0, vmax + 0.1, 5.0)
+    if len(ticks) > 8:
+        ticks = np.linspace(0.0, vmax, 7)
+    cbar.set_ticks(ticks)
+    cbar.ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v:g}"))
+    cbar.ax.tick_params(labelsize=10, length=0, pad=3)
+    cbar.outline.set_linewidth(0.7)
+    cbar.outline.set_edgecolor("#777777")
+    cbar.ax.set_xlabel("Expected position error (Ångströms)", fontsize=10, labelpad=7)
+
+    fig.tight_layout()
+    fig.savefig(str(out_path), dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def _pae_page(
     pdf: PdfPages,
     *,
     title: str,
     entry_id: str,
     section_no: str,
-    image_path: Path,
+    pae_path: Path,
     model_label: str,
     page_no: int,
     total: int,
@@ -1135,13 +1312,35 @@ def _pae_page(
 ) -> None:
     fig = _new_figure()
     _add_page_header(fig, page_no=page_no, total=total, title=title, entry=entry_id)
+
     _draw_section_heading(
-        fig, x=0.07, y=0.91, w=0.86, h=0.03,
-        number=section_no, title=f"Predicted Aligned Error – {model_label}",
+        fig,
+        x=0.07,
+        y=0.895,
+        w=0.86,
+        h=0.045,
+        number=section_no,
+        title="Predicted aligned error (PAE)",
+        show_info=False,
     )
-    img_ax = fig.add_axes((0.13, 0.10, 0.74, 0.78))
+
+    if model_label:
+        sub_ax = fig.add_axes((0.10, 0.855, 0.80, 0.030))
+        sub_ax.axis("off")
+        sub_ax.text(
+            0.5,
+            0.5,
+            f"Model: {model_label}",
+            ha="center",
+            va="center",
+            fontsize=9,
+            color="#555555",
+            transform=sub_ax.transAxes,
+        )
+
+    img_ax = fig.add_axes((0.10, 0.105, 0.80, 0.730))
     try:
-        img = mpimg.imread(str(image_path))
+        img = mpimg.imread(str(pae_path))
         img_ax.imshow(img)
     except Exception as e:
         img_ax.text(0.5, 0.5, f"PAE image unavailable\n({e})", ha="center", va="center")
@@ -1149,6 +1348,7 @@ def _pae_page(
     img_ax.set_yticks([])
     for spine in img_ax.spines.values():
         spine.set_visible(False)
+
     _add_page_footer(fig, page_no=page_no, total=total, last=last)
     pdf.savefig(fig)
     plt.close(fig)
@@ -1413,7 +1613,7 @@ def generate_per_run_report(
     best_model = str(best.get("model_used") or "")
     other_models = [m for m in by_model if m and m != best_model]
 
-    pae_png = _find_pae_png(run_dir, best_model)
+    pae_path = _find_pae_png(run_dir, best_model)
     # Pick the best model's rows for the per-interface slider pages; sort by
     # metascore descending so the strongest interface comes first.
     best_model_rows = by_model.get(best_model, list(rows))
@@ -1428,7 +1628,7 @@ def generate_per_run_report(
         1  # cover
         + (1 if show_interface_table else 0)  # overview table
         + len(interface_rows)  # one slider page per interface
-        + (1 if pae_png else 0)  # PAE heatmap
+        + (1 if pae_path else 0)  # PAE heatmap
         + len(other_models)  # non-best-model appendix
     )
 
@@ -1517,14 +1717,14 @@ def generate_per_run_report(
             )
         next_section = quality_section_no + 1
 
-        if pae_png is not None:
+        if pae_path is not None:
             page_no += 1
             _pae_page(
                 pdf,
                 title=_REPORT_TITLE,
                 entry_id=entry_id,
                 section_no=str(next_section),
-                image_path=pae_png,
+                pae_path=pae_path,
                 model_label=best_model,
                 page_no=page_no,
                 total=total,
