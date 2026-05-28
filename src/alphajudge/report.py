@@ -34,7 +34,8 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.patches import FancyBboxPatch, Rectangle
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Circle, FancyBboxPatch, Rectangle
 
 from .meta_score import (
     BENCHMARK_QUANTILES,
@@ -48,11 +49,25 @@ from .meta_score import (
 logger = logging.getLogger(__name__)
 
 _A4 = (8.27, 11.69)
-_SLIDER_CMAP = "RdYlGn"
-_INFO_BG = "#fbe5e5"
-_INFO_EDGE = "#a83232"
-_HEADER_RULE = "#3a3a3a"
-_TABLE_RULE = "#404040"
+
+# RCSB/wwPDB percentile graphic: red -> pale center -> blue.
+# Do not use RdYlGn here; the wwPDB report uses a red/blue percentile bar.
+_SLIDER_CMAP = LinearSegmentedColormap.from_list(
+    "wwpdb_percentile",
+    [
+        (0.00, "#ff1a1a"),
+        (0.35, "#ffd1d1"),
+        (0.50, "#f4f0f0"),
+        (0.65, "#d8d8ff"),
+        (1.00, "#171cff"),
+    ],
+)
+
+_INFO_BG = "#ffb3b3"
+_INFO_EDGE = "#ff0000"
+_HEADER_RULE = "#303030"
+_TABLE_RULE = "#202020"
+_RCSB_BLUE = "#0000ff"
 
 _REPORT_TITLE = "AlphaJudge Interface Validation Report"
 _BENCHMARK_TAG = "benchmark_26 (final_sync_20260523, n=7,756 AF2/AF3 rows)"
@@ -82,18 +97,33 @@ _FEATURE_UNITS = {
 # ---------------------------------------------------------------------------
 
 def _setup_rcparams() -> None:
+    """Use a Computer-Modern-like serif PDF look, close to wwPDB reports."""
     rcparams = {
         "font.family": "serif",
-        "font.serif": ["DejaVu Serif", "Times New Roman", "Times"],
-        "mathtext.fontset": "dejavuserif",
-        "axes.titlesize": 11,
+        "font.serif": [
+            "CMU Serif",
+            "Computer Modern Roman",
+            "Latin Modern Roman",
+            "STIXGeneral",
+            "DejaVu Serif",
+            "Times New Roman",
+            "Times",
+        ],
+        "mathtext.fontset": "cm",
+        "font.size": 10,
+        "axes.titlesize": 10,
         "axes.labelsize": 9,
         "axes.spines.top": False,
         "axes.spines.right": False,
         "xtick.labelsize": 8,
         "ytick.labelsize": 8,
-        "axes.edgecolor": "#222222",
-        "savefig.dpi": 200,
+        "axes.edgecolor": "#202020",
+        "axes.linewidth": 0.6,
+        "savefig.dpi": 300,
+        # Keep text as searchable TrueType text in the PDF.
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "axes.unicode_minus": False,
     }
     matplotlib.rcParams.update(rcparams)
 
@@ -224,55 +254,164 @@ def _new_figure() -> plt.Figure:
     return plt.figure(figsize=_A4, facecolor="white")
 
 
-def _add_page_header(fig: plt.Figure, *, page_no: int, total: int, title: str, entry: str) -> None:
-    ax = fig.add_axes((0.07, 0.965, 0.86, 0.018))
+def _draw_info_icon(fig: plt.Figure, *, x: float, y: float, r: float = 0.010) -> None:
+    """Small blue circled 'i' like the wwPDB validation report."""
+    ax = fig.add_axes((x - r, y - r, 2 * r, 2 * r))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_aspect("equal")
     ax.axis("off")
-    ax.text(0.0, 0.5, title, fontsize=8, color="#333", va="center", transform=ax.transAxes)
-    ax.text(1.0, 0.5, entry, fontsize=8, color="#333", va="center", ha="right", transform=ax.transAxes)
-    rule = fig.add_axes((0.07, 0.957, 0.86, 0.003))
-    rule.axis("off")
-    rule.axhline(0.5, color=_HEADER_RULE, linewidth=0.8)
-
-
-def _add_page_footer(fig: plt.Figure, *, page_no: int, total: int, last: bool) -> None:
-    rule = fig.add_axes((0.07, 0.038, 0.86, 0.003))
-    rule.axis("off")
-    rule.axhline(0.5, color=_HEADER_RULE, linewidth=0.6)
-    ax = fig.add_axes((0.07, 0.018, 0.86, 0.018))
-    ax.axis("off")
+    ax.add_patch(
+        Circle(
+            (0.5, 0.5),
+            0.47,
+            facecolor="white",
+            edgecolor=_RCSB_BLUE,
+            linewidth=1.0,
+            transform=ax.transAxes,
+        )
+    )
     ax.text(
-        1.0,
         0.5,
-        f"{page_no} / {total}",
-        ha="right",
+        0.48,
+        "i",
+        ha="center",
         va="center",
         fontsize=8,
-        color="#555",
+        color=_RCSB_BLUE,
+        fontweight="bold",
         transform=ax.transAxes,
     )
 
 
+def _draw_wordmark(
+    fig: plt.Figure,
+    *,
+    x: float = 0.5,
+    y: float = 0.93,
+    w: float = 0.20,
+    h: float = 0.060,
+    scale: float = 1.0,
+) -> None:
+    """A lightweight text stand-in for the small wwPDB/PDB wordmark.
+
+    Use an approved logo image here if you have one; this avoids bundling any
+    external logo asset while still matching the spatial rhythm of the report.
+    """
+    ax = fig.add_axes((x - w / 2, y - h / 2, w, h))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    ax.text(
+        0.5,
+        0.88,
+        "W O R L D W I D E",
+        ha="center",
+        va="center",
+        fontsize=6.5 * scale,
+        fontweight="bold",
+        color="#202020",
+        transform=ax.transAxes,
+    )
+    ax.text(
+        0.5,
+        0.50,
+        "PDB",
+        ha="center",
+        va="center",
+        fontsize=24 * scale,
+        fontweight="bold",
+        color="#5b9b5b",
+        transform=ax.transAxes,
+    )
+    ax.text(
+        0.5,
+        0.13,
+        "PROTEIN DATA BANK",
+        ha="center",
+        va="center",
+        fontsize=5.8 * scale,
+        fontweight="bold",
+        color="#202020",
+        transform=ax.transAxes,
+    )
+
+
+def _add_page_header(fig: plt.Figure, *, page_no: int, total: int, title: str, entry: str) -> None:
+    """RCSB-style running header.
+
+    The cover page in wwPDB reports has no running header; page 2 onward does.
+    """
+    if page_no <= 1:
+        return
+
+    ax = fig.add_axes((0.07, 0.952, 0.86, 0.036))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    ax.text(
+        0.0,
+        0.62,
+        f"Page {page_no}",
+        fontsize=10,
+        ha="left",
+        va="center",
+        color="#111111",
+        transform=ax.transAxes,
+    )
+    ax.text(
+        0.5,
+        0.62,
+        title,
+        fontsize=10,
+        ha="center",
+        va="center",
+        color="#111111",
+        transform=ax.transAxes,
+    )
+    ax.text(
+        1.0,
+        0.62,
+        entry,
+        fontsize=10,
+        ha="right",
+        va="center",
+        color="#111111",
+        transform=ax.transAxes,
+    )
+    ax.plot([0.0, 1.0], [0.18, 0.18], color=_HEADER_RULE, linewidth=0.6, transform=ax.transAxes)
+
+
+def _add_page_footer(fig: plt.Figure, *, page_no: int, total: int, last: bool) -> None:
+    """RCSB-style footer: small centered wordmark, no bottom page-number rule."""
+    if page_no <= 1:
+        return
+    _draw_wordmark(fig, x=0.5, y=0.030, w=0.090, h=0.038, scale=0.42)
+
+
 def _draw_info_box(fig: plt.Figure, *, x: float, y: float, w: float, h: float, lines: Sequence[str]) -> None:
+    """Square-corner pink/red cover callout, closer to wwPDB style."""
     ax = fig.add_axes((x, y, w, h))
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
-    box = FancyBboxPatch(
-        (0.005, 0.05),
-        0.99,
-        0.90,
-        boxstyle="round,pad=0.02,rounding_size=0.02",
-        linewidth=0.6,
-        edgecolor=_INFO_EDGE,
-        facecolor=_INFO_BG,
-        transform=ax.transAxes,
+    ax.add_patch(
+        Rectangle(
+            (0.0, 0.0),
+            1.0,
+            1.0,
+            linewidth=0.8,
+            edgecolor=_INFO_EDGE,
+            facecolor=_INFO_BG,
+            transform=ax.transAxes,
+        )
     )
-    ax.add_patch(box)
-    n = len(lines)
-    if n == 0:
+    if not lines:
         return
+
+    n = len(lines)
     top = 0.83
-    line_h = 0.7 / max(1, n)
+    line_h = 0.68 / max(1, n - 1) if n > 1 else 0.0
     for i, line in enumerate(lines):
         ax.text(
             0.5,
@@ -280,8 +419,8 @@ def _draw_info_box(fig: plt.Figure, *, x: float, y: float, w: float, h: float, l
             line,
             ha="center",
             va="top",
-            fontsize=9.5,
-            color="#1d1d1d",
+            fontsize=10.5,
+            color="#111111",
             transform=ax.transAxes,
         )
 
@@ -307,36 +446,90 @@ def _draw_meta_block(fig: plt.Figure, *, x: float, y: float, w: float, h: float,
         ax.text(val_x, ypos, value, fontsize=10.5, ha="left", va="top", transform=ax.transAxes)
 
 
-def _draw_section_heading(fig: plt.Figure, *, x: float, y: float, w: float, h: float, number: str, title: str) -> None:
+def _draw_section_heading(
+    fig: plt.Figure,
+    *,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    number: str,
+    title: str,
+    show_info: bool = False,
+) -> None:
+    """Large numbered section heading with RCSB-like spacing."""
     ax = fig.add_axes((x, y, w, h))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
     ax.axis("off")
+
+    number_text = _truncate(str(number), 8)
+    title_x = 0.060 + max(0, len(number_text) - 2) * 0.010
+
     ax.text(
         0.0,
-        0.4,
-        f"{number}  {title}",
-        fontsize=15,
+        0.50,
+        number_text,
+        fontsize=17,
         fontweight="bold",
+        ha="left",
+        va="center",
         color="#101010",
         transform=ax.transAxes,
     )
+    ax.text(
+        title_x,
+        0.50,
+        title,
+        fontsize=17,
+        fontweight="bold",
+        ha="left",
+        va="center",
+        color="#101010",
+        transform=ax.transAxes,
+    )
+
+    if show_info:
+        # Approximate icon placement immediately after the heading.
+        icon_x = min(x + w - 0.020, x + title_x * w + 0.0120 * len(title) + 0.020)
+        _draw_info_icon(fig, x=icon_x, y=y + h * 0.52, r=0.011)
 
 
 # ---------------------------------------------------------------------------
 # slider primitive
 # ---------------------------------------------------------------------------
 
-_GRADIENT = np.tile(np.linspace(0.02, 0.98, 512), (4, 1))
+# High-resolution gradient; bars are deliberately thin.
+_GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
+
+
+# Compact RCSB-like chart layout in figure coordinates.
+# These positions intentionally mimic the page-2 wwPDB chart proportions.
+_RCSB_SLIDER_LAYOUT = {
+    "label_right": 0.235,
+    "bar_x": 0.240,
+    "bar_width": 0.382,
+    "value_x": 0.632,
+    "value_width": 0.120,
+    "bar_height": 0.0105,
+    "row_height": 0.0315,
+}
+
+
+def _clip_pct(pct: float | None) -> float | None:
+    if pct is None or not math.isfinite(pct):
+        return None
+    return max(0.0, min(1.0, pct))
 
 
 def _draw_slider_bar(
     ax,
-    percentile: float | None,
+    percentile: float | None = None,
     *,
-    cmap: str = _SLIDER_CMAP,
-    show_axis: bool = False,
+    cmap=_SLIDER_CMAP,
+    draw_marker: bool = True,
 ) -> None:
-    """RCSB-style horizontal percentile bar with a single black marker."""
-
+    """Thin wwPDB-style red-white-blue percentile bar."""
     ax.imshow(
         _GRADIENT,
         aspect="auto",
@@ -346,117 +539,83 @@ def _draw_slider_bar(
     )
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.0)
-    ax.set_yticks([])
-    if show_axis:
-        ax.set_xticks([0.0, 0.25, 0.5, 0.75, 1.0])
-        ax.set_xticklabels(["0", "25", "50", "75", "100"], fontsize=7)
-        ax.tick_params(axis="x", length=2, pad=1, colors="#333333")
-    else:
-        ax.set_xticks([])
+    ax.axis("off")
 
-    for spine in ax.spines.values():
-        spine.set_visible(True)
-        spine.set_edgecolor("#1a1a1a")
-        spine.set_linewidth(0.6)
-
-    if percentile is not None:
+    pct = _clip_pct(percentile)
+    if draw_marker and pct is not None:
         ax.add_patch(
             Rectangle(
-                (max(0.0, min(1.0, percentile)) - 0.005, -0.10),
-                0.010,
-                1.20,
-                color="#0e0e0e",
+                (pct - 0.006, -0.15),
+                0.012,
+                1.30,
+                facecolor="#0b0b0b",
+                edgecolor="#0b0b0b",
+                linewidth=0.4,
                 clip_on=False,
                 zorder=5,
             )
         )
 
 
-_LAYOUT = {
-    "left": 0.085,
-    "label_width": 0.190,
-    "gap_label_slider": 0.012,
-    "slider_width": 0.460,
-    "gap_slider_pct": 0.014,
-    "pct_width": 0.045,
-    "gap_pct_value": 0.010,
-    "value_width": 0.115,
-}
+def _metric_rows_for_slider_panel(
+    row: Mapping[str, Any],
+    *,
+    include_overall: bool,
+) -> list[tuple[str, float | None, float | None, str]]:
+    rows: list[tuple[str, float | None, float | None, str]] = []
+
+    if include_overall:
+        score = _row_meta_score(row)
+        rows.append(("Overall meta score", score, score, ""))
+
+    fv = _feature_view(row)
+    for feat in META_SCORE_FEATURES:
+        raw, pct = fv[feat]
+        rows.append(
+            (
+                _FEATURE_DISPLAY.get(feat, feat),
+                raw,
+                pct,
+                _FEATURE_UNITS.get(feat, ""),
+            )
+        )
+
+    return rows
 
 
-def _draw_slider_row(
+def _draw_percentile_legend(
     fig: plt.Figure,
     *,
-    bottom: float,
-    height: float,
-    label: str,
-    raw: float | None,
-    pct: float | None,
-    units: str = "",
-    show_axis: bool = False,
+    x: float,
+    y: float,
+    w: float,
+    label: str = "Percentile relative to AlphaJudge benchmark",
 ) -> None:
-    L = _LAYOUT
-    x = L["left"]
-    label_ax = fig.add_axes((x, bottom, L["label_width"], height))
-    label_ax.axis("off")
-    label_ax.text(
-        1.0,
-        0.5,
-        label,
-        fontsize=10,
-        ha="right",
-        va="center",
-        transform=label_ax.transAxes,
-    )
-    x += L["label_width"] + L["gap_label_slider"]
+    ax = fig.add_axes((x, y, w, 0.032))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
 
-    slider_ax = fig.add_axes(
-        (
-            x,
-            bottom + (0.20 if not show_axis else 0.30) * height,
-            L["slider_width"],
-            (0.55 if not show_axis else 0.42) * height,
+    ax.add_patch(
+        Rectangle(
+            (0.000, 0.55),
+            0.010,
+            0.30,
+            facecolor="#0b0b0b",
+            edgecolor="#0b0b0b",
+            linewidth=0.4,
+            transform=ax.transAxes,
         )
     )
-    _draw_slider_bar(slider_ax, pct, show_axis=show_axis)
-    x += L["slider_width"] + L["gap_slider_pct"]
-
-    pct_ax = fig.add_axes((x, bottom + 0.18 * height, L["pct_width"], 0.64 * height))
-    pct_ax.set_xlim(0, 1)
-    pct_ax.set_ylim(0, 1)
-    pct_ax.axis("off")
-    pct_text = "n/a" if pct is None else f"{pct * 100:0.0f}%"
-    pct_ax.text(
-        0.5,
-        0.5,
-        pct_text,
-        ha="center",
+    ax.text(
+        0.018,
+        0.70,
+        label,
+        ha="left",
         va="center",
-        fontsize=9,
-        color="#222222",
-        transform=pct_ax.transAxes,
-    )
-    x += L["pct_width"] + L["gap_pct_value"]
-
-    value_ax = fig.add_axes((x, bottom + 0.18 * height, L["value_width"], 0.64 * height))
-    value_ax.set_xlim(0, 1)
-    value_ax.set_ylim(0, 1)
-    value_ax.set_xticks([])
-    value_ax.set_yticks([])
-    for spine in value_ax.spines.values():
-        spine.set_edgecolor("#5a5a5a")
-        spine.set_linewidth(0.6)
-    raw_text = _format_raw(raw)
-    if units:
-        raw_text = f"{raw_text} {units}"
-    value_ax.text(
-        0.5,
-        0.5,
-        raw_text,
-        ha="center",
-        va="center",
-        fontsize=9,
-        transform=value_ax.transAxes,
+        fontsize=7.2,
+        color="#111111",
+        transform=ax.transAxes,
     )
 
 
@@ -467,134 +626,175 @@ def _draw_slider_panel(
     height: float,
     row: Mapping[str, Any],
     include_overall: bool = True,
-) -> None:
-    """RCSB-style 'Metric | Percentile rank | %ile | Value' table."""
+) -> float:
+    """Draw a compact wwPDB-style percentile graphic.
 
-    rows: list[tuple[str, float | None, float | None, str]] = []
-    if include_overall:
-        score = _row_meta_score(row)
-        rows.append(("Overall meta score", score, score, ""))
-    fv = _feature_view(row)
-    for feat in META_SCORE_FEATURES:
-        raw, pct = fv[feat]
-        rows.append((_FEATURE_DISPLAY.get(feat, feat), raw, pct, _FEATURE_UNITS.get(feat, "")))
-
-    L = _LAYOUT
-    header_y = top
-    body_top = top - 0.024
+    Returns the bottom y coordinate of the graphic, useful if a table should be
+    placed below it.
+    """
+    rows = _metric_rows_for_slider_panel(row, include_overall=include_overall)
     n_rows = len(rows)
-    body_height = height - 0.024
-    row_h = body_height / n_rows
+    if n_rows == 0:
+        return top
 
-    # Header band
-    band = fig.add_axes(
-        (
-            L["left"],
-            header_y - 0.022,
-            L["label_width"] + L["gap_label_slider"] + L["slider_width"] + L["gap_slider_pct"]
-            + L["pct_width"] + L["gap_pct_value"] + L["value_width"],
-            0.022,
-        )
-    )
-    band.set_xlim(0, 1)
-    band.set_ylim(0, 1)
-    band.axis("off")
-    band.add_patch(Rectangle((0.0, 0.0), 1.0, 1.0, color="#efe9d8", transform=band.transAxes))
+    L = _RCSB_SLIDER_LAYOUT
+    label_right = L["label_right"]
+    bar_x = L["bar_x"]
+    bar_w = L["bar_width"]
+    value_x = L["value_x"]
+    bar_h = L["bar_height"]
 
-    band_w = (
-        L["label_width"] + L["gap_label_slider"] + L["slider_width"]
-        + L["gap_slider_pct"] + L["pct_width"] + L["gap_pct_value"] + L["value_width"]
-    )
+    # Keep the RCSB compact feel even when many AlphaJudge metrics are shown.
+    row_h = min(L["row_height"], max(0.026, (height - 0.075) / max(1, n_rows)))
+    header_y = top - 0.012
+    first_center = top - 0.048
 
-    def _hx(col_start: float, col_w: float) -> float:
-        return (col_start - L["left"] + col_w / 2) / band_w
-
-    # Place header labels at column centers
-    band.text(
-        _hx(L["left"], L["label_width"]),
-        0.5,
+    # Column headers - no beige band, no boxed cells.
+    fig.text(
+        label_right - 0.020,
+        header_y,
         "Metric",
-        fontsize=10,
-        fontweight="bold",
         ha="center",
         va="center",
-        transform=band.transAxes,
-    )
-    slider_start = L["left"] + L["label_width"] + L["gap_label_slider"]
-    band.text(
-        _hx(slider_start, L["slider_width"]),
-        0.5,
-        "Percentile rank",
         fontsize=10,
-        fontweight="bold",
+        color="#111111",
+    )
+    fig.text(
+        bar_x + bar_w / 2,
+        header_y,
+        "Percentile Ranks",
         ha="center",
         va="center",
-        transform=band.transAxes,
-    )
-    pct_start = slider_start + L["slider_width"] + L["gap_slider_pct"]
-    band.text(
-        _hx(pct_start, L["pct_width"]),
-        0.5,
-        "%",
         fontsize=10,
-        fontweight="bold",
-        ha="center",
-        va="center",
-        transform=band.transAxes,
+        color="#111111",
     )
-    value_start = pct_start + L["pct_width"] + L["gap_pct_value"]
-    band.text(
-        _hx(value_start, L["value_width"]),
-        0.5,
+    fig.text(
+        value_x + 0.035,
+        header_y,
         "Value",
-        fontsize=10,
-        fontweight="bold",
         ha="center",
         va="center",
-        transform=band.transAxes,
+        fontsize=10,
+        color="#111111",
     )
 
+    # Rows: label, thin gradient bar, raw value.
+    pct_positions: list[tuple[int, float]] = []
     for i, (label, raw, pct, units) in enumerate(rows):
-        row_bottom = body_top - (i + 1) * row_h
-        show_axis = i == n_rows - 1
-        _draw_slider_row(
-            fig,
-            bottom=row_bottom,
-            height=row_h * 0.92,
-            label=label,
-            raw=raw,
-            pct=pct,
-            units=units,
-            show_axis=show_axis,
+        center_y = first_center - i * row_h
+        pct_clipped = _clip_pct(pct)
+
+        fig.text(
+            label_right,
+            center_y,
+            label,
+            ha="right",
+            va="center",
+            fontsize=9.2,
+            color="#111111",
         )
 
-    bottom_y = body_top - n_rows * row_h
-    legend_ax = fig.add_axes((slider_start, bottom_y - 0.022, L["slider_width"], 0.018))
-    legend_ax.axis("off")
-    legend_ax.annotate(
+        bar_ax = fig.add_axes((bar_x, center_y - bar_h / 2, bar_w, bar_h), zorder=2)
+        _draw_slider_bar(bar_ax, None, draw_marker=False)
+
+        raw_text = _format_raw(raw)
+        if units and raw_text != "—":
+            raw_text = f"{raw_text} {units}"
+
+        fig.text(
+            value_x,
+            center_y,
+            raw_text,
+            ha="left",
+            va="center",
+            fontsize=9.2,
+            color="#111111",
+        )
+
+        if pct_clipped is not None:
+            pct_positions.append((i, pct_clipped))
+
+    # Overlay a transparent axis over all bars so the RCSB-style black marker
+    # polyline connects the per-metric percentiles.
+    chart_top = first_center + row_h * 0.50
+    chart_bottom = first_center - (n_rows - 1) * row_h - row_h * 0.50
+
+    line_ax = fig.add_axes((bar_x, chart_bottom, bar_w, chart_top - chart_bottom), zorder=20)
+    line_ax.set_xlim(0.0, 1.0)
+    line_ax.set_ylim(0.0, float(n_rows))
+    line_ax.axis("off")
+    line_ax.patch.set_alpha(0.0)
+
+    def _row_y(idx: int) -> float:
+        return n_rows - idx - 0.5
+
+    # Draw contiguous polyline segments only across valid percentile rows.
+    current_segment: list[tuple[float, float]] = []
+    segments: list[list[tuple[float, float]]] = []
+    valid_by_idx = {idx: pct for idx, pct in pct_positions}
+
+    for idx in range(n_rows):
+        pct = valid_by_idx.get(idx)
+        if pct is None:
+            if current_segment:
+                segments.append(current_segment)
+                current_segment = []
+            continue
+        current_segment.append((pct, _row_y(idx)))
+
+    if current_segment:
+        segments.append(current_segment)
+
+    for seg in segments:
+        if len(seg) >= 2:
+            xs = [p for p, _y in seg]
+            ys = [_y for _p, _y in seg]
+            line_ax.plot(xs, ys, color="#0b0b0b", linewidth=0.75, zorder=4)
+
+    marker_w = 0.012
+    marker_h = max(0.42, min(0.56, (bar_h / row_h) * 1.35))
+    for idx, pct in pct_positions:
+        y = _row_y(idx)
+        line_ax.add_patch(
+            Rectangle(
+                (pct - marker_w / 2, y - marker_h / 2),
+                marker_w,
+                marker_h,
+                facecolor="#0b0b0b",
+                edgecolor="#0b0b0b",
+                linewidth=0.45,
+                zorder=6,
+                clip_on=False,
+            )
+        )
+
+    # Worse / Better labels directly beneath the bars, as in wwPDB reports.
+    wb_y = chart_bottom - 0.011
+    fig.text(
+        bar_x,
+        wb_y,
         "Worse",
-        xy=(0.0, 0.5),
-        xytext=(0.08, 0.5),
-        xycoords="axes fraction",
-        textcoords="axes fraction",
-        fontsize=8.5,
-        color="#7a1d1d",
-        va="center",
         ha="left",
-        arrowprops=dict(arrowstyle="<-", color="#7a1d1d", lw=0.7),
-    )
-    legend_ax.annotate(
-        "Better",
-        xy=(1.0, 0.5),
-        xytext=(0.92, 0.5),
-        xycoords="axes fraction",
-        textcoords="axes fraction",
-        fontsize=8.5,
-        color="#1d5d1d",
         va="center",
-        ha="right",
-        arrowprops=dict(arrowstyle="->", color="#1d5d1d", lw=0.7),
+        fontsize=6.8,
+        fontstyle="italic",
+        color="#111111",
     )
+    fig.text(
+        bar_x + bar_w,
+        wb_y,
+        "Better",
+        ha="right",
+        va="center",
+        fontsize=6.8,
+        fontstyle="italic",
+        color="#111111",
+    )
+
+    legend_y = chart_bottom - 0.045
+    _draw_percentile_legend(fig, x=bar_x - 0.002, y=legend_y, w=0.55)
+
+    return legend_y
 
 
 # ---------------------------------------------------------------------------
@@ -716,9 +916,11 @@ def _cover_page(
     total: int,
 ) -> None:
     fig = _new_figure()
-    _add_page_header(fig, page_no=page_no, total=total, title=title, entry=entry_id)
 
-    title_ax = fig.add_axes((0.07, 0.85, 0.86, 0.06))
+    # RCSB cover has no running header; it starts with the wordmark.
+    _draw_wordmark(fig, x=0.50, y=0.865, w=0.24, h=0.075, scale=1.15)
+
+    title_ax = fig.add_axes((0.07, 0.785, 0.86, 0.060))
     title_ax.axis("off")
     title_ax.text(
         0.5,
@@ -727,51 +929,57 @@ def _cover_page(
         ha="center",
         va="center",
         fontsize=22,
-        fontweight="bold",
+        fontweight="normal",
         color="#101010",
         transform=title_ax.transAxes,
     )
+    _draw_info_icon(fig, x=0.865, y=0.815, r=0.013)
 
-    sub_ax = fig.add_axes((0.07, 0.815, 0.86, 0.025))
+    sub_ax = fig.add_axes((0.07, 0.690, 0.86, 0.040))
     sub_ax.axis("off")
     sub_ax.text(
         0.5,
         0.5,
-        " – ".join(subtitle_lines),
+        " - ".join(subtitle_lines),
         ha="center",
         va="center",
-        fontsize=11,
+        fontsize=13,
         color="#1f1f1f",
         transform=sub_ax.transAxes,
     )
 
-    _draw_meta_block(fig, x=0.10, y=0.62, w=0.80, h=0.18, pairs=meta_pairs)
-    _draw_info_box(fig, x=0.13, y=0.43, w=0.74, h=0.16, lines=info_lines)
+    _draw_meta_block(fig, x=0.10, y=0.535, w=0.80, h=0.135, pairs=meta_pairs)
 
-    sw_ax = fig.add_axes((0.10, 0.20, 0.80, 0.18))
+    _draw_info_box(fig, x=0.09, y=0.350, w=0.82, h=0.135, lines=info_lines)
+
+    sw_ax = fig.add_axes((0.10, 0.090, 0.80, 0.210))
     sw_ax.set_xlim(0, 1)
     sw_ax.set_ylim(0, 1)
     sw_ax.axis("off")
+
+    # Short horizontal rule above the software block, as on the wwPDB cover.
+    sw_ax.plot([0.0, 0.42], [0.98, 0.98], color=_HEADER_RULE, linewidth=0.6, transform=sw_ax.transAxes)
+
     sw_ax.text(
         0.0,
-        0.95,
+        0.84,
         "The following software and reference data were used in this report:",
         fontsize=10,
         ha="left",
         va="top",
         transform=sw_ax.transAxes,
     )
+
     n = len(software_lines)
     if n:
-        top = 0.80
-        line_h = 0.68 / max(1, n)
+        top = 0.66
+        line_h = 0.56 / max(1, n - 1) if n > 1 else 0.0
         for i, (k, v) in enumerate(software_lines):
             ypos = top - i * line_h
-            sw_ax.text(0.40, ypos, k, fontsize=10, ha="right", va="top", transform=sw_ax.transAxes)
-            sw_ax.text(0.42, ypos, ":", fontsize=10, ha="center", va="top", transform=sw_ax.transAxes)
-            sw_ax.text(0.44, ypos, v, fontsize=10, ha="left", va="top", transform=sw_ax.transAxes)
+            sw_ax.text(0.39, ypos, k, fontsize=10, ha="right", va="top", transform=sw_ax.transAxes)
+            sw_ax.text(0.415, ypos, ":", fontsize=10, ha="center", va="top", transform=sw_ax.transAxes)
+            sw_ax.text(0.445, ypos, v, fontsize=10, ha="left", va="top", transform=sw_ax.transAxes)
 
-    _add_page_footer(fig, page_no=page_no, total=total, last=False)
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -791,13 +999,23 @@ def _quality_page(
 ) -> None:
     fig = _new_figure()
     _add_page_header(fig, page_no=page_no, total=total, title=title, entry=entry_id)
-    _draw_section_heading(fig, x=0.07, y=0.91, w=0.86, h=0.03, number=section_no, title=section_title)
-    intro_ax = fig.add_axes((0.10, 0.79, 0.80, 0.11))
+
+    _draw_section_heading(
+        fig,
+        x=0.07,
+        y=0.895,
+        w=0.86,
+        h=0.045,
+        number=section_no,
+        title=section_title,
+    )
+
+    intro_ax = fig.add_axes((0.10, 0.810, 0.80, 0.070))
     intro_ax.axis("off")
     for i, line in enumerate(pre_lines):
         intro_ax.text(
             0.0,
-            0.95 - i * 0.18,
+            0.95 - i * 0.32,
             line,
             fontsize=10,
             ha="left",
@@ -805,7 +1023,18 @@ def _quality_page(
             transform=intro_ax.transAxes,
         )
 
-    _draw_slider_panel(fig, top=0.76, height=0.60, row=row, include_overall=True)
+    intro_ax.text(
+        0.0,
+        0.05,
+        "Percentile scores ranging between 0-100 for AlphaJudge interface metrics are shown in "
+        "the following graphic.",
+        fontsize=10,
+        ha="left",
+        va="bottom",
+        transform=intro_ax.transAxes,
+    )
+
+    _draw_slider_panel(fig, top=0.775, height=0.56, row=row, include_overall=True)
 
     _add_page_footer(fig, page_no=page_no, total=total, last=last)
     pdf.savefig(fig)
