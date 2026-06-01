@@ -218,6 +218,15 @@ def _process_one_run(
 
     want_summary = summary_csv is not None
 
+    source_dir = str(d.resolve())
+
+    def _stamp(rows: list[dict]) -> list[dict]:
+        """Add an absolute ``source_dir`` to every row so the aggregate report
+        can locate per-run side files (PAE PNGs, etc.) from the summary CSV."""
+        for r in rows:
+            r.setdefault("source_dir", source_dir)
+        return rows
+
     # When building a summary, prefer reusing precomputed interfaces.csv
     if want_summary and existing_csv.exists() and not force_recompute:
         try:
@@ -226,7 +235,7 @@ def _process_one_run(
                 logger.info(f"reused existing {existing_csv} for aggregation")
                 if write_per_run_report:
                     _safe_write_per_run_report(d, csv_name=per_run_csv_name)
-                return (d_str, rows)
+                return (d_str, _stamp(rows))
             logger.info(f"existing {existing_csv} is empty; recomputing")
         except Exception as e:
             logger.warning(f"could not reuse {existing_csv}; recomputing: {e}")
@@ -254,7 +263,7 @@ def _process_one_run(
 
     if want_summary and out_path is not None:
         try:
-            return (d_str, _read_csv_rows(Path(out_path)))
+            return (d_str, _stamp(_read_csv_rows(Path(out_path))))
         except Exception as e:
             logger.error(f"failed reading {out_path} for aggregation: {e}")
 

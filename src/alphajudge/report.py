@@ -106,21 +106,30 @@ _FEATURE_UNITS = {
 }
 
 # Metric grouping for the slider panel. Lines are drawn only WITHIN each group
-# (AF-derived vs. biophysical); the Q-score is kept separate and never joined
-# to a polyline.
+# (AF-derived vs. biophysical); the Meta-score row stays separate and is never
+# joined to a polyline.
+#
+# Per-interface vs. complex-level: features that are scalars per predicted
+# complex (not per chain pair) are pulled out of the per-interface slider
+# panel and shown together with the PAE on a dedicated end-of-report page.
+# In AF3 iptm is per chain pair (chain_pair_iptm), so it stays in the
+# AF-derived group; confidence_score and pDockQ/mpDockQ are global to the
+# complex and live in COMPLEX_LEVEL_FEATURES.
 _AF_DERIVED_FEATURES = (
     "interface_LIS",
     "interface_ipSAE",
     "interface_pDockQ2",
     "iptm",
-    "confidence_score",
     "average_interface_pae",
-    "pDockQ/mpDockQ",
 )
 _BIOPHYSICAL_FEATURES = (
     "interface_sc",
     "interface_hb",
     "interface_solv_en",
+)
+_COMPLEX_LEVEL_FEATURES = (
+    "confidence_score",
+    "pDockQ/mpDockQ",
 )
 
 
@@ -590,14 +599,23 @@ def _metric_rows_for_slider_panel(
     row: Mapping[str, Any],
     *,
     include_overall: bool,
+    groups: Sequence[tuple[str, Sequence[str]]] | None = None,
 ) -> list[tuple[str, float | None, float | None, str, str]]:
     """Return (label, raw, percentile, units, group) per slider row.
 
-    Group is one of "overall" (the Q-score header row), "af" (AlphaFold-
-    derived confidence features) or "biophys" (biophysical features). The
-    grouping is used by ``_draw_slider_panel`` to add vertical spacing
-    between groups and to draw polylines only within a group.
+    Group is one of "overall" (the Meta-score row), "af" (AlphaFold-
+    derived confidence features), "biophys" (biophysical features), or
+    "complex" (per-complex scalars). The grouping is used by
+    ``_draw_slider_panel`` to add vertical spacing between groups and to
+    draw polylines only within a group.
+
+    ``groups`` lets callers swap the per-interface feature list for a
+    different set (e.g. just complex-level metrics on the end-of-report
+    PAE page); when ``None`` the per-interface layout is used.
     """
+    if groups is None:
+        groups = (("af", _AF_DERIVED_FEATURES), ("biophys", _BIOPHYSICAL_FEATURES))
+
     rows: list[tuple[str, float | None, float | None, str, str]] = []
 
     if include_overall:
@@ -605,28 +623,25 @@ def _metric_rows_for_slider_panel(
         rows.append(("Meta score", score, score, "", "overall"))
 
     fv = _feature_view(row)
-    for feat in _AF_DERIVED_FEATURES:
-        raw, pct = fv[feat]
-        rows.append(
-            (
-                _FEATURE_DISPLAY.get(feat, feat),
-                raw,
-                pct,
-                _FEATURE_UNITS.get(feat, ""),
-                "af",
+    for group_tag, features in groups:
+        for feat in features:
+            if feat in fv:
+                raw, pct = fv[feat]
+            else:
+                # Compute percentile even when feature isn't in METASCORE
+                # (e.g. complex-level features were dropped from the metascore
+                # but still need a slider bar).
+                raw = _safe_float(row.get(feat))
+                pct = calibrated_feature_percentile(feat, raw) if raw is not None else None
+            rows.append(
+                (
+                    _FEATURE_DISPLAY.get(feat, feat),
+                    raw,
+                    pct,
+                    _FEATURE_UNITS.get(feat, ""),
+                    group_tag,
+                )
             )
-        )
-    for feat in _BIOPHYSICAL_FEATURES:
-        raw, pct = fv[feat]
-        rows.append(
-            (
-                _FEATURE_DISPLAY.get(feat, feat),
-                raw,
-                pct,
-                _FEATURE_UNITS.get(feat, ""),
-                "biophys",
-            )
-        )
 
     return rows
 
@@ -674,17 +689,21 @@ def _draw_slider_panel(
     height: float,
     row: Mapping[str, Any],
     include_overall: bool = True,
+    groups: Sequence[tuple[str, Sequence[str]]] | None = None,
 ) -> float:
     """Draw a compact wwPDB-style percentile graphic.
 
-    The Q-score row (if included) is rendered first and visually offset
-    from the rest. AlphaFold-derived confidence features and biophysical
-    features are drawn as two separate groups, each connected by its own
-    polyline; lines never cross the Q-score or the group boundary.
+    The Meta-score row (if included) is rendered first and visually offset
+    from the rest. Each group passed in ``groups`` is rendered as its own
+    block, with its own connecting polyline; lines never cross the
+    Meta-score row or a group boundary. When ``groups`` is ``None`` the
+    standard per-interface layout (AF-derived + biophysical) is used.
 
     Returns the bottom y coordinate of the graphic.
     """
-    rows = _metric_rows_for_slider_panel(row, include_overall=include_overall)
+    rows = _metric_rows_for_slider_panel(
+        row, include_overall=include_overall, groups=groups
+    )
     n_rows = len(rows)
     if n_rows == 0:
         return top
@@ -796,11 +815,13 @@ def _draw_slider_panel(
     def _row_y(idx: int) -> float:
         return centers[idx]
 
-    # Polyline segments per metric group (skip "overall" - no line through Q-score).
-    by_group: dict[str, list[tuple[float, float]]] = {"af": [], "biophys": []}
+    # Polyline segments per metric group (skip "overall" - the Meta-score row
+    # is intentionally not connected to any feature row).
+    by_group: dict[str, list[tuple[float, float]]] = {}
     for idx, pct, group in pct_positions:
-        if group in by_group:
-            by_group[group].append((pct, _row_y(idx)))
+        if group == "overall":
+            continue
+        by_group.setdefault(group, []).append((pct, _row_y(idx)))
 
     for points in by_group.values():
         if len(points) >= 2:
@@ -1290,18 +1311,27 @@ def render_pae_png(
     return out_path
 
 
-def _pae_page(
+def _complex_evidence_page(
     pdf: PdfPages,
     *,
     title: str,
     entry_id: str,
     section_no: str,
-    pae_path: Path,
+    row: Mapping[str, Any] | None,
+    pae_path: Path | None,
     model_label: str,
     page_no: int,
     total: int,
     last: bool = False,
+    complex_label: str | None = None,
 ) -> None:
+    """One end-of-report page that combines:
+
+    - Complex-level slider rows (confidence_score, pDockQ/mpDockQ).
+      These are scalars per predicted complex/model rather than per chain
+      pair, so showing them on every interface page was misleading.
+    - The PAE heatmap for the same model (when a PNG is available).
+    """
     fig = _new_figure()
     _add_page_header(fig, page_no=page_no, total=total, title=title, entry=entry_id)
 
@@ -1312,30 +1342,59 @@ def _pae_page(
         w=0.86,
         h=0.045,
         number=section_no,
-        title="Predicted aligned error (PAE)",
+        title="Complex-level confidence & PAE",
         show_info=False,
     )
 
+    sub_bits: list[str] = []
+    if complex_label:
+        sub_bits.append(complex_label)
     if model_label:
+        sub_bits.append(f"Model {model_label}")
+    if sub_bits:
         sub_ax = fig.add_axes((0.10, 0.855, 0.80, 0.030))
         sub_ax.axis("off")
         sub_ax.text(
             0.5,
             0.5,
-            f"Model: {model_label}",
+            "  •  ".join(sub_bits),
             ha="center",
             va="center",
-            fontsize=9,
-            color="#555555",
+            fontsize=10,
+            color="#1f1f1f",
             transform=sub_ax.transAxes,
         )
 
-    img_ax = fig.add_axes((0.10, 0.105, 0.80, 0.730))
-    try:
-        img = mpimg.imread(str(pae_path))
-        img_ax.imshow(img)
-    except Exception as e:
-        img_ax.text(0.5, 0.5, f"PAE image unavailable\n({e})", ha="center", va="center")
+    # Top half: complex-level slider mini-panel.
+    if row is not None:
+        _draw_slider_panel(
+            fig,
+            top=0.815,
+            height=0.180,
+            row=row,
+            include_overall=False,
+            groups=[("complex", _COMPLEX_LEVEL_FEATURES)],
+        )
+
+    # Bottom half: PAE heatmap, or a small inline note if no PNG was found.
+    img_ax = fig.add_axes((0.10, 0.075, 0.80, 0.530))
+    if pae_path is not None and Path(pae_path).exists():
+        try:
+            img = mpimg.imread(str(pae_path))
+            img_ax.imshow(img)
+        except Exception as e:
+            img_ax.text(0.5, 0.5, f"PAE image unavailable\n({e})",
+                        ha="center", va="center", fontsize=10, color="#666")
+    else:
+        img_ax.text(
+            0.5,
+            0.5,
+            "No PAE heatmap available for this model.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#666",
+        )
     img_ax.set_xticks([])
     img_ax.set_yticks([])
     for spine in img_ax.spines.values():
@@ -1620,7 +1679,7 @@ def generate_per_run_report(
         1  # cover
         + (1 if show_interface_table else 0)  # overview table
         + len(interface_rows)  # one slider page per interface
-        + (1 if pae_path else 0)  # PAE heatmap
+        + 1  # complex-level confidence + PAE evidence
         + len(other_models)  # non-best-model appendix
     )
 
@@ -1709,20 +1768,21 @@ def generate_per_run_report(
             )
         next_section = quality_section_no + 1
 
-        if pae_path is not None:
-            page_no += 1
-            _pae_page(
-                pdf,
-                title=_REPORT_TITLE,
-                entry_id=entry_id,
-                section_no=str(next_section),
-                pae_path=pae_path,
-                model_label=best_model,
-                page_no=page_no,
-                total=total,
-                last=(page_no == total),
-            )
-            next_section += 1
+        page_no += 1
+        _complex_evidence_page(
+            pdf,
+            title=_REPORT_TITLE,
+            entry_id=entry_id,
+            section_no=str(next_section),
+            row=best,
+            pae_path=pae_path,
+            model_label=best_model,
+            page_no=page_no,
+            total=total,
+            last=(page_no == total),
+            complex_label=run_dir.name,
+        )
+        next_section += 1
 
         for m in other_models:
             m_rows = by_model[m]
@@ -1804,7 +1864,22 @@ def generate_aggregate_report(
     scores = [s for _, _, _, s, _ in ranked]
     n_complexes = len(seen_backend)
     n_interfaces = len(ranked)
-    total = 1 + len(ranked_per_page)
+
+    # Pick a best-row per complex for the "Per-complex evidence" section so
+    # we can render one PAE+complex-level slider page per complex. Limit to
+    # the same top_n the cover table shows so the aggregate PDF stays bounded.
+    best_per_complex: "OrderedDict[str, tuple[float, Mapping[str, Any]]]" = OrderedDict()
+    for _label, cname, _iface, score, r in ranked:
+        cur = best_per_complex.get(cname)
+        if cur is None or score > cur[0]:
+            best_per_complex[cname] = (score, r)
+    complex_evidence = sorted(
+        best_per_complex.items(),
+        key=lambda kv: kv[1][0],
+        reverse=True,
+    )[:top_n]
+
+    total = 1 + len(ranked_per_page) + len(complex_evidence)
 
     out_pdf = Path(out_pdf)
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
@@ -1829,7 +1904,29 @@ def generate_aggregate_report(
                 cohort_position=(rank, len(ranked_per_page)),
                 page_no=1 + rank,
                 total=total,
-                last=(rank == len(ranked_per_page)),
+                last=False,  # not last; complex evidence pages follow
+            )
+
+        ev_page = 1 + len(ranked_per_page)
+        for ev_rank, (cname, (cscore, crow)) in enumerate(complex_evidence, start=1):
+            ev_page += 1
+            source_dir = str(crow.get("source_dir") or "")
+            model_label = str(crow.get("model_used") or "")
+            pae_path = None
+            if source_dir:
+                pae_path = _find_pae_png(Path(source_dir), model_label)
+            _complex_evidence_page(
+                pdf,
+                title=_REPORT_TITLE,
+                entry_id=_truncate(cname, 40),
+                section_no=f"{ev_rank}",
+                row=crow,
+                pae_path=pae_path,
+                model_label=model_label,
+                page_no=ev_page,
+                total=total,
+                last=(ev_rank == len(complex_evidence)),
+                complex_label=cname,
             )
 
     logger.info("wrote %s", out_pdf)
