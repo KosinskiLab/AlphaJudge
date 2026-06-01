@@ -1850,7 +1850,21 @@ def generate_aggregate_report(
     ranked.sort(key=lambda t: t[3], reverse=True)
 
     top_rows = [(label, score, r) for label, _, _, score, r in ranked[:top_n]]
-    ranked_per_page = ranked if max_complexes is None else ranked[:max_complexes]
+    if max_complexes is None:
+        ranked_per_page = ranked
+    else:
+        # Cap the number of DISTINCT complexes (not raw interface rows).
+        # Walk metascore-sorted; keep every interface row whose complex is
+        # among the first `max_complexes` complexes encountered.
+        ranked_per_page = []
+        seen_complex: set[str] = set()
+        for entry in ranked:
+            cname = entry[1]
+            if cname in seen_complex:
+                ranked_per_page.append(entry)
+            elif len(seen_complex) < max_complexes:
+                seen_complex.add(cname)
+                ranked_per_page.append(entry)
 
     # Backends counted per complex (so a multimer doesn't multi-count).
     seen_backend: dict[str, str] = {}
@@ -1873,11 +1887,12 @@ def generate_aggregate_report(
         cur = best_per_complex.get(cname)
         if cur is None or score > cur[0]:
             best_per_complex[cname] = (score, r)
+    evidence_cap = top_n if max_complexes is None else min(top_n, max_complexes)
     complex_evidence = sorted(
         best_per_complex.items(),
         key=lambda kv: kv[1][0],
         reverse=True,
-    )[:top_n]
+    )[:evidence_cap]
 
     total = 1 + len(ranked_per_page) + len(complex_evidence)
 
