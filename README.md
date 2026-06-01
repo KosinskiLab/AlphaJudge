@@ -96,14 +96,14 @@ alphajudge PATH [PATH ...] \
 - **-o / --summary**: Write an aggregated CSV across all processed runs
 - **--cores**: Number of processes to use across run directories (0 = all available cores)
 - **--report / --no-report**: Write an RCSB-style `report.pdf` next to each per-run `interfaces.csv`. Default is on for single-run scoring and off when `--summary` is used, so benchmark aggregations stay fast.
-- **--aggregate_report AGGREGATE.pdf**: After scoring, build a multi-page validation PDF from the `--summary` CSV with one slider page per interface ranked by meta score (requires `--summary`).
+- **--aggregate_report AGGREGATE.pdf**: After scoring, build a multi-page validation PDF from the `--summary` CSV with one slider page per interface ranked by meta score, followed by a "Per-complex evidence" section with the per-complex confidence sliders and PAE heatmap for each top-N complex (requires `--summary`).
 
 Outputs:
 - Always writes `interfaces.csv` inside each processed run directory.
 - For each processed model, also writes a PAE heatmap PNG `pae_<model>.png` next to `interfaces.csv`.
-- If `--report` is on, also writes `report.pdf` next to `interfaces.csv` -- an RCSB-style validation report with a percentile slider panel for every detected interface.
+- If `--report` is on, also writes `report.pdf` next to `interfaces.csv` -- an RCSB-style validation report with a percentile slider panel for every detected interface and a final "Complex-level confidence & PAE" page combining the per-complex scalars (confidence score, pDockQ/mpDockQ) with the PAE heatmap.
 - If `--summary` is provided, also writes a union-header CSV at the given path containing rows from all runs.
-- If `--aggregate_report` is provided, also writes a multi-page PDF with one slider page per interface across the whole cohort, plus a cover with the meta-score histogram, summary statistics, and a top-N interfaces table.
+- If `--aggregate_report` is provided, also writes a multi-page PDF: cover with the meta-score histogram, summary statistics, and a top-N interfaces table; one slider page per interface across the whole cohort; then a "Per-complex evidence" section with one page per top-N complex (per-complex confidence sliders plus PAE heatmap).
 
 Report generation is backend-agnostic: AF2, AF3, and Boltz-2 runs all flow through the same scoring path, so `--report` and `--aggregate_report` work identically for any mix of supported predictions in one cohort. Multimers contribute one slider page per detected chain pair; dimers contribute one.
 
