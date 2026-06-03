@@ -114,6 +114,18 @@ alphajudge-report path/to/run_dir --out-pdf path/to/report.pdf
 alphajudge-report path/to/summary.csv --out-pdf path/to/aggregate.pdf
 ```
 
+### Example: interface sliders
+
+Every interface gets a percentile **slider** panel that places each metric against the
+AlphaJudge benchmark — red = worse, blue = better, the marker is the percentile and the
+raw value is shown on the right. Below is the top-ranked interface (chain pair B_C) from
+the nine-chain complex **8HHY** (AlphaFold 3), meta score 0.735:
+
+![AlphaJudge interface validation sliders](images/report_sliders_8hhy.png)
+
+The full `report.pdf` contains one such page per detected interface, followed by a
+complex-level confidence & PAE summary page.
+
 Examples
 
 ```bash
