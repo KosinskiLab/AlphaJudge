@@ -81,7 +81,7 @@ _AJ_GOLD = "#d08c00"
 _AJ_DARK = "#111111"
 
 _REPORT_TITLE = "AlphaJudge Interface validation Report"
-_BENCHMARK_TAG = "benchmark_26 (final_sync_20260523, n=7,756 AF2/AF3 rows)"
+_BENCHMARK_TAG = "benchmark_26 positives (final_sync_20260523, n=3,878 interacting AF2/AF3 pairs)"
 
 _GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
 
@@ -105,9 +105,9 @@ _FEATURE_UNITS = {
     "interface_solv_en": "kcal/mol",
 }
 
-# Metric grouping for the slider panel. Lines are drawn only WITHIN each group
-# (AF-derived vs. biophysical); the Meta-score row stays separate and is never
-# joined to a polyline.
+# Metric grouping for the slider panel. The grouping (AF-derived vs.
+# biophysical, with the Meta-score row kept separate) drives the inter-group
+# vertical spacing in the panel.
 #
 # Per-interface vs. complex-level: features that are scalars per predicted
 # complex (not per chain pair) are pulled out of the per-interface slider
@@ -183,13 +183,15 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
 
 
 def _row_meta_score(row: Mapping[str, Any]) -> float | None:
-    direct = _safe_float(row.get("interface_meta_score"))
-    if direct is not None:
-        return direct
+    # Always recompute from the current (positives-only) calibration so the
+    # Meta marker stays consistent with the freshly recalibrated feature
+    # sliders. A precomputed ``interface_meta_score`` column from an older or
+    # externally merged CSV could carry the legacy all-rows calibration; only
+    # fall back to it when the raw feature columns are unavailable.
     computed = interface_meta_score(row)
     if isinstance(computed, float) and math.isfinite(computed):
         return computed
-    return None
+    return _safe_float(row.get("interface_meta_score"))
 
 
 def _feature_view(row: Mapping[str, Any]) -> "OrderedDict[str, tuple[float | None, float | None]]":
@@ -606,8 +608,7 @@ def _metric_rows_for_slider_panel(
     Group is one of "overall" (the Meta-score row), "af" (AlphaFold-
     derived confidence features), "biophys" (biophysical features), or
     "complex" (per-complex scalars). The grouping is used by
-    ``_draw_slider_panel`` to add vertical spacing between groups and to
-    draw polylines only within a group.
+    ``_draw_slider_panel`` to add vertical spacing between groups.
 
     ``groups`` lets callers swap the per-interface feature list for a
     different set (e.g. just complex-level metrics on the end-of-report
@@ -652,7 +653,7 @@ def _draw_percentile_legend(
     x: float,
     y: float,
     w: float,
-    label: str = "Percentile relative to AlphaJudge benchmark",
+    label: str = "Percentile vs interacting (positive) benchmark pairs",
 ) -> None:
     ax = fig.add_axes((x, y, w, 0.032))
     ax.set_xlim(0, 1)
@@ -695,9 +696,9 @@ def _draw_slider_panel(
 
     The Meta-score row (if included) is rendered first and visually offset
     from the rest. Each group passed in ``groups`` is rendered as its own
-    block, with its own connecting polyline; lines never cross the
-    Meta-score row or a group boundary. When ``groups`` is ``None`` the
-    standard per-interface layout (AF-derived + biophysical) is used.
+    block, separated by extra vertical spacing. Each row's percentile is shown
+    by a black marker on its bar. When ``groups`` is ``None`` the standard
+    per-interface layout (AF-derived + biophysical) is used.
 
     Returns the bottom y coordinate of the graphic.
     """
@@ -814,20 +815,6 @@ def _draw_slider_panel(
 
     def _row_y(idx: int) -> float:
         return centers[idx]
-
-    # Polyline segments per metric group (skip "overall" - the Meta-score row
-    # is intentionally not connected to any feature row).
-    by_group: dict[str, list[tuple[float, float]]] = {}
-    for idx, pct, group in pct_positions:
-        if group == "overall":
-            continue
-        by_group.setdefault(group, []).append((pct, _row_y(idx)))
-
-    for points in by_group.values():
-        if len(points) >= 2:
-            xs = [p for p, _y in points]
-            ys = [y for _p, y in points]
-            line_ax.plot(xs, ys, color="#0b0b0b", linewidth=0.75, zorder=4)
 
     marker_w = 0.012
     marker_h = max(0.0042, min(0.0070, bar_h * 1.35))
@@ -1464,7 +1451,7 @@ def _aggregate_cover_page(
 
     info = [
         "This report scores AlphaFold-predicted complexes against the",
-        "AlphaJudge benchmark_26 reference set.",
+        "AlphaJudge benchmark_26 interacting (positive) reference set.",
         "All percentiles are archive percentiles; higher is better.",
     ]
     _draw_info_box(fig, x=0.13, y=0.54, w=0.74, h=0.11, lines=info)
@@ -1595,8 +1582,8 @@ def _interface_summary_page(
     note_ax.text(
         0.5,
         1.0,
-        "Black marker shows this interface's percentile rank against the AlphaJudge benchmark "
-        "(higher = better).",
+        "Black marker shows this interface's percentile rank against the AlphaJudge "
+        "interacting (positive) benchmark pairs (higher = better).",
         ha="center",
         va="top",
         fontsize=9,
@@ -1701,8 +1688,8 @@ def generate_per_run_report(
     info_lines = [
         "AlphaJudge interface validation report.",
         "Each metric is converted to its archive percentile against the frozen",
-        "benchmark distribution; the overall meta score is the unweighted mean over",
-        "available features.",
+        "distribution of interacting (positive) benchmark pairs; the overall meta",
+        "score is the unweighted mean over available features.",
     ]
     software_lines: list[tuple[str, str]] = [
         ("Reference distribution", _BENCHMARK_TAG),
