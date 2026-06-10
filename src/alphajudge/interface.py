@@ -174,6 +174,45 @@ class Interface:
         b = _lis_dir(self._idx2, self._idx1)
         return float(0.5 * (a + b))
 
+    def clis(self) -> float:
+        """
+        Contact-restricted LIS (cLIS): the LIS PAE transform averaged only over
+        residue pairs that are also in direct physical contact (representative
+        atom, CB-else-CA, within contact_thresh; default Cβ-Cβ <= 8 A). Both
+        chain directions are scored separately and averaged, mirroring lis().
+        Returns 0.0 when no contacts or no valid PAE pairs.
+        """
+        if not self._pairs:
+            return 0.0
+        ab: list[float] = []
+        ba: list[float] = []
+        for r1, r2 in self._pairs:
+            i = self._rim.get((r1.get_parent().id, r1.id))
+            j = self._rim.get((r2.get_parent().id, r2.id))
+            if i is None or j is None:
+                continue
+            p_ab = float(self._pae[i, j])
+            p_ba = float(self._pae[j, i])
+            if p_ab < 12.0:
+                ab.append((12.0 - p_ab) / 12.0)
+            if p_ba < 12.0:
+                ba.append((12.0 - p_ba) / 12.0)
+        a = float(np.mean(ab)) if ab else 0.0
+        b = float(np.mean(ba)) if ba else 0.0
+        return float(0.5 * (a + b))
+
+    def ilis(self) -> float:
+        """
+        Integrated LIS (iLIS = sqrt(LIS * cLIS); Kim et al., AFM-LIS). The
+        geometric mean forces the score to 0 unless the interface has both broad
+        PAE confidence (LIS) and confident direct contacts (cLIS).
+        """
+        lis = self.lis()
+        clis = self.clis()
+        if lis <= 0.0 or clis <= 0.0:
+            return 0.0
+        return float(math.sqrt(lis * clis))
+
     @property
     def polar(self) -> float:
         return self._frac(POLAR_RES)

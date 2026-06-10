@@ -117,6 +117,8 @@ def process(
                     "interface_pDockQ2": pd2,
                     "interface_ipSAE": iface.ipsae(),
                     "interface_LIS": iface.lis(),
+                    "interface_cLIS": iface.clis(),
+                    "interface_iLIS": iface.ilis(),
                 }
 
                 # Add expensive metrics only if not skipped
