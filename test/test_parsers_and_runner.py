@@ -41,6 +41,8 @@ EXPECTED_OUTPUT_COLUMNS = {
     "interface_pDockQ2",
     "interface_ipSAE",
     "interface_LIS",
+    "interface_cLIS",
+    "interface_iLIS",
     "interface_hb",
     "interface_sb",
     "interface_ss",
@@ -330,6 +332,62 @@ def test_af2_runner_outputs_have_expected_scores(tmp_path: Path, af2_dir_src: Pa
                 got_iptm_ptm = to_float_or_nan(r0["iptm_ptm"])
                 if not math.isnan(got_iptm_ptm):
                     assert nearly_equal(got_iptm_ptm, float(exp_ptm)), f"AF2 monomer iptm_ptm should be NaN or ptm for {m}"
+
+
+class _FakeResidue:
+    """Minimal hashable Bio.PDB-like residue with .id and .get_parent().id."""
+
+    def __init__(self, chain_id: str, res_id: Any):
+        self.id = res_id
+        self._parent = type("_Chain", (), {"id": chain_id})()
+
+    def get_parent(self):
+        return self._parent
+
+
+def _make_residue(chain_id: str, res_id: Any) -> _FakeResidue:
+    return _FakeResidue(chain_id, res_id)
+
+
+def test_clis_ilis_math_is_deterministic():
+    """
+    cLIS restricts the LIS PAE transform to contacting residue pairs and iLIS is
+    the geometric mean sqrt(LIS * cLIS) (AFM-LIS, Kim et al.). Build a tiny 2+2
+    complex with a known PAE matrix so the arithmetic is checkable by hand.
+    """
+    from alphajudge.interface import Interface
+
+    a1, a2 = _make_residue("A", (" ", 1, " ")), _make_residue("A", (" ", 2, " "))
+    b1, b2 = _make_residue("B", (" ", 1, " ")), _make_residue("B", (" ", 2, " "))
+
+    # PAE indices: A1->0, A2->1, B1->2, B2->3. Intra-chain PAE is irrelevant.
+    pae = np.array(
+        [
+            [0.0, 0.0, 0.0, 6.0],
+            [0.0, 0.0, 24.0, 24.0],
+            [0.0, 24.0, 0.0, 0.0],
+            [6.0, 24.0, 0.0, 0.0],
+        ]
+    )
+
+    iface = object.__new__(Interface)  # bypass __init__; set only what we exercise
+    iface._pae = pae
+    iface._idx1 = np.array([0, 1])
+    iface._idx2 = np.array([2, 3])
+    iface._rim = {("A", a1.id): 0, ("A", a2.id): 1, ("B", b1.id): 2, ("B", b2.id): 3}
+    iface._pairs = {(a1, b1)}  # only A1-B1 is in physical contact
+
+    # LIS: A->B valid entries (12-pae)/12 = [1.0, 0.5]; B->A = [1.0, 0.5]; mean 0.75.
+    assert nearly_equal(iface.lis(), 0.75)
+    # cLIS: only the A1-B1 contact, pae 0 both directions -> 1.0.
+    assert nearly_equal(iface.clis(), 1.0)
+    # iLIS = sqrt(0.75 * 1.0).
+    assert nearly_equal(iface.ilis(), math.sqrt(0.75))
+
+    # No contacts -> cLIS 0 -> iLIS 0 regardless of LIS.
+    iface._pairs = set()
+    assert iface.clis() == 0.0
+    assert iface.ilis() == 0.0
 
 
 # -------------------------
