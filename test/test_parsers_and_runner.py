@@ -769,3 +769,82 @@ def test_cli_recursive_single_directory_root(tmp_path: Path, af2_dir_src: Path):
     assert_has_expected_headers(r1, where=str(out_nonrec))
     assert_has_expected_headers(r2, where=str(out_rec))
     assert len(r1) == len(r2), "Recursive root with one run should match direct-run output row count"
+
+
+# -------------------------
+# Compressed-confidences reading (AlphaPulldown slim/minimal storage modes)
+# -------------------------
+
+import gzip
+import lzma
+
+from alphajudge.parsers import BaseParser
+
+
+def test_read_json_reads_plain_xz_and_gz(tmp_path):
+    payload = {"a": 1, "pae": [[0.0, 1.0], [1.0, 0.0]]}
+    plain = tmp_path / "confidences.json"
+    plain.write_text(json.dumps(payload))
+    xz = tmp_path / "x.json.xz"
+    with lzma.open(xz, "wt") as fh:
+        json.dump(payload, fh)
+    gz = tmp_path / "x.json.gz"
+    with gzip.open(gz, "wt") as fh:
+        json.dump(payload, fh)
+
+    assert BaseParser._read_json(plain) == payload
+    assert BaseParser._read_json(xz) == payload
+    assert BaseParser._read_json(gz) == payload
+
+
+def test_read_json_detects_compression_by_magic_not_extension(tmp_path):
+    # xz bytes stored under a plain .json name must still decode.
+    payload = {"k": "v"}
+    mislabeled = tmp_path / "confidences.json"
+    with lzma.open(mislabeled, "wt") as fh:
+        json.dump(payload, fh)
+    assert BaseParser._read_json(mislabeled) == payload
+
+
+def test_read_json_falls_back_to_compressed_sibling(tmp_path):
+    payload = {"pae": [[0.0]]}
+    # Only the .xz sibling exists; the plain path is requested.
+    with lzma.open(tmp_path / "confidences.json.xz", "wt") as fh:
+        json.dump(payload, fh)
+    assert BaseParser._read_json(tmp_path / "confidences.json") == payload
+
+
+def test_read_json_missing_returns_empty(tmp_path):
+    assert BaseParser._read_json(tmp_path / "nope.json") == {}
+
+
+def _write_af3_sample(model_dir: Path, *, compress: bool, with_summary: bool = True):
+    model_dir.mkdir(parents=True, exist_ok=True)
+    conf = {"pae": [[0.0, 5.0], [5.0, 0.0]], "token_chain_ids": ["A", "B"]}
+    if compress:
+        with lzma.open(model_dir / "confidences.json.xz", "wt") as fh:
+            json.dump(conf, fh)
+    else:
+        (model_dir / "confidences.json").write_text(json.dumps(conf))
+    if with_summary:
+        (model_dir / "summary_confidences.json").write_text(json.dumps({"iptm": 0.5, "ptm": 0.5}))
+
+
+def test_find_af3_json_finds_compressed_confidences(tmp_path):
+    md = tmp_path / "seed-1_sample-0"
+    _write_af3_sample(md, compress=True)
+    found = AF3Parser._find_af3_json(tmp_path, "seed-1_sample-0", "confidences", None, False)
+    assert found.name == "confidences.json.xz"
+    assert found.exists()
+
+
+def test_find_af3_json_does_not_shadow_confidences_with_summary(tmp_path):
+    # Even when only summary_confidences.json is present, the confidences search
+    # must not return it (it carries only coarse per-chain-pair PAE). The caller
+    # then falls back to summary explicitly.
+    md = tmp_path / "seed-1_sample-0"
+    md.mkdir(parents=True)
+    (md / "summary_confidences.json").write_text(json.dumps({"iptm": 0.5}))
+    found = AF3Parser._find_af3_json(tmp_path, "seed-1_sample-0", "confidences", None, False)
+    assert not found.name.startswith("summary_")
+    assert not found.exists()  # genuinely no confidences file present

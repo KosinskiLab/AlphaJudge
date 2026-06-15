@@ -117,15 +117,34 @@ class AF3Parser(BaseParser):
         is_best_model: bool,
     ) -> Path:
         model_dir = d / model
-        candidates = [model_dir / f"{kind}.json"]
+
+        # Exact-name candidates, each also tried with .xz/.gz so that
+        # AlphaPulldown's slim/minimal storage modes (which compress per-sample
+        # confidences.json) are read transparently.
+        exact = [model_dir / f"{kind}.json"]
         if job_prefix:
-            candidates.append(model_dir / f"{job_prefix}_{model}_{kind}.json")
+            exact.append(model_dir / f"{job_prefix}_{model}_{kind}.json")
             if is_best_model:
-                candidates.append(d / f"{job_prefix}_{kind}.json")
-        if model_dir.is_dir():
-            candidates.extend(sorted(model_dir.glob(f"*_{kind}.json")))
+                exact.append(d / f"{job_prefix}_{kind}.json")
         if is_best_model:
-            candidates.append(d / f"ranked_0_{kind}.json")
+            exact.append(d / f"ranked_0_{kind}.json")
+
+        candidates: list[Path] = []
+        for base in exact:
+            candidates.append(base)
+            candidates.append(base.with_name(base.name + ".xz"))
+            candidates.append(base.with_name(base.name + ".gz"))
+
+        # Wildcard fallback within the model dir. Exclude summary_confidences.json
+        # from a "confidences" search: it ends in "_confidences.json" but only
+        # carries coarse per-chain-pair PAE, not the full token x token matrix.
+        if model_dir.is_dir():
+            for pattern in (f"*_{kind}.json", f"*_{kind}.json.xz", f"*_{kind}.json.gz"):
+                for hit in sorted(model_dir.glob(pattern)):
+                    if kind == "confidences" and hit.name.startswith("summary_"):
+                        continue
+                    candidates.append(hit)
+
         return cls._find_existing(candidates) or candidates[0]
 
     @classmethod
