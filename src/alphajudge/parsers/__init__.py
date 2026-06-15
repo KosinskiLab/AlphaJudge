@@ -3,7 +3,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from abc import ABC, abstractmethod
+import gzip
 import json
+import lzma
 from Bio.PDB import PDBParser, MMCIFParser
 from ..confidence import Confidence
 from ..geometry import is_pae_token_residue, representative_atom
@@ -23,11 +25,49 @@ class BaseParser(ABC):
     @abstractmethod
     def parse_run(self, d: Path) -> Run: ...
 
-    @staticmethod
-    def _read_json(p: Path) -> dict:
+    # Compression magic numbers (file header bytes).
+    _MAGIC = ((b"\xfd7zXZ\x00", lzma.open), (b"\x1f\x8b", gzip.open))
+
+    @classmethod
+    def _open_maybe_compressed(cls, p: Path):
+        """Open ``p`` for text reading, detecting xz/gz by its magic bytes.
+
+        Compression is identified from the file header rather than the
+        extension, so a compressed file is handled regardless of how it is
+        named.
+        """
+        with p.open("rb") as fh:
+            head = fh.read(6)
+        for magic, opener in cls._MAGIC:
+            if head.startswith(magic):
+                return opener(p, "rt")
+        return p.open("rt")
+
+    @classmethod
+    def _read_json(cls, p: Path) -> dict:
+        """Read a JSON file, transparently handling xz/gz compression.
+
+        AlphaPulldown's ``--storage_mode slim/minimal`` may store large JSON
+        sidecars (e.g. AF3 per-sample ``confidences.json``) compressed. If the
+        plain path does not exist, fall back to a ``.xz`` or ``.gz`` sibling so
+        scoring is unaffected by the storage mode. Compression is detected from
+        the file's magic bytes, not its extension.
+        """
         try:
-            with p.open() as fh: return json.load(fh)
-        except Exception: return {}
+            target = p
+            if not target.exists():
+                # Plain path absent: try a compressed sibling from slim/minimal.
+                for ext in (".xz", ".gz"):
+                    cp = p.with_name(p.name + ext)
+                    if cp.exists():
+                        target = cp
+                        break
+                else:
+                    return {}
+            with cls._open_maybe_compressed(target) as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
 
     @staticmethod
     def _load_structure(path: str):
