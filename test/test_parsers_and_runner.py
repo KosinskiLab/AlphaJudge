@@ -829,3 +829,20 @@ def test_find_af3_json_does_not_shadow_confidences_with_summary(tmp_path):
     found = AF3Parser._find_af3_json(tmp_path, "seed-1_sample-0", "confidences", None, False)
     assert not found.name.startswith("summary_")
     assert not found.exists()  # genuinely no confidences file present
+
+
+def test_find_af3_json_excludes_job_prefixed_summary(tmp_path):
+    # Official AF3 layout uses "<job>_summary_confidences.json", which does NOT
+    # start with "summary_". The confidences search must still not return it,
+    # and must not let it shadow the real "<job>_<model>_confidences.json".
+    job = "hello_fold"
+    model = "seed-1_sample-0"
+    md = tmp_path / model
+    md.mkdir(parents=True)
+    (md / f"{job}_{model}_confidences.json").write_text(
+        json.dumps({"pae": [[0.0]], "token_chain_ids": ["A"]})
+    )
+    (md / f"{job}_{model}_summary_confidences.json").write_text(json.dumps({"iptm": 0.5}))
+    found = AF3Parser._find_af3_json(tmp_path, model, "confidences", job, False)
+    assert found.name == f"{job}_{model}_confidences.json"
+    assert "summary" not in found.name

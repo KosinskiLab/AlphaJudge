@@ -138,10 +138,20 @@ class AF3Parser(BaseParser):
         # Wildcard fallback within the model dir. Exclude summary_confidences.json
         # from a "confidences" search: it ends in "_confidences.json" but only
         # carries coarse per-chain-pair PAE, not the full token x token matrix.
+        # Match the summary file by suffix so both "summary_confidences.json" and
+        # the job-prefixed "<job>_summary_confidences.json" (official AF3 layout)
+        # are excluded.
+        def _is_summary(name: str) -> bool:
+            base = name
+            for ext in (".xz", ".gz"):
+                if base.endswith(ext):
+                    base = base[: -len(ext)]
+            return base == "summary_confidences.json" or base.endswith("_summary_confidences.json")
+
         if model_dir.is_dir():
             for pattern in (f"*_{kind}.json", f"*_{kind}.json.xz", f"*_{kind}.json.gz"):
                 for hit in sorted(model_dir.glob(pattern)):
-                    if kind == "confidences" and hit.name.startswith("summary_"):
+                    if kind == "confidences" and _is_summary(hit.name):
                         continue
                     candidates.append(hit)
 
