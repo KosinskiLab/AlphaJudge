@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.0 - 2026-06-15
+
+### Added
+- iLIS interface score (AFM-LIS; Kim et al., github.com/flyark/AFM-LIS): the geometric mean `iLIS = sqrt(LIS * cLIS)`, where `cLIS` is the LIS PAE transform averaged only over residue pairs in direct contact (CB-else-CA within `contact_thresh`, default 8 Å). Adds `Interface.clis()`/`ilis()` and emits `interface_cLIS` / `interface_iLIS` next to `interface_LIS` in the per-run CSV. Validated against the official AFM-LIS `lis.py` (agreement to 4 decimal places).
+
+### Changed
+- Percentile sliders and meta-score are now calibrated on **positive (interacting) benchmark pairs only** (3,878 AF2/AF3 positive rows) instead of the full decoy-padded population, so predictions are ranked against the distribution of real interfaces. Per-feature AUROC is unchanged (monotonic transform); production `interface_meta_score` AUROC on the balanced benchmark is 0.878. Use `scripts/freeze_metascore_quantiles.py --label-filter positive|negative|all` to reproduce the deciles (`all` reproduces the prior scale bit-for-bit).
+- Removed the black poly-line connecting per-group slider markers in the report; each metric still shows its percentile marker, and the Meta marker is recomputed from the current calibration so it stays consistent with the recalibrated sliders.
+
 ## 1.1.0 - 2026-06-03
 
 ### Added
