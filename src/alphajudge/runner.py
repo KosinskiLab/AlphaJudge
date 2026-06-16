@@ -70,10 +70,16 @@ def process(
     job = d.resolve().name
 
     rows: list[dict] = []
+    # Diagnostics so an empty CSV can be explained rather than written silently.
+    models_processed = 0
+    total_interfaces = 0
+    dropped_by_pae = 0
     for m in models:
         try:
             structure, confidence = run.load_model(m)
             comp = Complex(structure, confidence, contact_thresh, pae_filter, ipsae_pae_cutoff)
+            models_processed += 1
+            total_interfaces += len(comp.interfaces)
 
             global_score = (
                 comp.mpDockQ
@@ -85,6 +91,7 @@ def process(
                 if iface.num_intf_residues == 0:
                     continue
                 if iface.average_interface_pae > pae_filter:
+                    dropped_by_pae += 1
                     continue
                 pd2, _ = iface.pDockQ2()
                 label = (
@@ -161,6 +168,29 @@ def process(
 
     out = d / per_run_csv_name
     out.parent.mkdir(parents=True, exist_ok=True)
+
+    if not rows:
+        # Explain *why* the CSV is empty instead of writing a silent zero-byte file
+        # (see https://github.com/KosinskiLab/AlphaJudge/issues/17). The common case
+        # for heterodimers is that AlphaFold placed the chains without any inter-chain
+        # contact within --contact_thresh, so no interface is detected.
+        if models_processed == 0:
+            reason = "no model could be loaded/processed"
+        elif total_interfaces == 0:
+            reason = (
+                f"no inter-chain contacts within contact_thresh={contact_thresh} A "
+                f"(chains have no detectable interface); try a larger --contact_thresh "
+                f"or check that the model is actually a complex"
+            )
+        elif dropped_by_pae:
+            reason = (
+                f"all {dropped_by_pae} detected interface(s) were filtered out by "
+                f"pae_filter={pae_filter}; try a larger --pae_filter"
+            )
+        else:
+            reason = "all detected interfaces had zero interface residues"
+        logger.warning(f"no interface rows for {job}: {reason}; writing empty {out}")
+
     with out.open("w", newline="") as f:
         if rows:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))

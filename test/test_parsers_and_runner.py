@@ -519,6 +519,25 @@ def test_af3_runner_outputs_have_expected_scores(tmp_path: Path, af3_dir_src: Pa
             assert nearly_equal(got_iptm_ptm, float(exp_iptm_ptm)), f"AF3 iptm_ptm mismatch for {m}"
 
 
+def test_af3_empty_csv_is_explained_when_no_contacts(
+    tmp_path: Path, af3_dir_src: Path, caplog: pytest.LogCaptureFixture
+):
+    """Regression for issue #17: when no inter-chain contact is within contact_thresh,
+    the CSV is empty (no header) but the log must say *why* instead of being silent."""
+    af3_dir = copy_run_dir(af3_dir_src, tmp_path)
+
+    caplog.set_level(logging.WARNING, logger="alphajudge.runner")
+    # A sub-Angstrom contact threshold guarantees no inter-chain contacts -> no interfaces.
+    process(str(af3_dir), 0.01, 100.0, "best", 10.0)
+
+    out = af3_dir / "interfaces.csv"
+    assert out.exists(), "an (empty) interfaces.csv should still be written"
+    assert out.stat().st_size == 0, "no contacts -> empty CSV (no header)"
+
+    assert "no interface rows" in caplog.text
+    assert "contact_thresh" in caplog.text
+
+
 def test_af3_parser_accepts_official_prefixed_layout(tmp_path: Path, af3_dir_src: Path):
     af3_dir = make_official_af3_layout(af3_dir_src, tmp_path, job_name="hello_fold")
 
