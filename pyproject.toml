@@ -51,6 +51,13 @@ test = [
 [project.scripts]
 alphajudge = "alphajudge.cli:main"
 alphajudge-report = "alphajudge.report:main_aggregate"
+alphajudge-threshold = "alphajudge.thresholds:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+alphajudge = ["threshold_rocs.json"]
 
 [project.urls]
 Homepage = "https://github.com/KosinskiLab/AlphaJudge"
