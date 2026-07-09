@@ -181,7 +181,7 @@ process_many(
 )
 ```
 
-Key outputs per interface include: `average_interface_pae`, `interface_average_plddt`, `interface_contact_pairs`, `interface_contact_prob_max`, `interface_contact_prob_top10_mean`, `interface_expected_contacts`, `interface_area`, `interface_hb`, `interface_sb`, `interface_sc`, `interface_solv_en`, `interface_ipSAE`, `interface_LIS`, `interface_cLIS`, `interface_iLIS`, `interface_pDockQ2`, and per-run `pDockQ/mpDockQ`.
+Key outputs per interface include: `average_interface_pae`, `interface_average_plddt`, `interface_contact_pairs`, `interface_contact_prob_max`, `interface_contact_prob_top10_mean`, `interface_expected_contacts`, `interface_confident_contacts`, `interface_area`, `interface_hb`, `interface_sb`, `interface_sc`, `interface_solv_en`, `interface_ipSAE`, `interface_LIS`, `interface_cLIS`, `interface_iLIS`, `interface_pDockQ2`, and per-run `pDockQ/mpDockQ`.
 
 ---
 
@@ -208,7 +208,7 @@ AlphaJudge writes `interfaces.csv` with one row per interface (and includes the 
 - **pDockQ/mpDockQ**: global dockQ-like score (mpDockQ if multimer; pDockQ if dimer)
 - **average_interface_pae, interface_average_plddt, interface_num_intf_residues**
 - **interface_contact_pairs, interface_score, interface_pDockQ2, interface_ipSAE, interface_LIS, interface_cLIS, interface_iLIS**
-- **interface_contact_prob_source, interface_contact_prob_max, interface_contact_prob_top10_mean, interface_expected_contacts**: AF3 native `contact_probs`, or AF2 distogram-derived `P(distance < 8 A)` when full result pickles are available
+- **interface_contact_prob_source, interface_contact_prob_max, interface_contact_prob_top10_mean, interface_expected_contacts, interface_confident_contacts**: AF3 native `contact_probs`, or AF2 distogram-derived contact probability when full result pickles retain the `distogram` key. `interface_confident_contacts` counts inter-chain residue pairs with contact probability >= 0.5.
 - **interface_hb, interface_sb, interface_sc, interface_area, interface_solv_en**
 
 Exact header is asserted in tests to be consistent across AF2 and AF3 runs.
