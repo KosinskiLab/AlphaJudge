@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import json
 import logging
 import math
@@ -44,6 +45,7 @@ EXPECTED_OUTPUT_COLUMNS = {
     "interface_contact_prob_max",
     "interface_contact_prob_top10_mean",
     "interface_expected_contacts",
+    "interface_confident_contacts",
     "interface_score",
     "interface_pDockQ2",
     "interface_ipSAE",
@@ -425,6 +427,7 @@ def test_contact_probability_scores_math_is_deterministic():
     assert nearly_equal(iface.contact_prob_max, 0.8)
     assert nearly_equal(iface.contact_prob_top10_mean, 0.375)
     assert nearly_equal(iface.expected_contacts, 1.5)
+    assert nearly_equal(iface.confident_contacts, 1.0)
 
     missing = object.__new__(Interface)
     missing._idx1 = np.array([0, 1])
@@ -433,12 +436,14 @@ def test_contact_probability_scores_math_is_deterministic():
     assert math.isnan(missing.contact_prob_max)
     assert math.isnan(missing.contact_prob_top10_mean)
     assert math.isnan(missing.expected_contacts)
+    assert math.isnan(missing.confident_contacts)
 
 
 def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: Path):
     """
     AF2 contact probabilities are distogram softmax mass for bins with upper
-    bound strictly below 8 A, matching AlphaPulldown's diagnostics fallback.
+    lower bound is below 8 A, matching the published AF2 contact-probability
+    convention and including the bin that straddles 8 A.
     """
     probs = np.array(
         [
@@ -451,20 +456,19 @@ def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: P
     bin_edges = np.array([4.0, 8.0, 12.0])
 
     direct = contact_probs_from_distogram(logits, bin_edges)
-    expected_asym = np.array([[0.70, 0.10], [0.20, 0.05]])
+    expected_asym = np.array([[0.90, 0.30], [0.50, 0.10]])
     assert np.allclose(direct, expected_asym)
 
     run_dir = tmp_path / "af2_result"
     run_dir.mkdir()
-    with (run_dir / "result_model_1.pkl").open("wb") as f:
+    with gzip.open(run_dir / "result_model_1.pkl.gz", "wb") as f:
         pickle.dump({"distogram": {"logits": logits, "bin_edges": bin_edges}}, f)
 
     parsed = AF2Parser._load_contact_probs_from_result_pkl(
         run_dir, "model_1", expected_shape=(2, 2)
     )
     assert parsed is not None
-    expected_sym = np.array([[0.70, 0.15], [0.15, 0.05]])
-    assert np.allclose(parsed, expected_sym)
+    assert np.allclose(parsed, expected_asym)
 
 
 # -------------------------
@@ -566,6 +570,38 @@ def test_af3_contact_probability_scores_match_raw_contact_probs(
     assert nearly_equal(row["interface_contact_prob_max"], iface.contact_prob_max)
     assert nearly_equal(row["interface_contact_prob_top10_mean"], iface.contact_prob_top10_mean)
     assert nearly_equal(row["interface_expected_contacts"], iface.expected_contacts)
+    assert nearly_equal(row["interface_confident_contacts"], iface.confident_contacts)
+
+
+def test_af3_contact_probs_alignment_uses_token_res_ids_with_extra_tokens():
+    from Bio.PDB.Atom import Atom
+    from Bio.PDB.Chain import Chain
+    from Bio.PDB.Residue import Residue
+
+    def residue(chain: Chain, resseq: int, serial: int) -> None:
+        res = Residue((" ", resseq, " "), "ALA", "")
+        res.add(Atom("CA", np.zeros(3), 1.0, 1.0, " ", "CA", serial, element="C"))
+        chain.add(res)
+
+    chain_a = Chain("A")
+    chain_b = Chain("B")
+    residue(chain_a, 1, 1)
+    residue(chain_a, 2, 2)
+    residue(chain_b, 1, 3)
+
+    token_matrix = np.arange(16, dtype=float).reshape(4, 4)
+    aligned = AF3Parser._align_token_pair_matrix_to_residues(
+        token_matrix,
+        ["A", "A", "A", "B"],
+        [1, 99, 2, 1],
+        [chain_a, chain_b],
+        {"A": [0, 1], "B": [2]},
+        (3, 3),
+    )
+
+    assert aligned is not None
+    expected = token_matrix[np.ix_([0, 2, 3], [0, 2, 3])]
+    assert np.allclose(aligned, expected)
 
 
 @pytest.mark.parametrize("models_to_analyse", ["best", "all"])

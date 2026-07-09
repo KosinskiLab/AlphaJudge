@@ -17,10 +17,16 @@ import argparse
 import csv
 import logging
 import math
+import sys
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if SRC_ROOT.exists():
+    sys.path.insert(0, str(SRC_ROOT))
 
 from alphajudge.complex import Complex
 from alphajudge.interface import Interface
@@ -36,6 +42,7 @@ DEFAULT_SCORES = (
     "interface_contact_prob_max",
     "interface_contact_prob_top10_mean",
     "interface_expected_contacts",
+    "interface_confident_contacts",
     "iptm",
     "iptm_ptm",
     "confidence_score",
@@ -164,6 +171,7 @@ def _row_for_interface(job: str, model: str, confidence, global_score: float, if
         "interface_contact_prob_max": iface.contact_prob_max,
         "interface_contact_prob_top10_mean": iface.contact_prob_top10_mean,
         "interface_expected_contacts": iface.expected_contacts,
+        "interface_confident_contacts": iface.confident_contacts,
         "interface_score": iface.score_complex,
         "interface_pDockQ2": pd2,
         "interface_ipSAE": iface.ipsae(),
@@ -184,16 +192,17 @@ def score_run(
     ipsae_pae_cutoff: float,
     models_to_analyse: str,
     chain_pairs: str,
-) -> tuple[list[dict], str | None]:
+) -> tuple[list[dict], list[str]]:
     metadata = _infer_metadata(run_dir, root)
     try:
         parser = pick_parser(run_dir)
         run = parser.parse_run(run_dir)
         models = [run.order[0]] if models_to_analyse == "best" else list(run.order)
     except Exception as e:
-        return [], f"{run_dir}: parser setup failed: {e}"
+        return [], [f"{run_dir}: parser setup failed: {e}"]
 
     rows: list[dict] = []
+    errors: list[str] = []
     for model in models:
         try:
             structure, confidence = run.load_model(model)
@@ -221,8 +230,9 @@ def score_run(
                 row.update(_row_for_interface(run_dir.name, model, confidence, global_score, iface))
                 rows.append(row)
         except Exception as e:
-            return rows, f"{run_dir} {model}: scoring failed: {e}"
-    return rows, None
+            errors.append(f"{run_dir} {model}: scoring failed: {e}")
+            continue
+    return rows, errors
 
 
 def _write_rows(path: Path, rows: list[dict]) -> None:
@@ -275,11 +285,32 @@ def _average_precision(labels: np.ndarray, scores: np.ndarray) -> float:
         return float("nan")
     order = np.argsort(-scores)
     y = labels[order]
-    precision = np.cumsum(y == 1) / (np.arange(y.size) + 1)
-    return float(np.sum(precision[y == 1]) / n_pos)
+    sorted_scores = scores[order]
+
+    ap = 0.0
+    tp = 0
+    seen = 0
+    i = 0
+    while i < y.size:
+        j = i + 1
+        while j < y.size and sorted_scores[j] == sorted_scores[i]:
+            j += 1
+        group_pos = int(np.count_nonzero(y[i:j] == 1))
+        tp += group_pos
+        seen = j
+        if group_pos:
+            ap += (group_pos / n_pos) * (tp / seen)
+        i = j
+    return float(ap)
 
 
-def benchmark_metrics(rows: list[dict], score_names: Iterable[str]) -> list[dict]:
+def benchmark_metrics(
+    rows: list[dict],
+    score_names: Iterable[str],
+    *,
+    row_mode: str = "complete-case",
+) -> list[dict]:
+    score_names = list(score_names)
     groups: list[tuple[str, str, list[dict]]] = [("all", "all", rows)]
     for backend in sorted({str(r.get("backend", "")) for r in rows}):
         groups.append((backend, "all", [r for r in rows if r.get("backend") == backend]))
@@ -298,9 +329,21 @@ def benchmark_metrics(rows: list[dict], score_names: Iterable[str]) -> list[dict
     for backend, organism, subset in groups:
         labels_all = np.asarray([int(r.get("label", -1)) for r in subset], dtype=int)
         valid_labels = (labels_all == 0) | (labels_all == 1)
+        raw_by_score = {
+            score_name: np.asarray([_safe_float(r.get(score_name)) for r in subset], dtype=float)
+            for score_name in score_names
+        }
+        complete_valid = valid_labels.copy()
+        if row_mode == "complete-case":
+            for raw_scores in raw_by_score.values():
+                complete_valid &= np.isfinite(raw_scores)
         for score_name in score_names:
-            raw_scores = np.asarray([_safe_float(r.get(score_name)) for r in subset], dtype=float)
-            valid = valid_labels & np.isfinite(raw_scores)
+            raw_scores = raw_by_score[score_name]
+            valid = (
+                complete_valid
+                if row_mode == "complete-case"
+                else (valid_labels & np.isfinite(raw_scores))
+            )
             labels = labels_all[valid]
             scores = raw_scores[valid]
             if score_name in LOWER_IS_BETTER:
@@ -313,6 +356,7 @@ def benchmark_metrics(rows: list[dict], score_names: Iterable[str]) -> list[dict
                     "n": int(valid.sum()),
                     "n_pos": int(np.count_nonzero(labels == 1)),
                     "n_neg": int(np.count_nonzero(labels == 0)),
+                    "row_mode": row_mode,
                     "auroc": _auroc(labels, scores),
                     "average_precision": _average_precision(labels, scores),
                 }
@@ -335,6 +379,21 @@ def main() -> int:
     parser.add_argument("--backend", default=None, choices=("af2", "af3"))
     parser.add_argument("--pair-set", default=None, choices=("pos_pairs", "neg_pairs"))
     parser.add_argument("--scores", nargs="*", default=list(DEFAULT_SCORES))
+    parser.add_argument(
+        "--metric-row-mode",
+        default="complete-case",
+        choices=("complete-case", "per-score"),
+        help=(
+            "complete-case compares all requested scores on the same finite rows; "
+            "per-score maximizes row availability independently for each score."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=100,
+        help="Rewrite the partial score CSV every N runs so long jobs leave usable progress.",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
@@ -352,9 +411,10 @@ def main() -> int:
 
     rows: list[dict] = []
     errors: list[str] = []
+    out_path = Path(args.out)
     for i, run_dir in enumerate(run_dirs, start=1):
         logger.info("scoring %d/%d %s", i, len(run_dirs), run_dir)
-        scored, error = score_run(
+        scored, run_errors = score_run(
             run_dir,
             root,
             contact_thresh=args.contact_thresh,
@@ -364,12 +424,17 @@ def main() -> int:
             chain_pairs=args.chain_pairs,
         )
         rows.extend(scored)
-        if error:
+        for error in run_errors:
             logger.warning(error)
             errors.append(error)
+        if args.checkpoint_every > 0 and i % args.checkpoint_every == 0:
+            _write_rows(out_path, rows)
 
-    _write_rows(Path(args.out), rows)
-    _write_rows(Path(args.metrics_out), benchmark_metrics(rows, args.scores))
+    _write_rows(out_path, rows)
+    _write_rows(
+        Path(args.metrics_out),
+        benchmark_metrics(rows, args.scores, row_mode=args.metric_row_mode),
+    )
 
     if errors:
         errors_path = Path(args.metrics_out).with_name(Path(args.metrics_out).stem + "_errors.txt")

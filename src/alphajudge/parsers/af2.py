@@ -10,7 +10,6 @@ from ..confidence import Confidence
 from ..contact_probs import (
     AF2_DISTOGRAM_CONTACT_CUTOFF,
     contact_probs_from_distogram,
-    symmetrize_contact_probs,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,7 +60,9 @@ class AF2Parser(BaseParser):
                 iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=conf,
                 plddt_residue=plddt,
                 contact_prob_matrix=contact_probs,
-                contact_prob_source="af2_distogram_lt_8A" if contact_probs is not None else None,
+                contact_prob_source=(
+                    "af2_distogram_lb_lt_8A" if contact_probs is not None else None
+                ),
             )
         return Run(order=order, source="af2", load_model=load_model)
 
@@ -83,6 +84,7 @@ class AF2Parser(BaseParser):
             return None
         distogram = payload.get("distogram")
         if not isinstance(distogram, dict):
+            logger.debug(f"AF2 result pickle {result_pkl} has no distogram; contact scores unavailable.")
             return None
         logits = distogram.get("logits")
         bin_edges = distogram.get("bin_edges")
@@ -106,12 +108,6 @@ class AF2Parser(BaseParser):
             )
             return None
 
-        contact_probs, max_delta = symmetrize_contact_probs(contact_probs)
-        if max_delta > 1e-6:
-            logger.warning(
-                f"AF2 contact probabilities in {result_pkl} were asymmetric "
-                f"(max abs delta {max_delta:.3g}); symmetrized."
-            )
         return contact_probs
 
     @staticmethod
