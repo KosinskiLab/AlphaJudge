@@ -17,3 +17,5 @@ class Confidence:
     # AF3 only: per-chain-pair ipTM matrix (indexed by chain order).
     # When present, use this for per-interface iptm instead of global iptm.
     chain_pair_iptm: list[list[float]] | None = None
+    contact_prob_matrix: np.ndarray | None = None
+    contact_prob_source: str | None = None
