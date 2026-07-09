@@ -4,6 +4,7 @@ import csv
 import json
 import logging
 import math
+import pickle
 import shutil
 import subprocess
 from pathlib import Path
@@ -13,7 +14,9 @@ import numpy as np
 import pytest
 
 from alphajudge.parsers import pick_parser
+from alphajudge.parsers.af2 import AF2Parser
 from alphajudge.parsers.af3 import AF3Parser
+from alphajudge.contact_probs import contact_probs_from_distogram
 from alphajudge.runner import process, process_many
 
 
@@ -37,6 +40,10 @@ EXPECTED_OUTPUT_COLUMNS = {
     "interface_hydrophobic",
     "interface_charged",
     "interface_contact_pairs",
+    "interface_contact_prob_source",
+    "interface_contact_prob_max",
+    "interface_contact_prob_top10_mean",
+    "interface_expected_contacts",
     "interface_score",
     "interface_pDockQ2",
     "interface_ipSAE",
@@ -52,7 +59,12 @@ EXPECTED_OUTPUT_COLUMNS = {
 }
 
 # columns that are expected to be numeric (but may be NaN)
-EXPECTED_NUMERIC_COLUMNS = EXPECTED_OUTPUT_COLUMNS - {"jobs", "model_used", "interface"}
+EXPECTED_NUMERIC_COLUMNS = EXPECTED_OUTPUT_COLUMNS - {
+    "jobs",
+    "model_used",
+    "interface",
+    "interface_contact_prob_source",
+}
 
 
 # -------------------------
@@ -390,6 +402,71 @@ def test_clis_ilis_math_is_deterministic():
     assert iface.ilis() == 0.0
 
 
+def test_contact_probability_scores_math_is_deterministic():
+    """
+    Contact-probability summaries are computed over all residue pairs between
+    the two chains: max, mean of the ten largest values, and expected contacts
+    as the sum of probabilities.
+    """
+    from alphajudge.interface import Interface
+
+    iface = object.__new__(Interface)
+    iface._idx1 = np.array([0, 1])
+    iface._idx2 = np.array([2, 3])
+    iface._contact_prob = np.array(
+        [
+            [0.0, 0.0, 0.8, 0.4],
+            [0.0, 0.0, 0.2, 0.1],
+            [0.8, 0.2, 0.0, 0.0],
+            [0.4, 0.1, 0.0, 0.0],
+        ]
+    )
+
+    assert nearly_equal(iface.contact_prob_max, 0.8)
+    assert nearly_equal(iface.contact_prob_top10_mean, 0.375)
+    assert nearly_equal(iface.expected_contacts, 1.5)
+
+    missing = object.__new__(Interface)
+    missing._idx1 = np.array([0, 1])
+    missing._idx2 = np.array([2, 3])
+    missing._contact_prob = None
+    assert math.isnan(missing.contact_prob_max)
+    assert math.isnan(missing.contact_prob_top10_mean)
+    assert math.isnan(missing.expected_contacts)
+
+
+def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: Path):
+    """
+    AF2 contact probabilities are distogram softmax mass for bins with upper
+    bound strictly below 8 A, matching AlphaPulldown's diagnostics fallback.
+    """
+    probs = np.array(
+        [
+            [[0.70, 0.20, 0.05, 0.05], [0.10, 0.20, 0.30, 0.40]],
+            [[0.20, 0.30, 0.10, 0.40], [0.05, 0.05, 0.20, 0.70]],
+        ],
+        dtype=float,
+    )
+    logits = np.log(probs)
+    bin_edges = np.array([4.0, 8.0, 12.0])
+
+    direct = contact_probs_from_distogram(logits, bin_edges)
+    expected_asym = np.array([[0.70, 0.10], [0.20, 0.05]])
+    assert np.allclose(direct, expected_asym)
+
+    run_dir = tmp_path / "af2_result"
+    run_dir.mkdir()
+    with (run_dir / "result_model_1.pkl").open("wb") as f:
+        pickle.dump({"distogram": {"logits": logits, "bin_edges": bin_edges}}, f)
+
+    parsed = AF2Parser._load_contact_probs_from_result_pkl(
+        run_dir, "model_1", expected_shape=(2, 2)
+    )
+    assert parsed is not None
+    expected_sym = np.array([[0.70, 0.15], [0.15, 0.05]])
+    assert np.allclose(parsed, expected_sym)
+
+
 # -------------------------
 # AF3 runner: best/all + score checks
 # -------------------------
@@ -443,7 +520,52 @@ def test_af3_parser_accepts_alphapulldown_layout(af3_dir_src: Path):
 
     _, conf = run.load_model(run.order[0])
     assert conf.pae_matrix.shape[0] == len(conf.plddt_residue)
+    assert conf.contact_prob_matrix is not None
+    assert conf.contact_prob_matrix.shape == conf.pae_matrix.shape
+    assert conf.contact_prob_source == "af3_contact_probs"
     assert np.isfinite(conf.confidence_score)
+
+
+def test_af3_contact_probability_scores_match_raw_contact_probs(
+    tmp_path: Path, af3_dir_src: Path
+):
+    from alphajudge.complex import Complex
+
+    parser = pick_parser(af3_dir_src)
+    run = parser.parse_run(af3_dir_src)
+    best_model = run.order[0]
+    structure, conf = run.load_model(best_model)
+
+    raw = _load_json(af3_dir_src / best_model / "confidences.json")
+    raw_contact_probs = np.asarray(raw["contact_probs"], dtype=float)
+    raw_sym = 0.5 * (raw_contact_probs + raw_contact_probs.T)
+
+    assert conf.contact_prob_matrix is not None
+    assert np.allclose(conf.contact_prob_matrix, raw_sym)
+
+    comp = Complex(structure, conf, 8.0, 100.0, 10.0)
+    assert comp.interfaces
+    iface = comp.interfaces[0]
+    label = f"{iface.chain1[0].get_parent().id}_{iface.chain2[0].get_parent().id}"
+
+    af3_dir = copy_run_dir(af3_dir_src, tmp_path)
+    process(
+        str(af3_dir),
+        8.0,
+        100.0,
+        "best",
+        10.0,
+        per_run_csv_name="interfaces_contact_probs.csv",
+        skip_pae_png=True,
+        skip_biophysical_scores=True,
+    )
+
+    rows = read_csv_rows(af3_dir / "interfaces_contact_probs.csv")
+    row = next(r for r in rows if r["interface"] == label)
+    assert row["interface_contact_prob_source"] == "af3_contact_probs"
+    assert nearly_equal(row["interface_contact_prob_max"], iface.contact_prob_max)
+    assert nearly_equal(row["interface_contact_prob_top10_mean"], iface.contact_prob_top10_mean)
+    assert nearly_equal(row["interface_expected_contacts"], iface.expected_contacts)
 
 
 @pytest.mark.parametrize("models_to_analyse", ["best", "all"])

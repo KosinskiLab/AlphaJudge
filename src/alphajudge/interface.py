@@ -16,6 +16,7 @@ from .biophysics import (
     shape_complementarity as _scasa_sc,
 )
 from .docking_scores import D0, PDOCKQ, PDOCKQ2
+from .contact_probs import summarize_contact_prob_block
 from .geometry import (
     CHARGED_RES,
     HYDROPHOBIC_RES,
@@ -37,6 +38,7 @@ class Interface:
         if not self.chain1 or not self.chain2:
             # pae_matrix is already a numpy array for memory efficiency
             self._pae = self.c.conf.pae_matrix
+            self._contact_prob = self.c.conf.contact_prob_matrix
             self._rim = self.c._res_index_map
             self._cid = self.c._chain_indices_by_id
             self._cid1_id = ""
@@ -51,6 +53,7 @@ class Interface:
 
         # pae_matrix is already a numpy array for memory efficiency
         self._pae = self.c.conf.pae_matrix
+        self._contact_prob = self.c.conf.contact_prob_matrix
         self._rim = self.c._res_index_map
         self._cid = self.c._chain_indices_by_id
 
@@ -212,6 +215,22 @@ class Interface:
         if lis <= 0.0 or clis <= 0.0:
             return 0.0
         return float(math.sqrt(lis * clis))
+
+    @cached_property
+    def contact_probability_scores(self) -> tuple[float, float, float]:
+        return summarize_contact_prob_block(self._contact_prob, self._idx1, self._idx2)
+
+    @cached_property
+    def contact_prob_max(self) -> float:
+        return self.contact_probability_scores[0]
+
+    @cached_property
+    def contact_prob_top10_mean(self) -> float:
+        return self.contact_probability_scores[1]
+
+    @cached_property
+    def expected_contacts(self) -> float:
+        return self.contact_probability_scores[2]
 
     @property
     def polar(self) -> float:

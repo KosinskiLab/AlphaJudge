@@ -1,8 +1,19 @@
 from __future__ import annotations
+import gzip
+import logging
+import lzma
+import pickle
 from pathlib import Path
 import numpy as np
 from . import BaseParser, Run
 from ..confidence import Confidence
+from ..contact_probs import (
+    AF2_DISTOGRAM_CONTACT_CUTOFF,
+    contact_probs_from_distogram,
+    symmetrize_contact_probs,
+)
+
+logger = logging.getLogger(__name__)
 
 class AF2Parser(BaseParser):
     name = "af2"
@@ -22,6 +33,7 @@ class AF2Parser(BaseParser):
             pae_payload = self._read_json(d / f"pae_{model}.json")
             pae = np.array(pae_payload[0]["predicted_aligned_error"], dtype=float)
             max_pae = float(np.nanmax(pae) if pae.size else np.nan)
+            contact_probs = self._load_contact_probs_from_result_pkl(d, model, pae.shape)
 
             # AF2 rankings
             is_multimer = ("iptm+ptm" in rj) and ("iptm" in rj)
@@ -48,5 +60,90 @@ class AF2Parser(BaseParser):
                 pae_matrix=pae, max_pae=max_pae,
                 iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=conf,
                 plddt_residue=plddt,
+                contact_prob_matrix=contact_probs,
+                contact_prob_source="af2_distogram_lt_8A" if contact_probs is not None else None,
             )
         return Run(order=order, source="af2", load_model=load_model)
+
+    @classmethod
+    def _load_contact_probs_from_result_pkl(
+        cls, d: Path, model: str, expected_shape: tuple[int, int]
+    ) -> np.ndarray | None:
+        result_pkl = cls._find_result_pkl(d, model)
+        if result_pkl is None:
+            return None
+
+        try:
+            payload = cls._read_pickle(result_pkl)
+        except Exception as e:
+            logger.warning(f"could not read AF2 result pickle {result_pkl}: {e}")
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+        distogram = payload.get("distogram")
+        if not isinstance(distogram, dict):
+            return None
+        logits = distogram.get("logits")
+        bin_edges = distogram.get("bin_edges")
+        if logits is None or bin_edges is None:
+            return None
+
+        try:
+            contact_probs = contact_probs_from_distogram(
+                np.asarray(logits),
+                np.asarray(bin_edges),
+                AF2_DISTOGRAM_CONTACT_CUTOFF,
+            )
+        except Exception as e:
+            logger.warning(f"could not derive AF2 contact probabilities from {result_pkl}: {e}")
+            return None
+
+        if contact_probs.shape != expected_shape:
+            logger.warning(
+                f"AF2 contact probability shape {contact_probs.shape} != expected "
+                f"{expected_shape}; skipping contact probabilities."
+            )
+            return None
+
+        contact_probs, max_delta = symmetrize_contact_probs(contact_probs)
+        if max_delta > 1e-6:
+            logger.warning(
+                f"AF2 contact probabilities in {result_pkl} were asymmetric "
+                f"(max abs delta {max_delta:.3g}); symmetrized."
+            )
+        return contact_probs
+
+    @staticmethod
+    def _find_result_pkl(d: Path, model: str) -> Path | None:
+        suffixes = ("", ".gz", ".xz")
+        stems = [
+            d / f"result_{model}.pkl",
+            d / model / "result.pkl",
+            d / model / f"result_{model}.pkl",
+        ]
+        candidates: list[Path] = []
+        for stem in stems:
+            candidates.extend(stem.with_name(stem.name + suffix) for suffix in suffixes)
+        candidates.extend(sorted(d.glob(f"result*{model}*.pkl*")))
+        candidates.extend(sorted((d / model).glob("result*.pkl*")) if (d / model).is_dir() else [])
+
+        seen: set[Path] = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _read_pickle(path: Path):
+        if path.suffix == ".gz":
+            with gzip.open(path, "rb") as f:
+                return pickle.load(f)
+        if path.suffix == ".xz":
+            with lzma.open(path, "rb") as f:
+                return pickle.load(f)
+        with path.open("rb") as f:
+            return pickle.load(f)

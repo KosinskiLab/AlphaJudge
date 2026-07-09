@@ -6,6 +6,7 @@ import logging
 import numpy as np
 from . import BaseParser, Run
 from ..confidence import Confidence
+from ..contact_probs import symmetrize_contact_probs
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +54,15 @@ class AF3Parser(BaseParser):
                 chain_pair_iptm = [list(r) if isinstance(r, (list, tuple)) else [] for r in chain_pair_iptm_raw]
 
             pae, max_pae = self._normalize_pae_af3(matrix, chains, cid)
+            contact_probs = self._normalize_contact_probs_af3(matrix, chains, cid)
             plddt = self._plddt(chains, rim)
 
             return struct, Confidence(
                 pae_matrix=pae, max_pae=max_pae,
                 iptm=iptm, ptm=ptm, iptm_ptm=iptm_ptm, confidence_score=ranking_score,
                 plddt_residue=plddt, chain_pair_iptm=chain_pair_iptm,
+                contact_prob_matrix=contact_probs,
+                contact_prob_source="af3_contact_probs" if contact_probs is not None else None,
             )
         return Run(order=order, source="af3", load_model=load_model)
 
@@ -252,3 +256,94 @@ class AF3Parser(BaseParser):
             )
 
         return pae, float(max_pae)
+
+    @classmethod
+    def _normalize_contact_probs_af3(cls, matrix: dict, chains, cid) -> np.ndarray | None:
+        raw = matrix.get("contact_probs")
+        if raw is None:
+            return None
+
+        expected_shape = (sum(len(cid[c.id]) for c in chains),) * 2
+        contact_probs = np.asarray(raw, dtype=float)
+        if contact_probs.ndim != 2:
+            logger.warning(
+                f"contact_probs must be a 2D matrix, got shape {contact_probs.shape}; "
+                "skipping contact probabilities."
+            )
+            return None
+
+        if contact_probs.shape == expected_shape:
+            aligned = contact_probs
+        else:
+            aligned = cls._align_token_pair_matrix_to_residues(
+                contact_probs,
+                matrix.get("token_chain_ids"),
+                chains,
+                cid,
+                expected_shape,
+            )
+            if aligned is None:
+                logger.warning(
+                    f"contact_probs shape {contact_probs.shape} != expected {expected_shape}; "
+                    "skipping contact probabilities."
+                )
+                return None
+
+        aligned, max_delta = symmetrize_contact_probs(aligned)
+        if max_delta > 1e-6:
+            logger.warning(
+                f"AF3 contact_probs were asymmetric (max abs delta {max_delta:.3g}); "
+                "symmetrized."
+            )
+        return aligned
+
+    @staticmethod
+    def _align_token_pair_matrix_to_residues(
+        token_matrix: np.ndarray,
+        token_chain_ids,
+        chains,
+        cid,
+        expected_shape: tuple[int, int],
+    ) -> np.ndarray | None:
+        if not isinstance(token_chain_ids, (list, tuple)):
+            return None
+        if len(token_chain_ids) != token_matrix.shape[0] or token_matrix.shape[0] != token_matrix.shape[1]:
+            return None
+
+        ids = [str(x) for x in token_chain_ids]
+        seen: list[str] = []
+        for chain_id in ids:
+            if chain_id not in seen:
+                seen.append(chain_id)
+
+        token_indices_by_chain: dict[str, np.ndarray] = {}
+        for i, chain in enumerate(chains):
+            residue_indices = np.asarray(cid.get(chain.id, []), dtype=int)
+            if residue_indices.size == 0:
+                token_indices_by_chain[chain.id] = np.array([], dtype=int)
+                continue
+
+            exact = np.asarray([k for k, chain_id in enumerate(ids) if chain_id == str(chain.id)], dtype=int)
+            ordered = (
+                np.asarray([k for k, chain_id in enumerate(ids) if chain_id == seen[i]], dtype=int)
+                if i < len(seen)
+                else np.array([], dtype=int)
+            )
+            token_indices = exact if exact.size == residue_indices.size else ordered
+            if token_indices.size != residue_indices.size:
+                return None
+            token_indices_by_chain[chain.id] = token_indices
+
+        residue_matrix = np.full(expected_shape, np.nan, dtype=float)
+        for chi in chains:
+            ri = np.asarray(cid.get(chi.id, []), dtype=int)
+            ti = token_indices_by_chain.get(chi.id, np.array([], dtype=int))
+            if ri.size == 0:
+                continue
+            for chj in chains:
+                rj = np.asarray(cid.get(chj.id, []), dtype=int)
+                tj = token_indices_by_chain.get(chj.id, np.array([], dtype=int))
+                if rj.size == 0:
+                    continue
+                residue_matrix[np.ix_(ri, rj)] = token_matrix[np.ix_(ti, tj)]
+        return residue_matrix
