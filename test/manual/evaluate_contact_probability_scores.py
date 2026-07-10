@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Evaluate AlphaJudge contact-probability scores on a labelled prediction tree.
+"""Manual AUROC/AP comparison for AlphaJudge scores on a labelled prediction tree.
+
+This is a developer benchmark helper, not part of the release CLI and not run
+by pytest. Invoke it manually with explicit local benchmark paths.
 
 The benchmark tree is expected to look like:
 
@@ -23,7 +26,7 @@ from typing import Iterable
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = REPO_ROOT / "src"
 if SRC_ROOT.exists():
     sys.path.insert(0, str(SRC_ROOT))
@@ -35,9 +38,6 @@ from alphajudge.parsers import pick_parser
 
 logger = logging.getLogger("contact_probability_benchmark")
 
-DEFAULT_ROOT = Path(
-    "/g/transform/kosinski/dima/IntAct_BioGRID_STRING/benchmark_26/predictions"
-)
 DEFAULT_SCORES = (
     "interface_contact_prob_max",
     "interface_contact_prob_top10_mean",
@@ -362,7 +362,7 @@ def benchmark_metrics(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--predictions-root", default=str(DEFAULT_ROOT))
+    parser.add_argument("--predictions-root", required=True)
     parser.add_argument("--out", required=True, help="Output per-interface/per-chain-pair CSV.")
     parser.add_argument("--metrics-out", required=True, help="Output AUROC/AP summary CSV.")
     parser.add_argument("--models-to-analyse", default="best", choices=("best", "all"))

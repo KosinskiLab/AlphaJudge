@@ -112,9 +112,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "molref_dir",
-        nargs="?",
         type=Path,
-        default=Path("/g/kosinski/dima/PycharmProjects/pisa/molref"),
         help="Directory containing PISA molref.idx and molref.rdt",
     )
     args = parser.parse_args()
