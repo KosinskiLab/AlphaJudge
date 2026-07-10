@@ -123,8 +123,6 @@ def process(
                     "interface_contact_prob_source": confidence.contact_prob_source or "",
                     "interface_contact_prob_max": iface.contact_prob_max,
                     "interface_contact_prob_top10_mean": iface.contact_prob_top10_mean,
-                    "interface_expected_contacts": iface.expected_contacts,
-                    "interface_confident_contacts": iface.confident_contacts,
                     "interface_score": iface.score_complex,
                     "interface_pDockQ2": pd2,
                     "interface_ipSAE": iface.ipsae(),

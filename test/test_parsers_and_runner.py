@@ -44,8 +44,6 @@ EXPECTED_OUTPUT_COLUMNS = {
     "interface_contact_prob_source",
     "interface_contact_prob_max",
     "interface_contact_prob_top10_mean",
-    "interface_expected_contacts",
-    "interface_confident_contacts",
     "interface_score",
     "interface_pDockQ2",
     "interface_ipSAE",
@@ -407,8 +405,7 @@ def test_clis_ilis_math_is_deterministic():
 def test_contact_probability_scores_math_is_deterministic():
     """
     Contact-probability summaries are computed over all residue pairs between
-    the two chains: max, mean of the ten largest values, and expected contacts
-    as the sum of probabilities.
+    the two chains: max and mean of the ten largest values.
     """
     from alphajudge.interface import Interface
 
@@ -426,8 +423,6 @@ def test_contact_probability_scores_math_is_deterministic():
 
     assert nearly_equal(iface.contact_prob_max, 0.8)
     assert nearly_equal(iface.contact_prob_top10_mean, 0.375)
-    assert nearly_equal(iface.expected_contacts, 1.5)
-    assert nearly_equal(iface.confident_contacts, 1.0)
 
     missing = object.__new__(Interface)
     missing._idx1 = np.array([0, 1])
@@ -435,8 +430,6 @@ def test_contact_probability_scores_math_is_deterministic():
     missing._contact_prob = None
     assert math.isnan(missing.contact_prob_max)
     assert math.isnan(missing.contact_prob_top10_mean)
-    assert math.isnan(missing.expected_contacts)
-    assert math.isnan(missing.confident_contacts)
 
 
 def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: Path):
@@ -469,6 +462,37 @@ def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: P
     )
     assert parsed is not None
     assert np.allclose(parsed, expected_asym)
+
+
+def test_af2_missing_distogram_warns_once_and_returns_none(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    run_dir = tmp_path / "af2_result"
+    run_dir.mkdir()
+    with (run_dir / "result_model_1.pkl").open("wb") as f:
+        pickle.dump({"plddt": [90.0]}, f)
+    with (run_dir / "result_model_2.pkl").open("wb") as f:
+        pickle.dump({"plddt": [80.0]}, f)
+
+    old_warned = AF2Parser._warned_missing_distogram
+    AF2Parser._warned_missing_distogram = False
+    try:
+        caplog.set_level(logging.WARNING, logger="alphajudge.parsers.af2")
+        parsed = AF2Parser._load_contact_probs_from_result_pkl(
+            run_dir, "model_1", expected_shape=(1, 1)
+        )
+        assert parsed is None
+        assert "has no distogram" in caplog.text
+        assert "--remove_keys_from_pickles" in caplog.text
+
+        caplog.clear()
+        parsed = AF2Parser._load_contact_probs_from_result_pkl(
+            run_dir, "model_2", expected_shape=(1, 1)
+        )
+        assert parsed is None
+        assert "has no distogram" not in caplog.text
+    finally:
+        AF2Parser._warned_missing_distogram = old_warned
 
 
 # -------------------------
@@ -569,8 +593,6 @@ def test_af3_contact_probability_scores_match_raw_contact_probs(
     assert row["interface_contact_prob_source"] == "af3_contact_probs"
     assert nearly_equal(row["interface_contact_prob_max"], iface.contact_prob_max)
     assert nearly_equal(row["interface_contact_prob_top10_mean"], iface.contact_prob_top10_mean)
-    assert nearly_equal(row["interface_expected_contacts"], iface.expected_contacts)
-    assert nearly_equal(row["interface_confident_contacts"], iface.confident_contacts)
 
 
 def test_af3_contact_probs_alignment_uses_token_res_ids_with_extra_tokens():

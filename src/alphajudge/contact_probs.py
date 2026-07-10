@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import logsumexp
 
 AF2_DISTOGRAM_CONTACT_CUTOFF = 8.0
 
@@ -43,28 +42,37 @@ def contact_probs_from_distogram(
     n_contact_bins = int(np.count_nonzero(lower_bounds < clipped_cutoff))
     n_contact_bins = max(1, min(n_contact_bins, work.shape[-1]))
 
-    numerator = logsumexp(work[..., :n_contact_bins], axis=-1)
-    denominator = logsumexp(work, axis=-1)
-    return np.exp(numerator - denominator)
+    max_logit = np.max(work, axis=-1)
+    dtype = np.result_type(work.dtype, np.float32)
+    numerator = np.zeros(max_logit.shape, dtype=dtype)
+    denominator = np.zeros(max_logit.shape, dtype=dtype)
+    for bin_idx in range(work.shape[-1]):
+        delta = (work[..., bin_idx] - max_logit).astype(dtype, copy=False)
+        bin_mass = np.exp(delta)
+        denominator += bin_mass
+        if bin_idx < n_contact_bins:
+            numerator += bin_mass
+    return numerator / denominator
+
 
 def summarize_contact_prob_block(
     matrix: np.ndarray | None,
     idx1: np.ndarray,
     idx2: np.ndarray,
     top_n: int = 10,
-) -> tuple[float, float, float, float]:
-    """Summarize one inter-chain block as max, top-N mean, sum, and count >=0.5."""
+) -> tuple[float, float]:
+    """Summarize one inter-chain block as max and top-N mean."""
     if matrix is None or idx1.size == 0 or idx2.size == 0:
         nan = float("nan")
-        return nan, nan, nan, nan
+        return nan, nan
 
     m = np.asarray(matrix, dtype=float)
     if m.ndim != 2:
         nan = float("nan")
-        return nan, nan, nan, nan
+        return nan, nan
     if idx1.max(initial=-1) >= m.shape[0] or idx2.max(initial=-1) >= m.shape[1]:
         nan = float("nan")
-        return nan, nan, nan, nan
+        return nan, nan
 
     block = m[np.ix_(idx1, idx2)].ravel()
     if (
@@ -83,13 +91,8 @@ def summarize_contact_prob_block(
     finite = block[np.isfinite(block)]
     if finite.size == 0:
         nan = float("nan")
-        return nan, nan, nan, nan
+        return nan, nan
 
     n = max(1, min(int(top_n), finite.size))
     top = np.partition(finite, finite.size - n)[-n:]
-    return (
-        float(np.max(finite)),
-        float(np.mean(top)),
-        float(np.sum(finite)),
-        float(np.count_nonzero(finite >= 0.5)),
-    )
+    return float(np.max(finite)), float(np.mean(top))
