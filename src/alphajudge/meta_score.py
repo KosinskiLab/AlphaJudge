@@ -46,14 +46,13 @@ CALIBRATION_LEVELS = (
     1.0,
 )
 
-# Frozen deciles from the benchmark_26 final synchronized best-interface run
-# (final_sync_20260523_225722, after the missing pair-matched predictions were
-# back-filled). Calibrated on POSITIVE (interacting) pairs ONLY: 3,878 AF2/AF3
-# positive rows out of the 7,756-row balanced table. The database-negative
-# re-pairings are deliberately excluded so a new prediction is ranked against
-# the distribution of real interfaces, not against a 50% non-interacting decoy
-# population. Regenerate with
-# `python scripts/freeze_metascore_quantiles.py --label-filter positive`.
+# Frozen deciles from the AlphaJudge interacting reference set. Calibrated on
+# POSITIVE (interacting) pairs ONLY: 3,878 AF2/AF3 positive rows out of the
+# 7,756-row balanced table. The database-negative re-pairings are deliberately
+# excluded so a new prediction is ranked against the distribution of real
+# interfaces, not against a 50% non-interacting decoy population. Regenerate
+# manually with
+# `python test/manual/freeze_metascore_quantiles.py --input-csv ... --label-filter positive`.
 # Values are already oriented so larger is better; e.g. PAE and solvation
 # energy are stored after sign flip.
 BENCHMARK_QUANTILES = {

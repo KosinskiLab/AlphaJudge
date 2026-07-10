@@ -81,7 +81,7 @@ _AJ_GOLD = "#d08c00"
 _AJ_DARK = "#111111"
 
 _REPORT_TITLE = "AlphaJudge Interface validation Report"
-_BENCHMARK_TAG = "benchmark_26 positives (final_sync_20260523, n=3,878 interacting AF2/AF3 pairs)"
+_BENCHMARK_TAG = "AlphaJudge interacting reference set (n=3,878 AF2/AF3 pairs)"
 
 _GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
 
@@ -1451,7 +1451,7 @@ def _aggregate_cover_page(
 
     info = [
         "This report scores AlphaFold-predicted complexes against the",
-        "AlphaJudge benchmark_26 interacting (positive) reference set.",
+        "AlphaJudge interacting (positive) reference set.",
         "All percentiles are archive percentiles; higher is better.",
     ]
     _draw_info_box(fig, x=0.13, y=0.54, w=0.74, h=0.11, lines=info)

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Freeze the AlphaJudge metascore calibration deciles from the benchmark.
+"""Manually freeze AlphaJudge metascore calibration deciles from a benchmark CSV.
+
+This is a developer calibration helper, not part of the release CLI and not run
+by pytest. Invoke it manually with an explicit benchmark CSV path.
 
 The percentile sliders in AlphaJudge reports map each raw interface descriptor
 onto a frozen percentile scale (``BENCHMARK_QUANTILES`` in
@@ -20,7 +23,7 @@ Only ``numpy`` and the standard library are used (no pandas), so the script
 runs in a stock AlphaJudge install.
 
 Usage:
-    python scripts/freeze_metascore_quantiles.py \
+    python test/manual/freeze_metascore_quantiles.py \
         --input-csv .../benchmark_best....csv \
         [--label-filter positive]   # use "all" to reproduce the legacy scale
 """
@@ -30,19 +33,20 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = REPO_ROOT / "src"
+if SRC_ROOT.exists():
+    sys.path.insert(0, str(SRC_ROOT))
 
 from alphajudge.meta_score import (
     BENCHMARK_QUANTILES,
     CALIBRATION_LEVELS,
     FEATURE_DIRECTIONS,
-)
-
-DEFAULT_BENCHMARK_CSV = Path(
-    "/scratch/dima/benchmark_26/final_sync_20260523_225722/staged_benchmark/"
-    "benchmark_best.final_sync_20260523_225722_force_recompute_nointerfacefix.csv"
 )
 
 
@@ -62,7 +66,7 @@ def feature_deciles(rows: list[dict[str, str]], feature: str, direction: float) 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-csv", default=str(DEFAULT_BENCHMARK_CSV))
+    parser.add_argument("--input-csv", required=True)
     parser.add_argument(
         "--label-filter",
         default="positive",
