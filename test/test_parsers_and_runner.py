@@ -458,6 +458,12 @@ def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: P
         contact_probs_from_distogram(standard_logits, standard_edges),
         np.array([[32 / 64]]),
     )
+    boundary_mass_logits = np.full((1, 1, 64), -1000.0, dtype=float)
+    boundary_mass_logits[..., 31] = 0.0
+    assert np.allclose(
+        contact_probs_from_distogram(boundary_mass_logits, standard_edges),
+        np.array([[1.0]]),
+    )
 
     run_dir = tmp_path / "af2_result"
     run_dir.mkdir()
@@ -469,6 +475,32 @@ def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: P
     )
     assert parsed is not None
     assert np.allclose(parsed, expected_asym)
+
+
+def test_af2_distogram_loader_uses_requested_model_not_last_glob(tmp_path: Path):
+    run_dir = tmp_path / "af2_result"
+    run_dir.mkdir()
+    bin_edges = np.array([4.0, 8.0, 12.0])
+
+    def write_distogram(model: str, contact_prob: float) -> None:
+        logits = np.full((1, 1, 4), -1000.0, dtype=float)
+        logits[..., 0] = np.log(contact_prob)
+        logits[..., 3] = np.log(1.0 - contact_prob)
+        with (run_dir / f"result_{model}.pkl").open("wb") as f:
+            pickle.dump(
+                {"distogram": {"logits": logits, "bin_edges": bin_edges}},
+                f,
+            )
+
+    write_distogram("model_1", 0.25)
+    write_distogram("model_2", 0.75)
+
+    parsed = AF2Parser._load_contact_probs_from_result_pkl(
+        run_dir, "model_1", expected_shape=(1, 1)
+    )
+
+    assert parsed is not None
+    assert np.allclose(parsed, np.array([[0.25]]))
 
 
 def test_af2_missing_distogram_warns_once_and_returns_none(
