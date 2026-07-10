@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class AF2Parser(BaseParser):
     name = "af2"
+    _warned_missing_distogram = False
 
     def detect(self, d: Path) -> bool:
         return (d / "ranking_debug.json").exists()
@@ -84,7 +85,19 @@ class AF2Parser(BaseParser):
             return None
         distogram = payload.get("distogram")
         if not isinstance(distogram, dict):
-            logger.debug(f"AF2 result pickle {result_pkl} has no distogram; contact scores unavailable.")
+            if not cls._warned_missing_distogram:
+                logger.warning(
+                    "AF2 result pickle %s has no distogram; AF2 contact-probability "
+                    "columns will be empty/NaN. Full AlphaPulldown result pickles are "
+                    "required; disable --remove_keys_from_pickles to retain distograms.",
+                    result_pkl,
+                )
+                cls._warned_missing_distogram = True
+            else:
+                logger.debug(
+                    "AF2 result pickle %s has no distogram; contact scores unavailable.",
+                    result_pkl,
+                )
             return None
         logits = distogram.get("logits")
         bin_edges = distogram.get("bin_edges")
