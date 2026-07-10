@@ -208,7 +208,7 @@ AlphaJudge writes `interfaces.csv` with one row per interface (and includes the 
 - **pDockQ/mpDockQ**: global dockQ-like score (mpDockQ if multimer; pDockQ if dimer)
 - **average_interface_pae, interface_average_plddt, interface_num_intf_residues**
 - **interface_contact_pairs, interface_score, interface_pDockQ2, interface_ipSAE, interface_LIS, interface_cLIS, interface_iLIS**
-- **interface_contact_prob_source, interface_contact_prob_max, interface_contact_prob_top10_mean**: AF3 native `contact_probs`, or AF2 distogram-derived contact probability when full result pickles retain the `distogram` key. If AF2 result pickles do not contain `distogram` (for example because AlphaPulldown removed it with `--remove_keys_from_pickles`), these columns are empty/NaN and AlphaJudge logs a warning.
+- **interface_contact_prob_source, interface_contact_prob_max, interface_contact_prob_top10_mean**: AF3 native `contact_probs`, or Humphreys-style AF2 distogram-derived contact probability (`d < 12 A`) when full result pickles retain the `distogram` key. If AF2 result pickles do not contain `distogram` (for example because AlphaPulldown removed it with `--remove_keys_from_pickles`), these columns are empty/NaN and AlphaJudge logs a warning.
 - **interface_hb, interface_sb, interface_sc, interface_area, interface_solv_en**
 
 Exact header is asserted in tests to be consistent across AF2 and AF3 runs.
