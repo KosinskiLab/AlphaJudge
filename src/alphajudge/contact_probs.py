@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-AF2_DISTOGRAM_CONTACT_CUTOFF = 8.0
+AF2_DISTOGRAM_CONTACT_CUTOFF = 12.0
 
 
 def contact_probs_from_distogram(
@@ -16,9 +16,10 @@ def contact_probs_from_distogram(
     AF2 distogram ``bin_edges`` are finite upper bin boundaries. For scoring,
     use the lower-bound convention used by AF2 contact-probability analyses:
     append a 0 A lower bound and include bins whose lower bound is below the
-    cutoff. This includes the bin that straddles 8 A in the standard AF2
+    cutoff. This follows the Humphreys et al. AF2 contact-probability
+    convention and includes the bin that straddles 12 A in the standard AF2
     distogram, instead of dropping it because its upper edge is slightly above
-    8 A.
+    12 A.
     """
     logits_arr = np.asarray(logits)
     if logits_arr.ndim != 3:

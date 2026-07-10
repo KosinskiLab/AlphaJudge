@@ -434,9 +434,9 @@ def test_contact_probability_scores_math_is_deterministic():
 
 def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: Path):
     """
-    AF2 contact probabilities are distogram softmax mass for bins with upper
-    lower bound is below 8 A, matching the published AF2 contact-probability
-    convention and including the bin that straddles 8 A.
+    AF2 contact probabilities are distogram softmax mass for bins whose
+    lower bound is below 12 A, matching the Humphreys et al.
+    contact-probability convention and including the bin that straddles 12 A.
     """
     probs = np.array(
         [
@@ -449,8 +449,15 @@ def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: P
     bin_edges = np.array([4.0, 8.0, 12.0])
 
     direct = contact_probs_from_distogram(logits, bin_edges)
-    expected_asym = np.array([[0.90, 0.30], [0.50, 0.10]])
+    expected_asym = np.array([[0.95, 0.60], [0.60, 0.30]])
     assert np.allclose(direct, expected_asym)
+
+    standard_edges = np.linspace(2.3125, 21.6875, 63)
+    standard_logits = np.zeros((1, 1, 64), dtype=float)
+    assert np.allclose(
+        contact_probs_from_distogram(standard_logits, standard_edges),
+        np.array([[32 / 64]]),
+    )
 
     run_dir = tmp_path / "af2_result"
     run_dir.mkdir()

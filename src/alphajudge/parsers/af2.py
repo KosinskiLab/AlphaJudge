@@ -62,7 +62,7 @@ class AF2Parser(BaseParser):
                 plddt_residue=plddt,
                 contact_prob_matrix=contact_probs,
                 contact_prob_source=(
-                    "af2_distogram_lb_lt_8A" if contact_probs is not None else None
+                    "af2_distogram_lb_lt_12A" if contact_probs is not None else None
                 ),
             )
         return Run(order=order, source="af2", load_model=load_model)
