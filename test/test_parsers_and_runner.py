@@ -434,9 +434,16 @@ def test_contact_probability_scores_math_is_deterministic():
 
 def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: Path):
     """
-    AF2 contact probabilities are distogram softmax mass for bins whose
-    lower bound is below 12 A, matching the Humphreys et al.
-    contact-probability convention and including the bin that straddles 12 A.
+    AF2 contact probabilities are distogram softmax mass for bins lying entirely
+    below the contact cutoff, i.e. bins whose UPPER bound is below
+    ``AF2_DISTOGRAM_CONTACT_CUTOFF`` (8 A).
+
+    This replaces the earlier convention (mass in bins whose LOWER bound was
+    below 12 A, after Humphreys et al., which included the bin straddling the
+    cutoff). Both the threshold and the bin rule changed in 1.3.0: sweeping the
+    contact threshold from 4 to 20 A on the four-organism benchmark puts peak
+    positive-vs-negative discrimination at 6-8 A for both AlphaFold versions,
+    with the old 12 A setting scoring about 0.005 AUROC lower on AlphaFold2.
     """
     probs = np.array(
         [
@@ -448,21 +455,32 @@ def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: P
     logits = np.log(probs)
     bin_edges = np.array([4.0, 8.0, 12.0])
 
+    # Bin upper bounds are [4, 8, 12, inf]; only the first lies below 8 A.
     direct = contact_probs_from_distogram(logits, bin_edges)
-    expected_asym = np.array([[0.95, 0.60], [0.60, 0.30]])
+    expected_asym = np.array([[0.70, 0.10], [0.20, 0.05]])
     assert np.allclose(direct, expected_asym)
 
+    # Standard AF2/AF3 breaks: 19 of the 64 bins end below 8 A.
     standard_edges = np.linspace(2.3125, 21.6875, 63)
     standard_logits = np.zeros((1, 1, 64), dtype=float)
     assert np.allclose(
         contact_probs_from_distogram(standard_logits, standard_edges),
-        np.array([[32 / 64]]),
+        np.array([[19 / 64]]),
     )
-    boundary_mass_logits = np.full((1, 1, 64), -1000.0, dtype=float)
-    boundary_mass_logits[..., 31] = 0.0
+    # Boundary: bin 18 is the last one ending below 8 A and counts in full,
+    # while bin 19 straddles the cutoff and is excluded entirely.
+    inside_logits = np.full((1, 1, 64), -1000.0, dtype=float)
+    inside_logits[..., 18] = 0.0
     assert np.allclose(
-        contact_probs_from_distogram(boundary_mass_logits, standard_edges),
+        contact_probs_from_distogram(inside_logits, standard_edges),
         np.array([[1.0]]),
+    )
+    straddling_logits = np.full((1, 1, 64), -1000.0, dtype=float)
+    straddling_logits[..., 19] = 0.0
+    assert np.allclose(
+        contact_probs_from_distogram(straddling_logits, standard_edges),
+        np.array([[0.0]]),
+        atol=1e-6,
     )
 
     run_dir = tmp_path / "af2_result"

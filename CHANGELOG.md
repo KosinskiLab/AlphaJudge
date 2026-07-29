@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 - 2026-07-29
+
+### Added
+- **Interface contact-probability scores.** AlphaFold's own estimate that two residues are in contact, taken from the predicted distance distribution — AlphaFold3's native `contact_probs`, and for AlphaFold2 by softmaxing the distogram logits and summing the mass below a contact threshold. Emits `interface_contact_prob_max`, `interface_contact_prob_top10_mean`, `interface_expected_contacts` and `interface_contact_prob_source` per interface. Requires the run to retain its distance distributions (AF3 `*_distogram.npz`, or AF2 result pickles written without pruning); when they are absent the columns are simply empty.
+- On a 12,315-pair four-organism benchmark this is **the strongest single score on AlphaFold3** (AUROC 0.842 versus 0.816 for ipSAE and 0.833 for the ten-feature meta-score), and the relationship is one-directional: contact probability adds +0.024 AUROC on top of ipSAE while ipSAE adds nothing back. On AlphaFold2 — where the quantity is reconstructed from the distogram rather than read from a trained head — the gain is small and organism-inconsistent, so ipSAE/LIS remain the AF2 recommendation.
+
+### Changed
+- **`AF2_DISTOGRAM_CONTACT_CUTOFF` is now 8 Å (was 12 Å), with an upper-bound bin convention.** The contact threshold was swept from 4 to 20 Å in 2 Å steps on the benchmark: discrimination peaks at 6–8 Å for both AlphaFold versions and decays only gently out to 20 Å. The previous 12 Å lower-bound setting scores ~0.005 AUROC lower on AF2. `interface_contact_prob_source` accordingly reports `af2_distogram_le_8A` rather than `af2_distogram_lb_lt_12A`.
+- **`interface_meta_score` now averages eleven features, adding `interface_contact_prob_top10_mean`** (deciles frozen on the benchmark's positives, as for the other features). Only one of the two contact-probability variants is included — `max` and `top10_mean` correlate at ρ = 0.997, so including both would merely double-weight one signal. **This shifts absolute meta-score values** (mean +0.010 on AF2 rows, −0.005 on AF3, max 0.053), so meta-score readings and decile labels are not directly comparable with 1.2.0; per-feature scores and within-run rankings are unaffected. Runs without contact probabilities fall back to the previous ten-feature mean via the existing missing-feature rule.
+
 ## 1.2.0 - 2026-06-15
 
 ### Added

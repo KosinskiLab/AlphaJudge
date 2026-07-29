@@ -16,6 +16,7 @@ META_SCORE_FEATURES = (
     "interface_sc",
     "interface_hb",
     "interface_solv_en",
+    "interface_contact_prob_top10_mean",
 )
 
 FEATURE_DIRECTIONS = {
@@ -30,6 +31,7 @@ FEATURE_DIRECTIONS = {
     "interface_hb": 1.0,
     "interface_area": 1.0,
     "interface_solv_en": -1.0,
+    "interface_contact_prob_top10_mean": 1.0,
 }
 
 CALIBRATION_LEVELS = (
@@ -203,6 +205,33 @@ BENCHMARK_QUANTILES = {
         36.16186391880063,
         48.35158049464502,
         233.00683345812263,
+    ),
+    # Calibrated on the FULL UNFILTERED v3 benchmark's positives (n=12,163;
+    # af2 6,036 + af3 6,127), pooled over both backends -- unlike the entries
+    # above, which come from the filtered benchmark. That benchmark predates the
+    # contact-probability score and carries no interface_contact_prob_* column,
+    # so this ladder can only come from full v3. Cost of the mixed calibration
+    # source is small: refreezing the ten older features on full-v3 positives
+    # moves an assigned percentile by 0.044 on average and changes the metascore
+    # AUROC by at most 0.0011.
+    #
+    # NOTE (backend scale): AF2 contact probabilities are distogram-derived while
+    # AF3 uses the model's native contact head, so the two are not on a common
+    # scale and AF2 rows land at a systematically higher percentile on this
+    # pooled ladder. Within-backend ranking -- what the score is used for -- is
+    # unaffected.
+    "interface_contact_prob_top10_mean": (
+        0.0,
+        0.19286754713058474,
+        0.39218458712100984,
+        0.6249195265769958,
+        0.777816823720932,
+        0.875,
+        0.937,
+        0.974,
+        0.991,
+        0.9983325207233429,
+        1.0,
     ),
 }
 
