@@ -86,6 +86,7 @@ _BENCHMARK_TAG = "AlphaJudge interacting reference set (n=3,878 AF2/AF3 pairs)"
 _GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
 
 _FEATURE_DISPLAY = {
+    "interface_contact_prob_top10_mean": "Contact probability",
     "interface_LIS": "Interface LIS",
     "interface_ipSAE": "Interface ipSAE",
     "interface_pDockQ2": "Interface pDockQ2",
@@ -116,6 +117,7 @@ _FEATURE_UNITS = {
 # AF-derived group; confidence_score and pDockQ/mpDockQ are global to the
 # complex and live in COMPLEX_LEVEL_FEATURES.
 _AF_DERIVED_FEATURES = (
+    "interface_contact_prob_top10_mean",
     "interface_LIS",
     "interface_ipSAE",
     "interface_pDockQ2",
