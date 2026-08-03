@@ -34,6 +34,7 @@ from matplotlib.patches import Circle, Rectangle
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from .meta_score import (
+    infer_backend,
     BENCHMARK_QUANTILES,
     CALIBRATION_LEVELS,
     FEATURE_DIRECTIONS,
@@ -81,7 +82,10 @@ _AJ_GOLD = "#d08c00"
 _AJ_DARK = "#111111"
 
 _REPORT_TITLE = "AlphaJudge Interface validation Report"
-_BENCHMARK_TAG = "AlphaJudge interacting reference set (n=3,878 AF2/AF3 pairs)"
+_BENCHMARK_TAG = (
+    "benchmark_26 full unfiltered v3, interacting pairs only "
+    "(n=12,163; per-backend: AF2 6,036 / AF3 6,127)"
+)
 
 _GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
 
@@ -198,9 +202,14 @@ def _row_meta_score(row: Mapping[str, Any]) -> float | None:
 
 def _feature_view(row: Mapping[str, Any]) -> "OrderedDict[str, tuple[float | None, float | None]]":
     view: "OrderedDict[str, tuple[float | None, float | None]]" = OrderedDict()
+    backend = infer_backend(row)
     for feat in META_SCORE_FEATURES:
         raw = _safe_float(row.get(feat))
-        pct = calibrated_feature_percentile(feat, raw) if raw is not None else None
+        pct = (
+            calibrated_feature_percentile(feat, raw, backend)
+            if raw is not None
+            else None
+        )
         view[feat] = (raw, pct)
     return view
 
