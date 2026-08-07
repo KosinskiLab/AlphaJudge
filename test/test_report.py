@@ -122,3 +122,24 @@ def test_aggregate_report_handles_missing_meta_score_via_recompute(tmp_path: Pat
     assert out.exists()
     # cover + 2 interface pages + 2 complex-evidence pages
     assert _pdf_page_count(out) == 5
+
+
+def test_slider_rows_skip_features_without_a_frozen_ladder():
+    """
+    A feature with no frozen benchmark deciles must not break the report. The
+    row is omitted rather than drawn with an empty bar, and reappears on its
+    own once the ladder is frozen.
+    """
+    from alphajudge import report as rep
+
+    row = {"interface_ipSAE": 0.6, "interface_ccc": 41}
+
+    rows = rep._metric_rows_for_slider_panel(
+        row, include_overall=False, groups=(("af", ("interface_ipSAE", "interface_ccc")),))
+    labels = [r[0] for r in rows]
+    assert "Interface ipSAE" in labels          # calibrated -> drawn
+    assert "Confident contacts" not in labels   # not yet calibrated -> skipped
+
+    # An unknown feature must not raise either.
+    rep._metric_rows_for_slider_panel(
+        row, include_overall=False, groups=(("af", ("not_a_real_feature",)),))
