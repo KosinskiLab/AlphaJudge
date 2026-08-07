@@ -266,7 +266,7 @@ class Interface:
         return self.confident_contacts()
 
     @cached_property
-    def contact_probability_scores(self) -> tuple[float, float]:
+    def contact_probability_scores(self) -> tuple[float, float, float]:
         return summarize_contact_prob_block(self._contact_prob, self._idx1, self._idx2)
 
     @cached_property
@@ -276,6 +276,10 @@ class Interface:
     @cached_property
     def contact_prob_top10_mean(self) -> float:
         return self.contact_probability_scores[1]
+
+    @cached_property
+    def expected_contacts(self) -> float:
+        return self.contact_probability_scores[2]
 
     @property
     def polar(self) -> float:

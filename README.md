@@ -19,7 +19,7 @@ AlphaJudge parses AF2, AF3, and Boltz-2 outputs and summarizes per-model / per-i
 | --- | --- | --- |
 | **AlphaFold internal** | ipTM, pTM, iptm+ptm/confidence_score, avg interface PAE, avg interface pLDDT, contact probabilities | unified for AF2/AF3 where available |
 | **physical & geometric** | buried area, contact pairs, H-bonds, salt bridges, interface composition, shape complementarity | self-contained |
-| **derived scores** | pDockQ, pDockQ2, mpDockQ, ipSAE, LIS, cLIS, iLIS, interface score, contact-probability summaries | implemented here |
+| **derived scores** | pDockQ, pDockQ2, mpDockQ, ipSAE, LIS, cLIS, iLIS, confident contact count (CCC), interface score, contact-probability summaries | implemented here |
 
 Use cases: rank poses, sanity-check AF confidences, or export features for ML.
 
@@ -181,7 +181,7 @@ process_many(
 )
 ```
 
-Key outputs per interface include: `average_interface_pae`, `interface_average_plddt`, `interface_contact_pairs`, `interface_contact_prob_max`, `interface_contact_prob_top10_mean`, `interface_area`, `interface_hb`, `interface_sb`, `interface_sc`, `interface_solv_en`, `interface_ipSAE`, `interface_LIS`, `interface_cLIS`, `interface_iLIS`, `interface_pDockQ2`, and per-run `pDockQ/mpDockQ`.
+Key outputs per interface include: `average_interface_pae`, `interface_average_plddt`, `interface_contact_pairs`, `interface_contact_prob_source`, `interface_contact_prob_max`, `interface_contact_prob_top10_mean`, `interface_expected_contacts`, `interface_ccc`, `interface_area`, `interface_hb`, `interface_sb`, `interface_sc`, `interface_solv_en`, `interface_ipSAE`, `interface_LIS`, `interface_cLIS`, `interface_iLIS`, `interface_pDockQ2`, and per-run `pDockQ/mpDockQ`.
 
 ---
 
@@ -207,8 +207,8 @@ AlphaJudge writes `interfaces.csv` with one row per interface (and includes the 
 - **iptm_ptm, iptm, ptm, confidence_score**: unified AF confidences
 - **pDockQ/mpDockQ**: global dockQ-like score (mpDockQ if multimer; pDockQ if dimer)
 - **average_interface_pae, interface_average_plddt, interface_num_intf_residues**
-- **interface_contact_pairs, interface_score, interface_pDockQ2, interface_ipSAE, interface_LIS, interface_cLIS, interface_iLIS**
-- **interface_contact_prob_source, interface_contact_prob_max, interface_contact_prob_top10_mean**: AF3 native `contact_probs`, or AF2 distogram-derived contact probability when full result pickles retain the `distogram` key — the softmax mass in distance bins lying entirely below the 8 Å contact cutoff (`AF2_DISTOGRAM_CONTACT_CUTOFF`). The AF2 construction follows Humphreys et al., *Science* 374:eabm4805 (2021), who introduced summed sub-12 Å distogram mass as the ranking statistic for proteome-scale AlphaFold interaction screens; it remains in use in the RoseTTAFold2-PPI human interactome (Zhang et al., *Science* 390:eadt1630, 2025). Two conventions differ here: the cutoff is 8 Å rather than 12 Å (sweeping it from 4 to 20 Å on a four-organism benchmark puts peak discrimination at 6–8 Å for both AlphaFold versions), and the interface is summarised as the mean of the ten largest inter-chain values as well as the maximum (they rank pairs interchangeably, ρ = 0.997). On AlphaFold3 contact probability is the strongest single interface score we measured, ahead of ipSAE and LIS; on AlphaFold2, where it is reconstructed from the distogram rather than read from a native contact output, it is not better than ipSAE/LIS. If AF2 result pickles do not contain `distogram` (for example because AlphaPulldown removed it with `--remove_keys_from_pickles`), these columns are empty/NaN and AlphaJudge logs a warning.
+- **interface_contact_pairs, interface_ccc, interface_score, interface_pDockQ2, interface_ipSAE, interface_LIS, interface_cLIS, interface_iLIS**: CCC counts Interactome3D-defined inter-chain residue contacts whose chain1→chain2 PAE is strictly below 4 Å. Alternative geometry, direction and boundary conventions are available through `Interface.confident_contacts(...)`.
+- **interface_contact_prob_source, interface_contact_prob_max, interface_contact_prob_top10_mean, interface_expected_contacts**: AF3 native `contact_probs`, or AF2 distogram-derived contact probability when full result pickles retain the `distogram` key — the softmax mass in distance bins lying entirely below the 8 Å contact cutoff (`AF2_DISTOGRAM_CONTACT_CUTOFF`). `interface_expected_contacts` is the sum over all inter-chain residue-pair probabilities. The AF2 construction follows Humphreys et al., *Science* 374:eabm4805 (2021), who introduced summed sub-12 Å distogram mass as the ranking statistic for proteome-scale AlphaFold interaction screens; it remains in use in the RoseTTAFold2-PPI human interactome (Zhang et al., *Science* 390:eadt1630, 2025). Two conventions differ here: the cutoff is 8 Å rather than 12 Å (sweeping it from 4 to 20 Å on a four-organism benchmark puts peak discrimination at 6–8 Å for both AlphaFold versions), and the interface is summarised as the mean of the ten largest inter-chain values as well as the maximum (they rank pairs interchangeably, ρ = 0.997). On AlphaFold3 contact probability is the strongest single interface score we measured, ahead of ipSAE and LIS; on AlphaFold2, where it is reconstructed from the distogram rather than read from a native contact output, it is not better than ipSAE/LIS. If AF2 result pickles do not contain `distogram` (for example because AlphaPulldown removed it with `--remove_keys_from_pickles`), these columns are empty/NaN and AlphaJudge logs a warning.
 - **interface_hb, interface_sb, interface_sc, interface_area, interface_solv_en**
 
 Exact header is asserted in tests to be consistent across AF2 and AF3 runs.
