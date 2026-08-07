@@ -91,6 +91,7 @@ _GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
 
 _FEATURE_DISPLAY = {
     "interface_contact_prob_top10_mean": "Contact probability",
+    "interface_ccc": "Confident contacts",
     "interface_LIS": "Interface LIS",
     "interface_ipSAE": "Interface ipSAE",
     "interface_pDockQ2": "Interface pDockQ2",
@@ -105,6 +106,7 @@ _FEATURE_DISPLAY = {
 }
 
 _FEATURE_UNITS = {
+    "interface_ccc": "contacts, PAE < 4 Å",
     "average_interface_pae": "Å",
     "interface_area": "Å²",
     "interface_solv_en": "kcal/mol",
@@ -120,11 +122,18 @@ _FEATURE_UNITS = {
 # In AF3 iptm is per chain pair (chain_pair_iptm), so it stays in the
 # AF-derived group; confidence_score and pDockQ/mpDockQ are global to the
 # complex and live in COMPLEX_LEVEL_FEATURES.
+# One row per *construction*, not per published score. LIS and pDockQ2 were
+# dropped from this panel: with ipSAE and average interface PAE already present,
+# five of the six rows were summaries of the same predicted-aligned-error matrix
+# (ipSAE-LIS correlate at rho ~ 0.9 on the benchmark), so the panel implied more
+# independent evidence than it carried. What remains spans the distinct
+# constructions: the distogram, PAE gated by contact geometry, interface-
+# restricted PAE, AlphaFold's own global number, and the raw error the rest are
+# built from.
 _AF_DERIVED_FEATURES = (
     "interface_contact_prob_top10_mean",
-    "interface_LIS",
+    "interface_ccc",
     "interface_ipSAE",
-    "interface_pDockQ2",
     "iptm",
     "average_interface_pae",
 )
@@ -635,6 +644,7 @@ def _metric_rows_for_slider_panel(
         rows.append(("Meta score", score, score, "", "overall"))
 
     fv = _feature_view(row)
+    backend = infer_backend(row)
     for group_tag, features in groups:
         for feat in features:
             if feat in fv:
@@ -644,7 +654,18 @@ def _metric_rows_for_slider_panel(
                 # (e.g. complex-level features were dropped from the metascore
                 # but still need a slider bar).
                 raw = _safe_float(row.get(feat))
-                pct = calibrated_feature_percentile(feat, raw) if raw is not None else None
+                try:
+                    pct = (
+                        calibrated_feature_percentile(feat, raw, backend)
+                        if raw is not None
+                        else None
+                    )
+                except KeyError:
+                    # No frozen benchmark ladder for this feature yet. A slider
+                    # with no percentile would be misleading rather than merely
+                    # empty, so the row is omitted until the deciles exist; it
+                    # appears automatically once they are frozen.
+                    continue
             rows.append(
                 (
                     _FEATURE_DISPLAY.get(feat, feat),

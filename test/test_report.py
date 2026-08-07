@@ -122,3 +122,32 @@ def test_aggregate_report_handles_missing_meta_score_via_recompute(tmp_path: Pat
     assert out.exists()
     # cover + 2 interface pages + 2 complex-evidence pages
     assert _pdf_page_count(out) == 5
+
+
+def test_slider_rows_show_ccc_after_full_benchmark_calibration():
+    """
+    CCC is shown now that its positive-reference deciles are frozen. Features
+    without a ladder are still omitted rather than breaking the report.
+    """
+    from alphajudge import report as rep
+
+    row = {
+        "interface_ipSAE": 0.6,
+        "interface_ccc": 41,
+        "interface_contact_prob_source": "af2_distogram_le_8A",
+    }
+
+    rows = rep._metric_rows_for_slider_panel(
+        row, include_overall=False, groups=(("af", ("interface_ipSAE", "interface_ccc")),))
+    labels = [r[0] for r in rows]
+    assert "Interface ipSAE" in labels
+    assert "Confident contacts" in labels
+
+    ccc_row = next(r for r in rows if r[0] == "Confident contacts")
+    # The AF2 ladder is selected from the row provenance: 41 lies between its
+    # median (25) and 60th percentile (42), not on the pooled ladder.
+    assert ccc_row[2] == pytest.approx(0.5941176471)
+
+    # An unknown feature must not raise either.
+    rep._metric_rows_for_slider_panel(
+        row, include_overall=False, groups=(("af", ("not_a_real_feature",)),))
