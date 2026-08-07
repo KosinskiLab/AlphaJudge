@@ -32,6 +32,7 @@ FEATURE_DIRECTIONS = {
     "interface_area": 1.0,
     "interface_solv_en": -1.0,
     "interface_contact_prob_top10_mean": 1.0,
+    "interface_ccc": 1.0,
 }
 
 CALIBRATION_LEVELS = (
@@ -54,11 +55,12 @@ CALIBRATION_LEVELS = (
 # excluded so a new prediction is ranked against the distribution of real
 # interfaces, not against a 50% non-interacting decoy population. Regenerate
 # manually with
-# `python test/manual/freeze_metascore_quantiles.py --input-csv ... --label-filter positive`.
+# `python test/manual/freeze_metascore_quantiles.py --input-csv ... --ccc-csv ...
+# --label-filter positive`.
 # Values are already oriented so larger is better; e.g. PAE and solvation
 # energy are stored after sign flip.
 BENCHMARK_QUANTILES = {
-    # full unfiltered v3, POSITIVES only, pooled af2+af3 (n=12163)
+    # full non-downsampled v3, POSITIVES only, pooled af2+af3 (n=12163)
     "interface_LIS": (
         0.0,
         0.0,
@@ -202,11 +204,26 @@ BENCHMARK_QUANTILES = {
         0.9944468,
         1.0,
     ),
+    # full non-downsampled v3, POSITIVES with a parsed CCC value and a scored
+    # interface, pooled af2+af3 (n=12160)
+    "interface_ccc": (
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        16.0,
+        38.0,
+        56.0,
+        78.0,
+        115.0,
+        781.0,
+    ),
 }
 
 
 BENCHMARK_QUANTILES_BY_BACKEND = {
-    # full unfiltered v3, POSITIVES only, af2 (n=6036)
+    # full non-downsampled v3, POSITIVES only, af2 (n=6036)
     "af2": {
         "interface_LIS": (
             0.0,
@@ -351,8 +368,22 @@ BENCHMARK_QUANTILES_BY_BACKEND = {
             0.9966170000000001,
             0.999966,
         ),
+        # n=6034: positive interface-present rows with a parsed CCC value
+        "interface_ccc": (
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            25.0,
+            42.0,
+            60.0,
+            83.0,
+            120.0,
+            688.0,
+        ),
     },
-    # full unfiltered v3, POSITIVES only, af3 (n=6127)
+    # full non-downsampled v3, POSITIVES only, af3 (n=6127)
     "af3": {
         "interface_LIS": (
             0.0,
@@ -496,6 +527,20 @@ BENCHMARK_QUANTILES_BY_BACKEND = {
             0.968,
             0.99,
             1.0,
+        ),
+        # n=6126: positive interface-present rows with a parsed CCC value
+        "interface_ccc": (
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            6.0,
+            33.0,
+            52.0,
+            73.0,
+            110.0,
+            781.0,
         ),
     },
 }

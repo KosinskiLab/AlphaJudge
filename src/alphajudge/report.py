@@ -644,6 +644,7 @@ def _metric_rows_for_slider_panel(
         rows.append(("Meta score", score, score, "", "overall"))
 
     fv = _feature_view(row)
+    backend = infer_backend(row)
     for group_tag, features in groups:
         for feat in features:
             if feat in fv:
@@ -654,7 +655,11 @@ def _metric_rows_for_slider_panel(
                 # but still need a slider bar).
                 raw = _safe_float(row.get(feat))
                 try:
-                    pct = calibrated_feature_percentile(feat, raw) if raw is not None else None
+                    pct = (
+                        calibrated_feature_percentile(feat, raw, backend)
+                        if raw is not None
+                        else None
+                    )
                 except KeyError:
                     # No frozen benchmark ladder for this feature yet. A slider
                     # with no percentile would be misleading rather than merely
