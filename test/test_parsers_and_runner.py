@@ -866,6 +866,70 @@ def test_headers_include_expected_schema(tmp_path: Path, af2_dir_src: Path, af3_
 # process_many
 # -------------------------
 
+@pytest.mark.parametrize("summary_csv", [None, "summary.csv"])
+def test_process_one_run_recomputes_cache_missing_current_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, summary_csv: str | None
+):
+    from alphajudge.runner import _process_one_run
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    stale = run_dir / "interfaces.csv"
+    stale.write_text("jobs,interface\nold,A_B\n")
+    calls: list[str] = []
+
+    def fake_process(
+        directory: str,
+        *args: Any,
+        per_run_csv_name: str = "interfaces.csv",
+        **kwargs: Any,
+    ) -> Path:
+        calls.append(directory)
+        out = Path(directory) / per_run_csv_name
+        with out.open("w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "jobs",
+                    "interface",
+                    "interface_ccc",
+                    "interface_expected_contacts",
+                ],
+            )
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "jobs": "fresh",
+                    "interface": "A_B",
+                    "interface_ccc": 3,
+                    "interface_expected_contacts": 4.5,
+                }
+            )
+        return out
+
+    monkeypatch.setattr("alphajudge.runner.process", fake_process)
+    _, rows = _process_one_run(
+        str(run_dir),
+        8.0,
+        100.0,
+        "best",
+        summary_csv,
+        10.0,
+        False,
+        "interfaces.csv",
+        True,
+        True,
+    )
+
+    assert calls == [str(run_dir)]
+    fresh = read_csv_rows(stale)
+    assert fresh[0]["interface_expected_contacts"] == "4.5"
+    if summary_csv is None:
+        assert rows == []
+    else:
+        assert rows[0]["interface_expected_contacts"] == "4.5"
+
+
 def test_process_many_aggregates_rows(
     tmp_path: Path,
     af2_pos_sample_src: list[Path],

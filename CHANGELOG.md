@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+## 1.4.1 - 2026-08-07
+
+### Fixed
+- Cached per-run CSVs are now reused only when their headers contain the current required fields. Normal and summary runs automatically recompute 1.3.0 or pre-release caches missing `interface_ccc` or `interface_expected_contacts`, so the documented 1.4 output schema no longer depends on knowing to pass `--force_recompute`.
+- Corrected the 1.4.0 CCC early-retrieval numbers below, which accidentally retained the superseded 250-per-cell pilot values. On the completed full raw-model pass, AF2 directional CCC versus top-ten contact probability is 0.447 versus 0.408 normalized partial AUC over the first 1% of controls; the macro-AUROCs are 0.822 versus 0.863.
+
 ## 1.4.0 - 2026-08-07
 
 ### Added
-- **Confident contact count (CCC).** Counts inter-chain residue pairs that are both in physical contact and confidently placed relative to one another (predicted aligned error below a cutoff, 4 Å by default). Introduced by Lambourne et al. as a screening statistic and reported there to beat the usual confidence scores at low false-positive rates — which our own benchmark reproduces on AlphaFold2, where CCC leads contact probability on early retrieval (normalised partial AUC over the first 1% of controls, 0.482 versus 0.430) while losing clearly on global AUROC (0.822 versus 0.862). On AlphaFold3 contact probability wins both. CCC is therefore a specialist score for screens whose priority is the first few candidates, not a replacement default.
+- **Confident contact count (CCC).** Counts inter-chain residue pairs that are both in physical contact and confidently placed relative to one another (predicted aligned error below a cutoff, 4 Å by default). Introduced by Lambourne et al. as a screening statistic and reported there to beat the usual confidence scores at low false-positive rates — which our completed full raw-model benchmark reproduces on AlphaFold2, where CCC leads contact probability on early retrieval (normalised partial AUC over the first 1% of controls, 0.447 versus 0.408) while losing clearly on global macro-AUROC (0.822 versus 0.863). On AlphaFold3 contact probability wins both. CCC is therefore a specialist score for screens whose priority is the first few candidates, not a replacement default.
 - `Interface.confident_contacts(...)` and the `Interface.ccc` convenience property, plus `alphajudge.confident_contacts` for the standalone pieces.
 - `interface_expected_contacts` is now written to the per-interface score table, completing the contact-probability output contract documented in 1.3.0.
 
