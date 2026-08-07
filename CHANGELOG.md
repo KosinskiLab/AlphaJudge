@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Confident contact count (CCC).** Counts inter-chain residue pairs that are both in physical contact and confidently placed relative to one another (predicted aligned error below a cutoff, 4 Å by default). Introduced by Lambourne et al. as a screening statistic and reported there to beat the usual confidence scores at low false-positive rates — which our own benchmark reproduces on AlphaFold2, where CCC leads contact probability on early retrieval (normalised partial AUC over the first 1% of controls, 0.482 versus 0.430) while losing clearly on global AUROC (0.822 versus 0.862). On AlphaFold3 contact probability wins both. CCC is therefore a specialist score for screens whose priority is the first few candidates, not a replacement default.
+- `Interface.confident_contacts(...)` and the `Interface.ccc` convenience property, plus `alphajudge.confident_contacts` for the standalone pieces.
+
+### Notes on conventions
+Two choices have to be fixed for the count to be reproducible, and both are explicit rather than hard-coded:
+- **Contact geometry.** `INTERACTOME3D` (default) follows Mosca et al.'s Interactome3D definition, which Lambourne et al. adopt. That definition lists four rules — disulfides (Cys S–S ≤ 2.56 Å), hydrogen bonds (N–O ≤ 3.5 Å), salt bridges (N–O ≤ 5.5 Å) and van der Waals contacts (C–C ≤ 5.0 Å) — but the hydrogen-bond rule is strictly subsumed by the salt-bridge rule, so three tests decide membership. Each residue pair is counted once. `REPRESENTATIVE_ATOM` instead reuses AlphaJudge's own contact definition (CB, or CA for Gly, within `contact_thresh`) so CCC, `contact_pairs` and cLIS share one pair set.
+- **PAE boundary and direction.** The comparison is `PAE < cutoff`, matching the authors' released code; `inclusive=True` gives `<=`. `ab` scores each pair once in the chain1 → chain2 direction; `ba`/`min`/`mean`/`max` are available to audit the asymmetry.
+
+**Verification.** Checked against the publication (Nat. Commun. 17:4894) and the authors' released analysis code. The geometry matches Interactome3D as cited there. On the boundary the publication contradicts itself — its main text twice says `PAE ≤ 4 Å`, its Methods heading says `PAE < 4 Å` — and the released code settles it: the column carrying the count is named `n_contacts_PAE_lt_4A`. Strict is therefore the default. The PAE **direction** is the one convention the published material does not fix; the paper refers to "the" PAE of a contact without saying which entry of the asymmetric matrix, so `ab` is our choice and is documented as such. Against this project's own prior implementation the port is exact: identical contact-pair sets and identical counts across all five direction variants on 60 real benchmark predictions (60/60).
+
 ## 1.3.0 - 2026-07-29
 
 ### Added

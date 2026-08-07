@@ -1102,3 +1102,109 @@ def test_find_af3_json_excludes_job_prefixed_summary(tmp_path):
     found = AF3Parser._find_af3_json(tmp_path, model, "confidences", job, False)
     assert found.name == f"{job}_{model}_confidences.json"
     assert "summary" not in found.name
+
+
+def test_confident_contact_count_math_is_deterministic():
+    """
+    CCC counts inter-chain contacting residue pairs whose PAE is at or below the
+    cutoff. The PAE matrix is asymmetric, so the direction convention decides
+    which pairs qualify; the published default scores chain1 -> chain2 only.
+    """
+    from alphajudge.confident_contacts import ContactGeometry, PaeDirection
+    from alphajudge.interface import Interface
+
+    a1, a2 = _make_residue("A", (" ", 1, " ")), _make_residue("A", (" ", 2, " "))
+    b1, b2 = _make_residue("B", (" ", 1, " ")), _make_residue("B", (" ", 2, " "))
+
+    # PAE indices A1->0, A2->1, B1->2, B2->3. A1-B1 is confident both ways;
+    # A2-B2 is confident only in the A->B direction (2.0 vs 9.0).
+    pae = np.array(
+        [
+            [0.0, 0.0, 1.0, 20.0],
+            [0.0, 0.0, 20.0, 2.0],
+            [1.0, 20.0, 0.0, 0.0],
+            [20.0, 9.0, 0.0, 0.0],
+        ]
+    )
+
+    iface = object.__new__(Interface)
+    iface.chain1, iface.chain2 = [a1, a2], [b1, b2]
+    iface._pae = pae
+    iface._cid1_id = "A"
+    iface._rim = {("A", a1.id): 0, ("A", a2.id): 1, ("B", b1.id): 2, ("B", b2.id): 3}
+    iface._pairs = {(a1, b1), (a2, b2)}
+
+    rep = ContactGeometry.REPRESENTATIVE_ATOM
+    # A->B: PAE 1.0 and 2.0, both < 4 -> 2 confident contacts.
+    assert iface.confident_contacts(geometry=rep) == 2
+    # B->A: PAE 1.0 and 9.0 -> only the first qualifies.
+    assert iface.confident_contacts(geometry=rep, direction=PaeDirection.BA) == 1
+    # Requiring both directions is the stricter max convention.
+    assert iface.confident_contacts(geometry=rep, direction=PaeDirection.MAX) == 1
+    # A tighter cutoff drops the 2.0 pair even in the A->B direction.
+    assert iface.confident_contacts(geometry=rep, pae_cutoff=1.5) == 1
+    # The default comparison is strict, matching the authors' code, so a pair
+    # sitting exactly on the cutoff does not count.
+    assert iface.confident_contacts(geometry=rep, pae_cutoff=2.0) == 1
+    assert iface.confident_contacts(geometry=rep, pae_cutoff=2.0, inclusive=True) == 2
+
+    # No contacts -> no confident contacts, whatever the PAE says.
+    iface._pairs = set()
+    assert iface.confident_contacts(geometry=rep) == 0
+
+
+def test_interactome3d_contact_rules_are_element_and_distance_specific():
+    """
+    The Interactome3D-style geometry accepts a residue pair on any one of three
+    atom-pair rules (C-C <= 5.0, N-O <= 5.5, Cys S-S <= 2.56) and counts the
+    pair once however many atom pairs qualify.
+    """
+    from Bio.PDB import PDBParser
+    from io import StringIO
+
+    from alphajudge.confident_contacts import interactome3d_contact_pairs
+
+    # A: one ALA at the origin. B: one ALA whose CB sits 4.5 A away (C-C rule,
+    # inside 5.0) and one GLY whose CA sits 7.0 A away (outside every rule).
+    pdb = StringIO(
+        "ATOM      1  CB  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CB  ALA B   1       4.500   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY B   2       7.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    model = next(PDBParser(QUIET=True).get_structure("x", pdb).get_models())
+    chain_a = list(model["A"])
+    chain_b = list(model["B"])
+
+    pairs = interactome3d_contact_pairs(chain_a, chain_b)
+    assert len(pairs) == 1
+    (res1, res2), = pairs
+    # Orientation is always (chain1 residue, chain2 residue).
+    assert res1.get_parent().id == "A" and res2.get_parent().id == "B"
+    assert res2.id[1] == 1  # the 4.5 A partner, not the 7.0 A one
+
+
+def test_confident_contacts_boundary_convention_is_selectable():
+    """
+    The publication's main text says PAE <= 4 while its Methods heading says
+    PAE < 4; the authors' released code names the column n_contacts_PAE_lt_4A,
+    so strict is the operational definition and the default here. Both are
+    reachable and they differ exactly by the pairs sitting on the cutoff.
+    """
+    from alphajudge.confident_contacts import ContactGeometry
+    from alphajudge.interface import Interface
+
+    a1 = _make_residue("A", (" ", 1, " "))
+    b1 = _make_residue("B", (" ", 1, " "))
+    pae = np.array([[0.0, 4.0], [4.0, 0.0]])  # exactly on the cutoff
+
+    iface = object.__new__(Interface)
+    iface.chain1, iface.chain2 = [a1], [b1]
+    iface._pae = pae
+    iface._cid1_id = "A"
+    iface._rim = {("A", a1.id): 0, ("B", b1.id): 1}
+    iface._pairs = {(a1, b1)}
+
+    rep = ContactGeometry.REPRESENTATIVE_ATOM
+    assert iface.confident_contacts(geometry=rep) == 0                  # strict
+    assert iface.confident_contacts(geometry=rep, inclusive=True) == 1  # inclusive

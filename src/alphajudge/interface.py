@@ -16,6 +16,13 @@ from .biophysics import (
     shape_complementarity as _scasa_sc,
 )
 from .docking_scores import D0, PDOCKQ, PDOCKQ2
+from .confident_contacts import (
+    ContactGeometry,
+    DEFAULT_PAE_CUTOFF,
+    PaeDirection,
+    confident_contact_count,
+    interactome3d_contact_pairs,
+)
 from .contact_probs import summarize_contact_prob_block
 from .geometry import (
     CHARGED_RES,
@@ -215,6 +222,48 @@ class Interface:
         if lis <= 0.0 or clis <= 0.0:
             return 0.0
         return float(math.sqrt(lis * clis))
+
+    def confident_contacts(
+        self,
+        pae_cutoff: float = DEFAULT_PAE_CUTOFF,
+        geometry: ContactGeometry = ContactGeometry.INTERACTOME3D,
+        direction: PaeDirection = PaeDirection.AB,
+        inclusive: bool = False,
+    ) -> int:
+        """Confident contact count (CCC).
+
+        Inter-chain residue pairs that are in contact and whose predicted
+        aligned error is at or below ``pae_cutoff``.  See
+        :mod:`alphajudge.confident_contacts` for the conventions; the defaults
+        are the published ones (Interactome3D contacts, PAE < 4 A, scored in
+        the chain1 -> chain2 direction only).
+        """
+        if not self.chain1 or not self.chain2:
+            return 0
+        if geometry is ContactGeometry.REPRESENTATIVE_ATOM:
+            pairs = {
+                (r1, r2) if r1.get_parent().id == self._cid1_id else (r2, r1)
+                for r1, r2 in self._pairs
+            }
+        else:
+            pairs = self._interactome3d_pairs
+        return confident_contact_count(
+            pairs,
+            self._pae,
+            self._rim,
+            pae_cutoff=pae_cutoff,
+            direction=direction,
+            inclusive=inclusive,
+        )
+
+    @cached_property
+    def _interactome3d_pairs(self):
+        return interactome3d_contact_pairs(self.chain1, self.chain2)
+
+    @cached_property
+    def ccc(self) -> int:
+        """CCC at the published defaults."""
+        return self.confident_contacts()
 
     @cached_property
     def contact_probability_scores(self) -> tuple[float, float]:
