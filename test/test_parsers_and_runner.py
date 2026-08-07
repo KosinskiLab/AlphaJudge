@@ -44,6 +44,8 @@ EXPECTED_OUTPUT_COLUMNS = {
     "interface_contact_prob_source",
     "interface_contact_prob_max",
     "interface_contact_prob_top10_mean",
+    "interface_expected_contacts",
+    "interface_ccc",
     "interface_score",
     "interface_pDockQ2",
     "interface_ipSAE",
@@ -405,7 +407,7 @@ def test_clis_ilis_math_is_deterministic():
 def test_contact_probability_scores_math_is_deterministic():
     """
     Contact-probability summaries are computed over all residue pairs between
-    the two chains: max and mean of the ten largest values.
+    the two chains: max, mean of the ten largest values, and their total sum.
     """
     from alphajudge.interface import Interface
 
@@ -423,6 +425,7 @@ def test_contact_probability_scores_math_is_deterministic():
 
     assert nearly_equal(iface.contact_prob_max, 0.8)
     assert nearly_equal(iface.contact_prob_top10_mean, 0.375)
+    assert nearly_equal(iface.expected_contacts, 1.5)
 
     missing = object.__new__(Interface)
     missing._idx1 = np.array([0, 1])
@@ -430,6 +433,7 @@ def test_contact_probability_scores_math_is_deterministic():
     missing._contact_prob = None
     assert math.isnan(missing.contact_prob_max)
     assert math.isnan(missing.contact_prob_top10_mean)
+    assert math.isnan(missing.expected_contacts)
 
 
 def test_af2_distogram_contact_probs_softmax_cutoff_is_deterministic(tmp_path: Path):
@@ -650,6 +654,7 @@ def test_af3_contact_probability_scores_match_raw_contact_probs(
     assert row["interface_contact_prob_source"] == "af3_contact_probs"
     assert nearly_equal(row["interface_contact_prob_max"], iface.contact_prob_max)
     assert nearly_equal(row["interface_contact_prob_top10_mean"], iface.contact_prob_top10_mean)
+    assert nearly_equal(row["interface_expected_contacts"], iface.expected_contacts)
 
 
 def test_af3_contact_probs_alignment_uses_token_res_ids_with_extra_tokens():

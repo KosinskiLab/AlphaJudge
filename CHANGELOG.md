@@ -2,9 +2,12 @@
 
 ## Unreleased
 
+## 1.4.0 - 2026-08-07
+
 ### Added
 - **Confident contact count (CCC).** Counts inter-chain residue pairs that are both in physical contact and confidently placed relative to one another (predicted aligned error below a cutoff, 4 Å by default). Introduced by Lambourne et al. as a screening statistic and reported there to beat the usual confidence scores at low false-positive rates — which our own benchmark reproduces on AlphaFold2, where CCC leads contact probability on early retrieval (normalised partial AUC over the first 1% of controls, 0.482 versus 0.430) while losing clearly on global AUROC (0.822 versus 0.862). On AlphaFold3 contact probability wins both. CCC is therefore a specialist score for screens whose priority is the first few candidates, not a replacement default.
 - `Interface.confident_contacts(...)` and the `Interface.ccc` convenience property, plus `alphajudge.confident_contacts` for the standalone pieces.
+- `interface_expected_contacts` is now written to the per-interface score table, completing the contact-probability output contract documented in 1.3.0.
 
 ### Changed
 - **The report's AlphaFold panel now shows one row per construction, not one per published score.** `interface_LIS` and `interface_pDockQ2` were dropped from the slider panel: with `interface_ipSAE` and `average_interface_pae` already there, five of the six rows were summaries of the same predicted-aligned-error matrix (ipSAE and LIS correlate at ρ ≈ 0.9 on the benchmark), so the panel implied more independent evidence than it carried. The panel is now contact probability (distogram), CCC (PAE gated by contact geometry), ipSAE (interface-restricted PAE), ipTM (AlphaFold's own global number) and average interface PAE (the raw error the others are built from). Both dropped scores are still computed and still written to the score table; only the report layout changed.
