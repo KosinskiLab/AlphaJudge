@@ -20,6 +20,11 @@ from .report import render_pae_png
 logger = logging.getLogger(__name__)
 
 
+# Cached per-run CSVs from older releases are safe to reuse only when they
+# contain every field introduced by the current output contract.
+_REQUIRED_CACHE_COLUMNS = frozenset({"interface_ccc", "interface_expected_contacts"})
+
+
 def _save_pae_heatmap(
     pae_matrix,
     out_file: Path,
@@ -233,6 +238,23 @@ def _read_csv_rows(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
+def _read_reusable_csv(path: Path) -> list[dict] | None:
+    """Return cached rows only when the file satisfies the current schema."""
+    rows = _read_csv_rows(path)
+    if not rows:
+        logger.info(f"existing {path} is empty; recomputing")
+        return None
+
+    missing = sorted(_REQUIRED_CACHE_COLUMNS - set(rows[0]))
+    if missing:
+        logger.info(
+            f"existing {path} is missing required column(s) "
+            f"{', '.join(missing)}; recomputing"
+        )
+        return None
+    return rows
+
+
 def _process_one_run(
     d_str: str,
     contact_thresh: float,
@@ -264,25 +286,21 @@ def _process_one_run(
             r.setdefault("source_dir", source_dir)
         return rows
 
-    # When building a summary, prefer reusing precomputed interfaces.csv
-    if want_summary and existing_csv.exists() and not force_recompute:
+    # Reuse a precomputed CSV only if its header satisfies the current output
+    # contract. This prevents an upgrade from silently aggregating stale rows.
+    if existing_csv.exists() and not force_recompute:
         try:
-            rows = _read_csv_rows(existing_csv)
-            if rows:
-                logger.info(f"reused existing {existing_csv} for aggregation")
+            rows = _read_reusable_csv(existing_csv)
+            if rows is not None:
+                if want_summary:
+                    logger.info(f"reused existing {existing_csv} for aggregation")
+                else:
+                    logger.info(f"reused existing {existing_csv}; skipping recompute")
                 if write_per_run_report:
                     _safe_write_per_run_report(d, csv_name=per_run_csv_name)
-                return (d_str, _stamp(rows))
-            logger.info(f"existing {existing_csv} is empty; recomputing")
+                return (d_str, _stamp(rows) if want_summary else [])
         except Exception as e:
             logger.warning(f"could not reuse {existing_csv}; recomputing: {e}")
-
-    # If no summary requested but interfaces.csv exists, skip recompute
-    if not want_summary and existing_csv.exists() and not force_recompute:
-        logger.info(f"reused existing {existing_csv}; skipping recompute")
-        if write_per_run_report:
-            _safe_write_per_run_report(d, csv_name=per_run_csv_name)
-        return (d_str, [])
 
     out_path = process(
         d_str,
