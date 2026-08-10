@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS test
+FROM python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS test
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -13,9 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install package and test deps
 COPY pyproject.toml README.md /app/
+COPY docker/constraints.txt /app/docker/constraints.txt
 COPY src /app/src
 RUN pip install --upgrade pip \
-    && pip install . \
+    && pip install -c docker/constraints.txt . \
     && pip install pytest \
     && pip cache purge
 
@@ -27,7 +28,7 @@ COPY test_data /app/test_data
 RUN pytest -q
 
 
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -36,9 +37,10 @@ WORKDIR /app
 
 # Install only runtime deps and package
 COPY pyproject.toml README.md /app/
+COPY docker/constraints.txt /app/docker/constraints.txt
 COPY src /app/src
 RUN pip install --upgrade pip \
-    && pip install . \
+    && pip install -c docker/constraints.txt . \
     && pip cache purge
 
 # Sensible default; override in deployments

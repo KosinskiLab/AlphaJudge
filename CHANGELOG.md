@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.4.2 - 2026-08-10
+
+### Fixed
+- Publishing a release now pushes a versioned Docker image. The CI workflow's `on:` block listed only `push` and `pull_request`, so the release-tagged build step could never run and Docker Hub carried only `:latest`. Images for the earlier 0.3.0 through 1.4.1 releases have been backfilled; those were built in August 2026, so they pair the tagged source with a contemporary dependency stack rather than the original one.
+
+### Changed
+- The Docker image builds against a pinned base image digest and a `docker/constraints.txt` lock file, so rebuilding a released tag resolves the same dependency stack instead of whatever is current at build time.
+- Runtime dependencies gain upper bounds (`biopython<2`, `numpy<3`, `scipy<2`, `matplotlib<4`) to guard against future breaking majors. No lower bounds were added, as older versions are untested.
+
 ## 1.4.1 - 2026-08-07
 
 ### Fixed
