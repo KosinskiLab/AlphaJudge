@@ -1,0 +1,65 @@
+name: Backfill Docker tag
+
+# Rebuilds a past release and publishes it as <user>/alphajudge:<tag>.
+# The build is not pinned (base image, apt packages and pyproject dependencies
+# all float), so the result is the tagged source built against today's
+# dependency stack, not the image that would have been produced at release time.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to build, e.g. 1.4.0"
+        required: true
+        type: string
+      push:
+        description: "Push to Docker Hub (leave off for a build-only check)"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Resolve commit
+        id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test stage
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: test
+          push: false
+
+      - name: Login to Docker Hub
+        if: ${{ inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push runtime
+        if: ${{ inputs.push }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: runtime
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/alphajudge:${{ inputs.tag }}
+          labels: |
+            org.opencontainers.image.version=${{ inputs.tag }}
+            org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
