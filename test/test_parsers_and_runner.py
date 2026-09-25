@@ -572,7 +572,7 @@ def test_af3_job_prefix_from_ranking_file_handles_plain_prefixed_and_weird():
     )
 
 
-def test_af3_pae_shape_warns_but_unknown_schema_raises(caplog: pytest.LogCaptureFixture):
+def test_af3_pae_shape_mismatch_and_unknown_schema_raise():
     class Chain:
         def __init__(self, chain_id: str):
             self.id = chain_id
@@ -580,19 +580,12 @@ def test_af3_pae_shape_warns_but_unknown_schema_raises(caplog: pytest.LogCapture
     chains = [Chain("A"), Chain("B")]
     cid = {"A": [0], "B": [1]}
 
-    caplog.set_level(logging.WARNING, logger="alphajudge.parsers.af3")
-    pae, max_pae = AF3Parser._normalize_pae_af3(
-        {"predicted_aligned_error": [[3.0]], "max_predicted_aligned_error": 3.0},
-        chains,
-        cid,
-    )
-
-    assert pae.shape == (2, 2)
-    assert np.all(pae == 100.0)
-    assert max_pae == 3.0
-    assert "predicted_aligned_error shape" in caplog.text
-
-    caplog.clear()
+    with pytest.raises(ValueError, match="Cannot align AF3 PAE"):
+        AF3Parser._normalize_pae_af3(
+            {"predicted_aligned_error": [[3.0]], "max_predicted_aligned_error": 3.0},
+            chains,
+            cid,
+        )
     with pytest.raises(ValueError, match="unknown AF3 confidences schema"):
         AF3Parser._normalize_pae_af3({"unexpected_schema": True}, chains, cid)
 

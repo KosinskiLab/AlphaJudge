@@ -1,6 +1,5 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Any
 import csv
 import logging
 import numpy as np
@@ -192,69 +191,50 @@ class AF3Parser(BaseParser):
     @staticmethod
     def _normalize_pae_af3(matrix: dict, chains, cid) -> tuple[np.ndarray, float]:
         total = sum(len(cid[c.id]) for c in chains)
-        pae = np.full((total, total), 100.0, dtype=float)
-        max_pae = float('nan')
-
-        if "predicted_aligned_error" in matrix:
-            # some AF3 builds still store a full matrix in confidences.json
-            m = np.array(matrix["predicted_aligned_error"], dtype=float)
-            if m.size:
-                if m.shape == pae.shape:
-                    pae[:, :] = m
-                else:
-                    logger.warning(
-                        f"predicted_aligned_error shape {m.shape} != expected {pae.shape}; "
-                        "skipping PAE assignment."
-                    )
-            max_pae = float(matrix.get("max_predicted_aligned_error", np.nan))
-            if not np.isfinite(max_pae):
-                max_pae = float(np.nanmax(m)) if m.size else float('nan')
-
-        elif "pae" in matrix and "token_chain_ids" in matrix:
-            # Prefer to use the full token×token PAE matrix directly when it
-            # matches the residue×residue layout, to retain per-residue detail.
-            tokens = np.array(matrix["pae"], dtype=float)
-            max_pae = float(np.nanmax(tokens)) if tokens.size else float('nan')
-
-            if tokens.shape == pae.shape:
-                # 1:1 correspondence between tokens and residues; assume that
-                # token order matches the global residue order used for cid.
-                pae[:, :] = tokens
-            else:
-                # Fallback to coarse chain-pair mapping using token_chain_ids.
-                ids = matrix["token_chain_ids"]
-                # map token groups → chain indices
-                seen: list[Any] = []
-                for c in ids:
-                    if c not in seen:
-                        seen.append(c)
-                group = {v: i for i, v in enumerate(seen)}
-                for i, chi in enumerate(chains):
-                    ti = [k for k, c in enumerate(ids) if group.get(c, -1) == i]; ri = cid.get(chi.id, [])
-                    for j, chj in enumerate(chains):
-                        tj = [k for k, c in enumerate(ids) if group.get(c, -1) == j]; rj = cid.get(chj.id, [])
-                        if ti and tj and ri and rj:
-                            block = tokens[np.ix_(ti, tj)]
-                            val = float(np.nanmin(block)) if block.size else 100.0
-                            pae[np.ix_(ri, rj)] = val
-
-        elif "chain_pair_pae_min" in matrix:
-            cp = np.array(matrix["chain_pair_pae_min"], dtype=float)
-            max_pae = float(np.nanmax(cp)) if cp.size else float('nan')
-            for i, chi in enumerate(chains):
-                ri = cid.get(chi.id, [])
-                for j, chj in enumerate(chains):
-                    rj = cid.get(chj.id, [])
-                    try: val = float(cp[i][j])
-                    except Exception: val = None
-                    if ri and rj:
-                        pae[np.ix_(ri, rj)] = 100.0 if val is None else val
-        else:
+        expected_shape = (total, total)
+        raw = matrix.get("predicted_aligned_error", matrix.get("pae"))
+        if raw is None:
+            if "chain_pair_pae_min" in matrix:
+                raise ValueError(
+                    "AF3 confidences contain only chain-pair minima, not residue-level PAE; "
+                    "provide the full confidences.json to compute interface scores."
+                )
             raise ValueError(
-                "unknown AF3 confidences schema: expected predicted_aligned_error, "
-                "pae with token_chain_ids, or chain_pair_pae_min"
+                "unknown AF3 confidences schema: expected residue-level PAE "
+                "in predicted_aligned_error or pae"
             )
 
+        tokens = np.asarray(raw, dtype=float)
+        if tokens.ndim != 2 or tokens.shape[0] != tokens.shape[1] or not tokens.size:
+            raise ValueError(f"AF3 PAE must be a nonempty square matrix, got {tokens.shape}.")
+        if "token_chain_ids" in matrix:
+            pae = AF3Parser._align_token_pair_matrix_to_residues(
+                tokens,
+                matrix.get("token_chain_ids"),
+                matrix.get("token_res_ids", matrix.get("token_residue_ids")),
+                chains,
+                cid,
+                expected_shape,
+            )
+        else:
+            # Legacy residue matrices without token metadata are already ordered.
+            pae = tokens if tokens.shape == expected_shape else None
+        if pae is None:
+            raise ValueError(
+                f"Cannot align AF3 PAE shape {tokens.shape} to {expected_shape}: "
+                "token chain/residue identifiers must map each scored residue unambiguously. "
+                "Chain-pair minima cannot substitute for residue-level PAE."
+            )
+        if not np.all(np.isfinite(pae)) or np.any(pae < 0):
+            raise ValueError("Aligned AF3 PAE contains non-finite or negative values.")
+        if tokens.shape != expected_shape:
+            logger.info(
+                "Aligned %d AF3 PAE tokens to %d scored residues; excluded %d tokens.",
+                len(tokens), total, len(tokens) - total,
+            )
+        max_pae = float(matrix.get("max_predicted_aligned_error", np.nan))
+        if not np.isfinite(max_pae):
+            max_pae = float(np.max(pae))
         return pae, float(max_pae)
 
     @classmethod
@@ -272,20 +252,20 @@ class AF3Parser(BaseParser):
             )
             return None
 
-        if contact_probs.shape == expected_shape:
+        if contact_probs.shape == expected_shape and "token_chain_ids" not in matrix:
             aligned = contact_probs
         else:
             aligned = cls._align_token_pair_matrix_to_residues(
                 contact_probs,
                 matrix.get("token_chain_ids"),
-                matrix.get("token_res_ids") or matrix.get("token_residue_ids"),
+                matrix.get("token_res_ids", matrix.get("token_residue_ids")),
                 chains,
                 cid,
                 expected_shape,
             )
             if aligned is None:
                 logger.warning(
-                    f"contact_probs shape {contact_probs.shape} != expected {expected_shape}; "
+                    f"Cannot align contact_probs shape {contact_probs.shape} to {expected_shape}; "
                     "skipping contact probabilities."
                 )
                 return None
@@ -301,14 +281,18 @@ class AF3Parser(BaseParser):
         cid,
         expected_shape: tuple[int, int],
     ) -> np.ndarray | None:
-        if not isinstance(token_chain_ids, (list, tuple)):
+        if token_matrix.ndim != 2 or not isinstance(token_chain_ids, (list, tuple)):
             return None
         if len(token_chain_ids) != token_matrix.shape[0] or token_matrix.shape[0] != token_matrix.shape[1]:
             return None
 
         ids = [str(x) for x in token_chain_ids]
-        if isinstance(token_res_ids, (list, tuple)) and len(token_res_ids) == len(ids):
-            residue_matrix = AF3Parser._align_token_pair_matrix_by_residue_ids(
+        if token_res_ids is not None:
+            if not isinstance(token_res_ids, (list, tuple)) or len(token_res_ids) != len(ids):
+                return None
+            # Supplied identifiers are authoritative: never hide a failed match
+            # by switching to positional assignment.
+            return AF3Parser._align_token_pair_matrix_by_residue_ids(
                 token_matrix,
                 ids,
                 token_res_ids,
@@ -316,28 +300,14 @@ class AF3Parser(BaseParser):
                 cid,
                 expected_shape,
             )
-            if residue_matrix is not None:
-                return residue_matrix
-
-        seen: list[str] = []
-        for chain_id in ids:
-            if chain_id not in seen:
-                seen.append(chain_id)
-
         token_indices_by_chain: dict[str, np.ndarray] = {}
-        for i, chain in enumerate(chains):
+        for chain in chains:
             residue_indices = np.asarray(cid.get(chain.id, []), dtype=int)
             if residue_indices.size == 0:
                 token_indices_by_chain[chain.id] = np.array([], dtype=int)
                 continue
 
-            exact = np.asarray([k for k, chain_id in enumerate(ids) if chain_id == str(chain.id)], dtype=int)
-            ordered = (
-                np.asarray([k for k, chain_id in enumerate(ids) if chain_id == seen[i]], dtype=int)
-                if i < len(seen)
-                else np.array([], dtype=int)
-            )
-            token_indices = exact if exact.size == residue_indices.size else ordered
+            token_indices = np.asarray([k for k, chain_id in enumerate(ids) if chain_id == str(chain.id)], dtype=int)
             if token_indices.size != residue_indices.size:
                 return None
             token_indices_by_chain[chain.id] = token_indices
@@ -365,13 +335,16 @@ class AF3Parser(BaseParser):
         cid,
         expected_shape: tuple[int, int],
     ) -> np.ndarray | None:
-        token_lookup: dict[tuple[str, int], int] = {}
+        token_lookup: dict[tuple[str, int], int | None] = {}
         for token_idx, (chain_id, raw_res_id) in enumerate(zip(token_chain_ids, token_res_ids)):
             try:
                 res_id = int(raw_res_id)
             except (TypeError, ValueError):
                 continue
-            token_lookup.setdefault((chain_id, res_id), token_idx)
+            key = (chain_id, res_id)
+            # Duplicate IDs on discarded ligands are normal; duplicate IDs on
+            # scored residues require an atom-level policy we cannot infer here.
+            token_lookup[key] = None if key in token_lookup else token_idx
 
         token_indices_by_chain: dict[str, np.ndarray] = {}
         for chain in chains:
@@ -390,6 +363,8 @@ class AF3Parser(BaseParser):
                 if token_idx is None:
                     return None
                 token_indices.append(token_idx)
+            if len(set(token_indices)) != len(token_indices):
+                return None
             token_indices_by_chain[chain.id] = np.asarray(token_indices, dtype=int)
 
         residue_matrix = np.full(expected_shape, np.nan, dtype=float)

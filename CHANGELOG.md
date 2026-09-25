@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- **AF3 interface scores no longer use chain-pair minimum PAE when the confidence matrices carry extra tokens** (#30). AF3x crosslinkers, ligands and ions add tokens to `confidences.json`, so its token-by-token PAE no longer matched the number of scored residues, and AlphaJudge filled every residue pair of a chain pair with that block's minimum. On a 4G3Y B–C prediction with one DSSO crosslink this reported a mean B→C PAE of 5.8 Å where the prediction's own is 21.1 Å, inflating ipSAE, LIS and pDockQ2. PAE and contact probabilities are now aligned to the scored residues by token chain and residue identifiers, keeping both directions of every residue pair.
+
+### Changed
+- AF3 models whose PAE cannot be mapped to residues are skipped with an explicit error instead of being scored with a substitute. This covers summary-only runs (`chain_pair_pae_min` without `confidences.json`), PAE matrices of the wrong shape without token identifiers (previously filled with 100 Å), and tokens that cannot be matched unambiguously to scored residues.
+
 ## 1.4.2 - 2026-08-10
 
 ### Fixed

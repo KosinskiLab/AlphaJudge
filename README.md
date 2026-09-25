@@ -195,6 +195,15 @@ AlphaJudge expects standard prediction run outputs.
 
 The tool searches for `model.cif` inside each model subdirectory first; otherwise it tries to match `*<model>*.cif` or `*<model>*.pdb` at the run root. AlphaJudge currently scores protein and nucleic-acid interfaces; ligands present in AF3 or Boltz-2 structures are ignored for interface construction. When confidence arrays include ligand tokens, supported parsers align or trim them to the scored protein/nucleic-acid residue block.
 
+For AF3 and AF3x, PAE and contact probabilities are aligned using token chain and
+residue identifiers, preserving both directions of each residue-pair value while
+discarding ligand tokens. If residue identifiers are absent, alignment requires
+matching chain IDs and exactly one token per scored residue within each retained
+chain. Unmappable PAE, ambiguous tokens on a retained residue, and summary-only
+`chain_pair_pae_min` data cause the model to be skipped with an explicit error;
+chain minima are never substituted for residue-level PAE. Full
+`confidences.json` data are required (compressed `.xz`/`.gz` files are supported).
+
 ---
 
 ## Output schema (CSV)
