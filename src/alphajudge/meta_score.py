@@ -5,6 +5,8 @@ from bisect import bisect_right
 from collections.abc import Mapping
 from typing import Any
 
+from .confidence import IPTM_SCOPE_CHAIN_PAIR, SCOPE_INCLUDES_EXCLUDED_TOKENS
+
 META_SCORE_FEATURES = (
     "interface_LIS",
     "interface_ipSAE",
@@ -619,11 +621,11 @@ def feature_is_comparable(row: Mapping[str, Any], feature: str) -> bool:
     polymer-only evidence when AF3 also scored discarded ligand/other tokens.
     Older rows without scope metadata retain their existing interpretation.
     """
-    if row.get("global_confidence_scope") != "includes_excluded_tokens":
+    if row.get("global_confidence_scope") != SCOPE_INCLUDES_EXCLUDED_TOKENS:
         return True
     if feature in {"confidence_score", "ptm", "iptm_ptm"}:
         return False
-    return feature != "iptm" or row.get("iptm_scope") == "chain_pair"
+    return feature != "iptm" or row.get("iptm_scope") == IPTM_SCOPE_CHAIN_PAIR
 
 
 def interface_meta_score(row: Mapping[str, Any]) -> float:

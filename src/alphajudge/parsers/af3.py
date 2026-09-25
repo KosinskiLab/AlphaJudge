@@ -5,7 +5,7 @@ import csv
 import logging
 import numpy as np
 from . import BaseParser, Run
-from ..confidence import Confidence
+from ..confidence import SCOPE_INCLUDES_EXCLUDED_TOKENS, SCOPE_SCORED_RESIDUES, Confidence
 from ..geometry import is_pae_token_residue
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,9 @@ class AF3Parser(BaseParser):
             contact_probs = self._normalize_contact_probs_af3(matrix, residue_tokens)
             plddt = self._plddt(chains, rim)
             global_scope = (
-                "includes_excluded_tokens" if residue_tokens.excludes_tokens else "scored_residues"
+                SCOPE_INCLUDES_EXCLUDED_TOKENS
+                if residue_tokens.excludes_tokens
+                else SCOPE_SCORED_RESIDUES
             )
 
             return struct, Confidence(

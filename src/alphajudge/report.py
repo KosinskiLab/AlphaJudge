@@ -33,6 +33,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
+from .confidence import SCOPE_INCLUDES_EXCLUDED_TOKENS
 from .meta_score import (
     infer_backend,
     BENCHMARK_QUANTILES,
@@ -207,7 +208,7 @@ def _row_meta_score(row: Mapping[str, Any]) -> float | None:
     computed = interface_meta_score(row)
     if isinstance(computed, float) and math.isfinite(computed):
         return computed
-    if row.get("global_confidence_scope") == "includes_excluded_tokens":
+    if row.get("global_confidence_scope") == SCOPE_INCLUDES_EXCLUDED_TOKENS:
         # A stale precomputed value may include the global scores just excluded.
         return None
     return _safe_float(row.get("interface_meta_score"))
@@ -1398,7 +1399,7 @@ def _complex_evidence_page(
             include_overall=False,
             groups=[("complex", _COMPLEX_LEVEL_FEATURES)],
         )
-        if row.get("global_confidence_scope") == "includes_excluded_tokens":
+        if row.get("global_confidence_scope") == SCOPE_INCLUDES_EXCLUDED_TOKENS:
             fig.text(
                 0.5, 0.615,
                 "Global AF confidence includes unscored ligand/other tokens.\n"

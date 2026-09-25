@@ -6,6 +6,18 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# Values of Confidence.global_confidence_scope (and the CSV column of that
+# name): whether the global scores (ptm, iptm, iptm_ptm, confidence_score)
+# cover only the scored residues or also tokens excluded from interface
+# scoring, such as ligands, ions and AF3x crosslinkers.
+SCOPE_SCORED_RESIDUES = "scored_residues"
+SCOPE_INCLUDES_EXCLUDED_TOKENS = "includes_excluded_tokens"
+SCOPE_UNKNOWN = "unknown"
+# Values of the iptm_scope column: whether a row's iptm is the chain-pair
+# value or the global fallback.
+IPTM_SCOPE_CHAIN_PAIR = "chain_pair"
+IPTM_SCOPE_GLOBAL = "global"
+
 
 @dataclass(frozen=True)
 class Confidence:
@@ -25,7 +37,7 @@ class Confidence:
     # ligand-only chains (recorded by AF3).
     chain_pair_iptm_chain_ids: list[str] | None = None
     # AF3 global scores can include tokens excluded from interface scoring.
-    global_confidence_scope: str = "unknown"
+    global_confidence_scope: str = SCOPE_UNKNOWN
 
     def pair_iptm(
         self, chain_a: str, chain_b: str, default_chain_ids: Sequence[str]

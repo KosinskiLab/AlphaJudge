@@ -14,6 +14,7 @@ import numpy as np
 
 from .parsers import pick_parser
 from .complex import Complex
+from .confidence import IPTM_SCOPE_CHAIN_PAIR, IPTM_SCOPE_GLOBAL
 from .meta_score import interface_meta_score
 from .report import render_pae_png
 
@@ -111,7 +112,9 @@ def process(
                     "model_used": m,
                     "interface": label,
                     "global_confidence_scope": confidence.global_confidence_scope,
-                    "iptm_scope": "chain_pair" if pair_iptm is not None else "global",
+                    "iptm_scope": (
+                        IPTM_SCOPE_CHAIN_PAIR if pair_iptm is not None else IPTM_SCOPE_GLOBAL
+                    ),
                     "iptm_ptm": float(confidence.iptm_ptm)
                     if confidence.iptm_ptm is not None
                     else float("nan"),
