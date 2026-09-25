@@ -12,6 +12,7 @@ import pytest
 from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
 
 from alphajudge.complex import Complex
+from alphajudge.confidence import Confidence
 from alphajudge.meta_score import interface_meta_score
 from alphajudge.parsers.af3 import AF3Parser
 from alphajudge.runner import process
@@ -170,6 +171,21 @@ def test_af3x_pair_iptm_with_wrong_dimensions_is_dropped(tmp_path, caplog):
     assert conf.chain_pair_iptm is None
     assert Complex(structure, conf, 8., 100.).interfaces[0].iptm_chainpair is None
     assert "chain_pair_iptm dimensions" in caplog.text
+
+
+def test_confidence_pair_iptm_reads_recorded_or_default_chain_order():
+    base = dict(pae_matrix=np.zeros((1, 1)), max_pae=0., iptm=None, ptm=None, iptm_ptm=None,
+                confidence_score=None, plddt_residue=[])
+    matrix = [[.9, .2, .6], [.2, .8, .3], [.6, .3, .7]]
+    recorded = Confidence(**base, chain_pair_iptm=matrix, chain_pair_iptm_chain_ids=["L", "A", "B"])
+    assert recorded.pair_iptm("A", "B", ["A", "B"]) == .3
+    positional = Confidence(**base, chain_pair_iptm=matrix)
+    assert positional.pair_iptm("A", "B", ["A", "B"]) == .2
+    assert positional.pair_iptm("A", "X", ["A", "B"]) is None
+    ragged = Confidence(**base, chain_pair_iptm=[[.9], [.4, .8]])
+    assert ragged.pair_iptm("A", "B", ["A", "B"]) == .4
+    missing = Confidence(**base, chain_pair_iptm=[[.9, None], [None, .8]])
+    assert missing.pair_iptm("A", "B", ["A", "B"]) is None
 
 
 @pytest.mark.parametrize("chain_order, scope", [

@@ -92,36 +92,12 @@ class Interface:
     @cached_property
     def iptm_chainpair(self) -> float | None:
         """
-        Per-interface ipTM from AF3 chain_pair_iptm when available.
+        Per-interface ipTM from chain_pair_iptm when available.
         Returns None for AF2 (no per-interface ipTM).
         """
-        cpi = getattr(self.c.conf, "chain_pair_iptm", None)
-        if cpi is None or not cpi:
-            return None
-        chain_ids = self.c.conf.chain_pair_iptm_chain_ids
-        if chain_ids is None:
-            chain_ids = [ch.id for ch in self.c._chains]
-        try:
-            i = chain_ids.index(self._cid1_id)
-            j = chain_ids.index(self._cid2_id)
-        except ValueError:
-            return None
-        try:
-            row = cpi[i]
-            val = row[j] if isinstance(row, (list, tuple)) else float("nan")
-        except (IndexError, TypeError):
-            try:
-                row = cpi[j]
-                val = row[i] if isinstance(row, (list, tuple)) else float("nan")
-            except (IndexError, TypeError):
-                return None
-        if val is None:
-            return None
-        try:
-            value = float(val)
-            return value if math.isfinite(value) else None
-        except (TypeError, ValueError):
-            return None
+        return self.c.conf.pair_iptm(
+            self._cid1_id, self._cid2_id, [ch.id for ch in self.c._chains]
+        )
 
     @cached_property
     def contact_pairs(self) -> int:
