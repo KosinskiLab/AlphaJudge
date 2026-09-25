@@ -14,8 +14,10 @@ class Confidence:
     iptm_ptm: float | None
     confidence_score: float | None
     plddt_residue: list[float]
-    # AF3 only: per-chain-pair ipTM matrix (indexed by chain order).
+    # Per-chain-pair ipTM matrix (AF3 records its original chain order below).
     # When present, use this for per-interface iptm instead of global iptm.
     chain_pair_iptm: list[list[float]] | None = None
     contact_prob_matrix: np.ndarray | None = None
     contact_prob_source: str | None = None
+    # Original order in the summary matrix, including ligand-only chains.
+    chain_pair_iptm_chain_ids: list[str] | None = None

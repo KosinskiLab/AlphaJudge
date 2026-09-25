@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
 
+from alphajudge.complex import Complex
 from alphajudge.parsers.af3 import AF3Parser
 from alphajudge.runner import process
 
@@ -144,3 +145,24 @@ def test_af3x_duplicate_scored_residue_ids_are_rejected(tmp_path):
     (run_dir / "seed-1_sample-0/confidences.json").write_text(json.dumps(matrix))
     with pytest.raises(ValueError, match="unambiguously"):
         AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
+
+
+@pytest.mark.parametrize("chain_order", [("A", "L", "B"), ("L", "A", "B"), ("A", "B", "L")])
+def test_af3x_pair_iptm_follows_summary_chain_order(tmp_path, chain_order):
+    run_dir, _, _ = _write_run(tmp_path, chain_order)
+    structure, conf = AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
+    interface = Complex(structure, conf, 8., 100.).interfaces[0]
+    summary = json.loads((run_dir / "seed-1_sample-0/summary_confidences.json").read_text())
+    assert interface.iptm_chainpair == summary["chain_pair_iptm"][chain_order.index("A")][chain_order.index("B")]
+
+
+def test_af3x_pair_iptm_with_wrong_dimensions_is_dropped(tmp_path, caplog):
+    run_dir, _, _ = _write_run(tmp_path)
+    path = run_dir / "seed-1_sample-0/summary_confidences.json"
+    summary = json.loads(path.read_text())
+    summary["chain_pair_iptm"] = [[.9, .83], [.83, .8]]
+    path.write_text(json.dumps(summary))
+    structure, conf = AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
+    assert conf.chain_pair_iptm is None
+    assert Complex(structure, conf, 8., 100.).interfaces[0].iptm_chainpair is None
+    assert "chain_pair_iptm dimensions" in caplog.text

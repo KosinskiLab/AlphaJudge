@@ -98,7 +98,9 @@ class Interface:
         cpi = getattr(self.c.conf, "chain_pair_iptm", None)
         if cpi is None or not cpi:
             return None
-        chain_ids = [ch.id for ch in self.c._chains]
+        chain_ids = self.c.conf.chain_pair_iptm_chain_ids
+        if chain_ids is None:
+            chain_ids = [ch.id for ch in self.c._chains]
         try:
             i = chain_ids.index(self._cid1_id)
             j = chain_ids.index(self._cid2_id)
@@ -116,7 +118,8 @@ class Interface:
         if val is None:
             return None
         try:
-            return float(val)
+            value = float(val)
+            return value if math.isfinite(value) else None
         except (TypeError, ValueError):
             return None
 

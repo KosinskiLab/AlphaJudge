@@ -203,6 +203,8 @@ chain. Unmappable PAE, ambiguous tokens on a retained residue, and summary-only
 `chain_pair_pae_min` data cause the model to be skipped with an explicit error;
 chain minima are never substituted for residue-level PAE. Full
 `confidences.json` data are required (compressed `.xz`/`.gz` files are supported).
+Per-interface ipTM is looked up in `chain_pair_iptm` by chain ID, so ligand or
+crosslinker chains listed before or between the proteins do not shift it.
 
 ---
 

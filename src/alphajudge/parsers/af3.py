@@ -52,6 +52,19 @@ class AF3Parser(BaseParser):
             if isinstance(chain_pair_iptm_raw, (list, tuple)):
                 chain_pair_iptm = [list(r) if isinstance(r, (list, tuple)) else [] for r in chain_pair_iptm_raw]
 
+            token_chain_ids = matrix.get("token_chain_ids")
+            summary_chain_ids = (
+                list(dict.fromkeys(str(c) for c in token_chain_ids))
+                if isinstance(token_chain_ids, (list, tuple))
+                else [str(c.id) for c in chains]
+            )
+            if chain_pair_iptm is not None and (
+                len(chain_pair_iptm) != len(summary_chain_ids)
+                or any(len(row) != len(summary_chain_ids) for row in chain_pair_iptm)
+            ):
+                logger.warning("chain_pair_iptm dimensions do not match the source chains; skipping pair ipTM.")
+                chain_pair_iptm = None
+
             pae, max_pae = self._normalize_pae_af3(matrix, chains, cid)
             contact_probs = self._normalize_contact_probs_af3(matrix, chains, cid)
             plddt = self._plddt(chains, rim)
@@ -62,6 +75,7 @@ class AF3Parser(BaseParser):
                 plddt_residue=plddt, chain_pair_iptm=chain_pair_iptm,
                 contact_prob_matrix=contact_probs,
                 contact_prob_source="af3_contact_probs" if contact_probs is not None else None,
+                chain_pair_iptm_chain_ids=summary_chain_ids,
             )
         return Run(order=order, source="af3", load_model=load_model)
 
