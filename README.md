@@ -248,7 +248,12 @@ pip install -e ".[test]"
 pytest -q
 ```
 
-Tests exercise AF2, AF3, and Boltz-2 parsers and validate the CSV fields against bundled fixtures in `test_data/`. The slow CCP4 SC regression suite is opt-in and can be enabled with `ALPHAJUDGE_RUN_SLOW_SC_REFERENCE=1`; CI always runs it across Python 3.10–3.13.
+Tests exercise AF2, AF3, AF3x, and Boltz-2 parsers and validate the CSV fields
+against bundled fixtures in `test_data/` and `test/fixtures/`. The AF3x fixture
+contains a real 4G3Y B–C prediction with a DSSO crosslink; its provenance and
+regeneration instructions are included, and regression tests require no GPU.
+The slow CCP4 SC regression suite is opt-in and can be enabled with
+`ALPHAJUDGE_RUN_SLOW_SC_REFERENCE=1`; CI always runs it across Python 3.10–3.13.
 
 ---
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import csv
 import json
+import lzma
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -264,3 +266,75 @@ def test_cached_scores_without_scope_metadata_are_recomputed(tmp_path, monkeypat
         )
         assert rows[0]["jobs"] == "new"
     assert calls == [str(tmp_path)]
+
+
+@pytest.mark.parametrize("ligand_first", [False, True])
+def test_real_af3x_prediction_matches_raw_confidences(tmp_path, ligand_first):
+    """A fresh AF3x inference, plus a reordered copy, guards the complete path."""
+    fixture = Path(__file__).parent / "fixtures" / "af3x_4g3y_bc_dsso"
+    run_dir = tmp_path / "af3x"
+    shutil.copytree(fixture, run_dir)
+    model_dir = run_dir / "seed-30_sample-0"
+    with lzma.open(model_dir / "confidences.json.xz", "rt") as fh:
+        raw = json.load(fh)
+    summary_path = model_dir / "summary_confidences.json"
+    summary = json.loads(summary_path.read_text())
+    chain_ids = list(dict.fromkeys(raw["token_chain_ids"]))
+    assert len(chain_ids) == 3
+    if ligand_first:
+        # Reorder the confidence tensors and their summary consistently. The
+        # structure keeps its original order, so positional ipTM lookup fails.
+        chain_order = [2, 0, 1]
+        token_order = [i for c in chain_order for i, cid in enumerate(raw["token_chain_ids"])
+                       if cid == chain_ids[c]]
+        for key in ["pae", "contact_probs"]:
+            raw[key] = np.asarray(raw[key])[np.ix_(token_order, token_order)].tolist()
+        for key in ["token_chain_ids", "token_res_ids"]:
+            raw[key] = [raw[key][i] for i in token_order]
+        summary["chain_pair_iptm"] = np.asarray(summary["chain_pair_iptm"])[np.ix_(chain_order, chain_order)].tolist()
+        with lzma.open(model_dir / "confidences.json.xz", "wt") as fh:
+            json.dump(raw, fh)
+        summary_path.write_text(json.dumps(summary))
+        chain_ids = [chain_ids[i] for i in chain_order]
+
+    structure, confidence = AF3Parser().parse_run(run_dir).load_model("seed-30_sample-0")
+    # Independently extract the protein block from AF3x's original token matrix.
+    lookup = {(c, r): i for i, (c, r) in enumerate(zip(raw["token_chain_ids"], raw["token_res_ids"]))
+              if c in {"B", "C"}}
+    keep = [lookup[(chain, residue)] for chain, length in [("B", 226), ("C", 158)]
+            for residue in range(1, length + 1)]
+    expected_pae = np.asarray(raw["pae"])[np.ix_(keep, keep)]
+    expected_contacts = np.asarray(raw["contact_probs"])[np.ix_(keep, keep)]
+    assert len(raw["pae"]) > len(keep) == 384
+    assert np.unique(expected_pae[:226, 226:]).size > 10
+    np.testing.assert_array_equal(confidence.pae_matrix, expected_pae)
+    np.testing.assert_array_equal(confidence.contact_prob_matrix, expected_contacts)
+    assert confidence.global_confidence_scope == "includes_excluded_tokens"
+    complex_ = Complex(structure, confidence, 8., 100.)
+    assert len(complex_.interfaces) == 1
+    interface = complex_.interfaces[0]
+    assert interface.iptm_chainpair == summary["chain_pair_iptm"][chain_ids.index("B")][chain_ids.index("C")]
+
+    output = process(str(run_dir), 8., 100., "best", skip_pae_png=True, skip_biophysical_scores=True)
+    with output.open() as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["interface"] == "B_C"
+    assert row["iptm_scope"] == "chain_pair"
+    assert float(row["iptm"]) == interface.iptm_chainpair
+    assert float(row["confidence_score"]) == summary["ranking_score"]
+    token_pae = np.asarray(raw["pae"])
+    contact_paes = []
+    for res1, res2 in interface._pairs:
+        i = lookup[(res1.get_parent().id, res1.id[1])]
+        j = lookup[(res2.get_parent().id, res2.id[1])]
+        contact_paes.extend([token_pae[i, j], token_pae[j, i]])
+    assert float(row["average_interface_pae"]) == pytest.approx(np.mean(contact_paes))
+    assert float(row["interface_pDockQ2"]) == pytest.approx(interface.pDockQ2()[0])
+    assert float(row["interface_ipSAE"]) == pytest.approx(interface.ipsae())
+    assert float(row["interface_LIS"]) == pytest.approx(interface.lis())
+    assert float(row["interface_ccc"]) == interface.ccc
+    assert float(row["interface_meta_score"]) == pytest.approx(interface_meta_score(
+        {k: v for k, v in row.items() if k != "confidence_score"}
+    ))
