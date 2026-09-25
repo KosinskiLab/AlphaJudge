@@ -671,14 +671,12 @@ def test_af3_contact_probs_alignment_uses_token_res_ids_with_extra_tokens():
     residue(chain_b, 1, 3)
 
     token_matrix = np.arange(16, dtype=float).reshape(4, 4)
-    aligned = AF3Parser._align_token_pair_matrix_to_residues(
-        token_matrix,
-        ["A", "A", "A", "B"],
-        [1, 99, 2, 1],
+    residue_tokens = AF3Parser._residue_tokens_af3(
+        {"token_chain_ids": ["A", "A", "A", "B"], "token_res_ids": [1, 99, 2, 1]},
         [chain_a, chain_b],
         {"A": [0, 1], "B": [2]},
-        (3, 3),
     )
+    aligned = residue_tokens.select(token_matrix)
 
     assert aligned is not None
     expected = token_matrix[np.ix_([0, 2, 3], [0, 2, 3])]

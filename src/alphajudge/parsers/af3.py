@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import dataclass
 from pathlib import Path
 import csv
 import logging
@@ -8,6 +9,30 @@ from ..confidence import Confidence
 from ..geometry import is_pae_token_residue
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _ResidueTokens:
+    """Where each scored residue sits in AF3's token-by-token matrices."""
+
+    residue_count: int
+    # Size the token matrices must have; None when token metadata is unusable.
+    token_count: int | None
+    # Token of each scored residue in cid order; None when unmappable.
+    index: np.ndarray | None
+
+    @property
+    def excludes_tokens(self) -> bool:
+        """Whether the token matrices also carry tokens that are not scored."""
+        return self.token_count is not None and self.token_count > self.residue_count
+
+    def select(self, token_matrix: np.ndarray) -> np.ndarray | None:
+        """The residue-by-residue block of a token matrix, or None."""
+        n = self.token_count
+        if self.index is None or token_matrix.shape != (n, n):
+            return None
+        return token_matrix[np.ix_(self.index, self.index)]
+
 
 class AF3Parser(BaseParser):
     name = "af3"
@@ -65,12 +90,11 @@ class AF3Parser(BaseParser):
                 logger.warning("chain_pair_iptm dimensions do not match the source chains; skipping pair ipTM.")
                 chain_pair_iptm = None
 
-            pae, max_pae = self._normalize_pae_af3(matrix, chains, cid)
-            contact_probs = self._normalize_contact_probs_af3(matrix, chains, cid)
+            pae, max_pae, residue_tokens = self._normalize_pae_af3(matrix, chains, cid)
+            contact_probs = self._normalize_contact_probs_af3(matrix, residue_tokens)
             plddt = self._plddt(chains, rim)
-            raw_pae = matrix.get("predicted_aligned_error", matrix.get("pae"))
             global_scope = (
-                "includes_excluded_tokens" if len(raw_pae) > len(pae) else "scored_residues"
+                "includes_excluded_tokens" if residue_tokens.excludes_tokens else "scored_residues"
             )
 
             return struct, Confidence(
@@ -208,9 +232,11 @@ class AF3Parser(BaseParser):
         raise ValueError(f"struct for model {model} not found")
 
     @staticmethod
-    def _normalize_pae_af3(matrix: dict, chains, cid) -> tuple[np.ndarray, float]:
-        total = sum(len(cid[c.id]) for c in chains)
-        expected_shape = (total, total)
+    def _normalize_pae_af3(matrix: dict, chains, cid) -> tuple[np.ndarray, float, _ResidueTokens]:
+        """Residue-level PAE, its maximum, and the residue-to-token map used.
+
+        The map is returned so the other token matrices reuse it.
+        """
         raw = matrix.get("predicted_aligned_error", matrix.get("pae"))
         if raw is None:
             if "chain_pair_pae_min" in matrix:
@@ -226,18 +252,10 @@ class AF3Parser(BaseParser):
         tokens = np.asarray(raw, dtype=float)
         if tokens.ndim != 2 or tokens.shape[0] != tokens.shape[1] or not tokens.size:
             raise ValueError(f"AF3 PAE must be a nonempty square matrix, got {tokens.shape}.")
-        if "token_chain_ids" in matrix:
-            pae = AF3Parser._align_token_pair_matrix_to_residues(
-                tokens,
-                matrix.get("token_chain_ids"),
-                matrix.get("token_res_ids", matrix.get("token_residue_ids")),
-                chains,
-                cid,
-                expected_shape,
-            )
-        else:
-            # Legacy residue matrices without token metadata are already ordered.
-            pae = tokens if tokens.shape == expected_shape else None
+        residue_tokens = AF3Parser._residue_tokens_af3(matrix, chains, cid)
+        total = residue_tokens.residue_count
+        expected_shape = (total, total)
+        pae = residue_tokens.select(tokens)
         if pae is None:
             raise ValueError(
                 f"Cannot align AF3 PAE shape {tokens.shape} to {expected_shape}: "
@@ -254,15 +272,15 @@ class AF3Parser(BaseParser):
         max_pae = float(matrix.get("max_predicted_aligned_error", np.nan))
         if not np.isfinite(max_pae):
             max_pae = float(np.max(pae))
-        return pae, float(max_pae)
+        return pae, float(max_pae), residue_tokens
 
-    @classmethod
-    def _normalize_contact_probs_af3(cls, matrix: dict, chains, cid) -> np.ndarray | None:
+    @staticmethod
+    def _normalize_contact_probs_af3(matrix: dict, residue_tokens: _ResidueTokens) -> np.ndarray | None:
         raw = matrix.get("contact_probs")
         if raw is None:
             return None
 
-        expected_shape = (sum(len(cid[c.id]) for c in chains),) * 2
+        expected_shape = (residue_tokens.residue_count,) * 2
         contact_probs = np.asarray(raw, dtype=float)
         if contact_probs.ndim != 2:
             logger.warning(
@@ -271,135 +289,77 @@ class AF3Parser(BaseParser):
             )
             return None
 
-        if contact_probs.shape == expected_shape and "token_chain_ids" not in matrix:
-            aligned = contact_probs
-        else:
-            aligned = cls._align_token_pair_matrix_to_residues(
-                contact_probs,
-                matrix.get("token_chain_ids"),
-                matrix.get("token_res_ids", matrix.get("token_residue_ids")),
-                chains,
-                cid,
-                expected_shape,
+        aligned = residue_tokens.select(contact_probs)
+        if aligned is None:
+            logger.warning(
+                f"Cannot align contact_probs shape {contact_probs.shape} to {expected_shape}; "
+                "skipping contact probabilities."
             )
-            if aligned is None:
-                logger.warning(
-                    f"Cannot align contact_probs shape {contact_probs.shape} to {expected_shape}; "
-                    "skipping contact probabilities."
-                )
-                return None
-
         return aligned
 
     @staticmethod
-    def _align_token_pair_matrix_to_residues(
-        token_matrix: np.ndarray,
-        token_chain_ids,
-        token_res_ids,
-        chains,
-        cid,
-        expected_shape: tuple[int, int],
-    ) -> np.ndarray | None:
-        if token_matrix.ndim != 2 or not isinstance(token_chain_ids, (list, tuple)):
-            return None
-        if len(token_chain_ids) != token_matrix.shape[0] or token_matrix.shape[0] != token_matrix.shape[1]:
-            return None
+    def _residue_tokens_af3(matrix: dict, chains, cid) -> _ResidueTokens:
+        """Find the token of each scored residue in AF3's token matrices.
 
+        Supplied residue identifiers are authoritative: a failed match never
+        falls back to positional assignment. Without them each retained chain
+        must match by chain ID with one token per residue, and without any
+        token metadata the matrices must already be in residue order.
+        """
+        total = sum(len(cid[c.id]) for c in chains)
+        if "token_chain_ids" not in matrix:
+            # Legacy residue matrices without token metadata are already ordered.
+            return _ResidueTokens(total, total, np.arange(total))
+        token_chain_ids = matrix["token_chain_ids"]
+        if not isinstance(token_chain_ids, (list, tuple)):
+            return _ResidueTokens(total, None, None)
         ids = [str(x) for x in token_chain_ids]
-        if token_res_ids is not None:
-            if not isinstance(token_res_ids, (list, tuple)) or len(token_res_ids) != len(ids):
-                return None
-            # Supplied identifiers are authoritative: never hide a failed match
-            # by switching to positional assignment.
-            return AF3Parser._align_token_pair_matrix_by_residue_ids(
-                token_matrix,
-                ids,
-                token_res_ids,
-                chains,
-                cid,
-                expected_shape,
-            )
-        token_indices_by_chain: dict[str, np.ndarray] = {}
-        for chain in chains:
-            residue_indices = np.asarray(cid.get(chain.id, []), dtype=int)
-            if residue_indices.size == 0:
-                token_indices_by_chain[chain.id] = np.array([], dtype=int)
-                continue
+        unmappable = _ResidueTokens(total, len(ids), None)
+        token_res_ids = matrix.get("token_res_ids", matrix.get("token_residue_ids"))
+        if token_res_ids is not None and (
+            not isinstance(token_res_ids, (list, tuple)) or len(token_res_ids) != len(ids)
+        ):
+            return unmappable
 
-            token_indices = np.asarray([k for k, chain_id in enumerate(ids) if chain_id == str(chain.id)], dtype=int)
-            if token_indices.size != residue_indices.size:
-                return None
-            token_indices_by_chain[chain.id] = token_indices
-
-        residue_matrix = np.full(expected_shape, np.nan, dtype=float)
-        for chi in chains:
-            ri = np.asarray(cid.get(chi.id, []), dtype=int)
-            ti = token_indices_by_chain.get(chi.id, np.array([], dtype=int))
-            if ri.size == 0:
-                continue
-            for chj in chains:
-                rj = np.asarray(cid.get(chj.id, []), dtype=int)
-                tj = token_indices_by_chain.get(chj.id, np.array([], dtype=int))
-                if rj.size == 0:
+        index = np.full(total, -1, dtype=int)
+        if token_res_ids is None:
+            for chain in chains:
+                residues = cid.get(chain.id, [])
+                if not residues:
                     continue
-                residue_matrix[np.ix_(ri, rj)] = token_matrix[np.ix_(ti, tj)]
-        return residue_matrix
-
-    @staticmethod
-    def _align_token_pair_matrix_by_residue_ids(
-        token_matrix: np.ndarray,
-        token_chain_ids: list[str],
-        token_res_ids,
-        chains,
-        cid,
-        expected_shape: tuple[int, int],
-    ) -> np.ndarray | None:
-        # Several tokens share an ID on ligands (discarded) and on modified
-        # residues, which AF3 tokenizes per atom (resolved by _residue_token).
-        token_lookup: dict[tuple[str, int], list[int]] = {}
-        for token_idx, (chain_id, raw_res_id) in enumerate(zip(token_chain_ids, token_res_ids)):
-            try:
-                res_id = int(raw_res_id)
-            except (TypeError, ValueError):
-                continue
-            token_lookup.setdefault((chain_id, res_id), []).append(token_idx)
-
-        token_indices_by_chain: dict[str, np.ndarray] = {}
-        for chain in chains:
-            residue_indices = np.asarray(cid.get(chain.id, []), dtype=int)
-            if residue_indices.size == 0:
-                token_indices_by_chain[chain.id] = np.array([], dtype=int)
-                continue
-
-            kept = [res for res in chain if is_pae_token_residue(res)]
-            if len(kept) != residue_indices.size:
-                return None
-
-            token_indices: list[int] = []
-            for residue in kept:
-                token_idx = AF3Parser._residue_token(
-                    residue, token_lookup.get((str(chain.id), int(residue.id[1])), [])
-                )
-                if token_idx is None:
-                    return None
-                token_indices.append(token_idx)
-            if len(set(token_indices)) != len(token_indices):
-                return None
-            token_indices_by_chain[chain.id] = np.asarray(token_indices, dtype=int)
-
-        residue_matrix = np.full(expected_shape, np.nan, dtype=float)
-        for chi in chains:
-            ri = np.asarray(cid.get(chi.id, []), dtype=int)
-            ti = token_indices_by_chain.get(chi.id, np.array([], dtype=int))
-            if ri.size == 0:
-                continue
-            for chj in chains:
-                rj = np.asarray(cid.get(chj.id, []), dtype=int)
-                tj = token_indices_by_chain.get(chj.id, np.array([], dtype=int))
-                if rj.size == 0:
+                tokens = [k for k, chain_id in enumerate(ids) if chain_id == str(chain.id)]
+                if len(tokens) != len(residues):
+                    return unmappable
+                index[residues] = tokens
+        else:
+            # Several tokens share an ID on ligands (discarded) and on modified
+            # residues, which AF3 tokenizes per atom (resolved by _residue_token).
+            tokens_by_residue: dict[tuple[str, int], list[int]] = {}
+            for token, (chain_id, raw_res_id) in enumerate(zip(ids, token_res_ids)):
+                try:
+                    res_id = int(raw_res_id)
+                except (TypeError, ValueError):
                     continue
-                residue_matrix[np.ix_(ri, rj)] = token_matrix[np.ix_(ti, tj)]
-        return residue_matrix
+                tokens_by_residue.setdefault((chain_id, res_id), []).append(token)
+            for chain in chains:
+                residues = cid.get(chain.id, [])
+                if not residues:
+                    continue
+                kept = [res for res in chain if is_pae_token_residue(res)]
+                if len(kept) != len(residues):
+                    return unmappable
+                tokens = [
+                    AF3Parser._residue_token(
+                        res, tokens_by_residue.get((str(chain.id), int(res.id[1])), [])
+                    )
+                    for res in kept
+                ]
+                if None in tokens or len(set(tokens)) != len(tokens):
+                    return unmappable
+                index[residues] = tokens
+        if (index < 0).any():
+            return unmappable
+        return _ResidueTokens(total, len(ids), index)
 
     @staticmethod
     def _residue_token(residue, token_indices: list[int]) -> int | None:
