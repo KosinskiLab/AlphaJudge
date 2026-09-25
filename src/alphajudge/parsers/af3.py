@@ -354,16 +354,15 @@ class AF3Parser(BaseParser):
         cid,
         expected_shape: tuple[int, int],
     ) -> np.ndarray | None:
-        token_lookup: dict[tuple[str, int], int | None] = {}
+        # Several tokens share an ID on ligands (discarded) and on modified
+        # residues, which AF3 tokenizes per atom (resolved by _residue_token).
+        token_lookup: dict[tuple[str, int], list[int]] = {}
         for token_idx, (chain_id, raw_res_id) in enumerate(zip(token_chain_ids, token_res_ids)):
             try:
                 res_id = int(raw_res_id)
             except (TypeError, ValueError):
                 continue
-            key = (chain_id, res_id)
-            # Duplicate IDs on discarded ligands are normal; duplicate IDs on
-            # scored residues require an atom-level policy we cannot infer here.
-            token_lookup[key] = None if key in token_lookup else token_idx
+            token_lookup.setdefault((chain_id, res_id), []).append(token_idx)
 
         token_indices_by_chain: dict[str, np.ndarray] = {}
         for chain in chains:
@@ -378,7 +377,9 @@ class AF3Parser(BaseParser):
 
             token_indices: list[int] = []
             for residue in kept:
-                token_idx = token_lookup.get((str(chain.id), int(residue.id[1])))
+                token_idx = AF3Parser._residue_token(
+                    residue, token_lookup.get((str(chain.id), int(residue.id[1])), [])
+                )
                 if token_idx is None:
                     return None
                 token_indices.append(token_idx)
@@ -399,3 +400,22 @@ class AF3Parser(BaseParser):
                     continue
                 residue_matrix[np.ix_(ri, rj)] = token_matrix[np.ix_(ti, tj)]
         return residue_matrix
+
+    @staticmethod
+    def _residue_token(residue, token_indices: list[int]) -> int | None:
+        """The token carrying a scored residue's PAE row, or None if ambiguous.
+
+        AF3 gives a standard residue one token centred on CA (protein) or C1'
+        (nucleic acid), but a modified residue one token per atom, in the
+        residue's atom order. Take the per-atom token of that same centre atom,
+        and only when the tokens and the residue's atoms correspond one to one.
+        """
+        if len(token_indices) == 1:
+            return token_indices[0]
+        atom_names = [atom.get_id() for atom in residue]
+        if len(token_indices) != len(atom_names):
+            return None
+        for centre in ("CA", "C1'"):
+            if centre in atom_names:
+                return token_indices[atom_names.index(centre)]
+        return None

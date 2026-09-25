@@ -338,3 +338,31 @@ def test_real_af3x_prediction_matches_raw_confidences(tmp_path, ligand_first):
     assert float(row["interface_meta_score"]) == pytest.approx(interface_meta_score(
         {k: v for k, v in row.items() if k != "confidence_score"}
     ))
+
+
+def test_af3_per_atom_modified_residue_uses_its_ca_token(tmp_path):
+    """AF3 tokenizes a modified residue per atom; its CA token carries the PAE."""
+    run_dir, _, _ = _write_run(tmp_path, ("A", "B"))
+    model_dir = run_dir / "seed-1_sample-0"
+    structure, _ = AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
+    chain = structure[0]["A"]
+    ca = chain[2]["CA"]
+    chain.detach_child(chain[2].id)
+    phosphoserine = Residue.Residue(("H_SEP", 2, " "), "SEP", " ")
+    atom_names = ["N", "CA", "C", "O", "CB", "OG", "P"]
+    for k, name in enumerate(atom_names):
+        phosphoserine.add(Atom.Atom(name, ca.coord + k * .3, 90., 1., " ", name, 100 + k, element=name[0]))
+    chain.add(phosphoserine)
+    writer = MMCIFIO()
+    writer.set_structure(structure)
+    writer.save(str(model_dir / "model.cif"))
+    token_chains = ["A"] * (1 + len(atom_names)) + ["B", "B"]
+    token_resids = [1] + [2] * len(atom_names) + [1, 2]
+    n = len(token_chains)
+    pae = np.arange(n * n, dtype=float).reshape(n, n) / 2
+    (model_dir / "confidences.json").write_text(json.dumps(
+        {"pae": pae.tolist(), "token_chain_ids": token_chains, "token_res_ids": token_resids}
+    ))
+    _, conf = AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
+    keep = [0, 1 + atom_names.index("CA"), n - 2, n - 1]
+    np.testing.assert_array_equal(conf.pae_matrix, pae[np.ix_(keep, keep)])
