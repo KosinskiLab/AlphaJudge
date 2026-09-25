@@ -206,6 +206,13 @@ chain minima are never substituted for residue-level PAE. Full
 Per-interface ipTM is looked up in `chain_pair_iptm` by chain ID, so ligand or
 crosslinker chains listed before or between the proteins do not shift it.
 
+AF3 global confidences (pTM, ipTM, ranking score) are computed over every token,
+including the ligands, ions and AF3x crosslinkers that AlphaJudge excludes from
+interface scoring. AlphaJudge preserves these raw values, but for such
+predictions it omits `confidence_score` (and any global ipTM fallback) from the
+metascore and report percentiles. The remaining metascore features use the
+existing calibration; this is not an AF3x-specific calibration.
+
 ---
 
 ## Output schema (CSV)
@@ -216,6 +223,11 @@ AlphaJudge writes `interfaces.csv` with one row per interface (and includes the 
 - **model_used**: selected model identifier
 - **interface**: chain-pair label (e.g., `A_B`)
 - **iptm_ptm, iptm, ptm, confidence_score**: unified AF confidences
+- **global_confidence_scope**: `scored_residues` for AF3 confidence covering only
+  scored residues, `includes_excluded_tokens` when it also covers ligand/other
+  discarded tokens, or `unknown` for parsers without this metadata. Applies to
+  `ptm`, `iptm_ptm`, `confidence_score`, and global ipTM.
+- **iptm_scope**: `chain_pair` for per-interface ipTM, otherwise `global`.
 - **pDockQ/mpDockQ**: global dockQ-like score (mpDockQ if multimer; pDockQ if dimer)
 - **average_interface_pae, interface_average_plddt, interface_num_intf_residues**
 - **interface_contact_pairs, interface_ccc, interface_score, interface_pDockQ2, interface_ipSAE, interface_LIS, interface_cLIS, interface_iLIS**: CCC counts Interactome3D-defined inter-chain residue contacts whose chain1→chain2 PAE is strictly below 4 Å. Alternative geometry, direction and boundary conventions are available through `Interface.confident_contacts(...)`.

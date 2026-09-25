@@ -612,17 +612,33 @@ def infer_backend(row: Mapping[str, Any]) -> str | None:
     return None
 
 
+def feature_is_comparable(row: Mapping[str, Any], feature: str) -> bool:
+    """Whether the feature has the scope used by the frozen calibration.
+
+    Keep native global confidences in the CSV, but do not calibrate them as
+    polymer-only evidence when AF3 also scored discarded ligand/other tokens.
+    Older rows without scope metadata retain their existing interpretation.
+    """
+    if row.get("global_confidence_scope") != "includes_excluded_tokens":
+        return True
+    if feature in {"confidence_score", "ptm", "iptm_ptm"}:
+        return False
+    return feature != "iptm" or row.get("iptm_scope") == "chain_pair"
+
+
 def interface_meta_score(row: Mapping[str, Any]) -> float:
     """
     Transparent rank-style interface metascore.
 
     Each selected AlphaJudge feature is converted to a frozen benchmark
     percentile where higher means stronger interaction evidence. Missing or
-    non-finite inputs are ignored. The final score is the mean percentile.
+    non-finite and scope-incompatible inputs are ignored. The final score is
+    the mean of the remaining percentiles; no AF3x-specific calibration is implied.
     """
     percentiles = [
         percentile
         for feature in META_SCORE_FEATURES
+        if feature_is_comparable(row, feature)
         if (
             percentile := calibrated_feature_percentile(
                 feature, row.get(feature), infer_backend(row)

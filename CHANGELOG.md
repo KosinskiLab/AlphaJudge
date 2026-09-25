@@ -6,8 +6,13 @@
 - **AF3 interface scores no longer use chain-pair minimum PAE when the confidence matrices carry extra tokens** (#30). AF3x crosslinkers, ligands and ions add tokens to `confidences.json`, so its token-by-token PAE no longer matched the number of scored residues, and AlphaJudge filled every residue pair of a chain pair with that block's minimum. On a 4G3Y B–C prediction with one DSSO crosslink this reported a mean B→C PAE of 5.8 Å where the prediction's own is 21.1 Å, inflating ipSAE, LIS and pDockQ2. PAE and contact probabilities are now aligned to the scored residues by token chain and residue identifiers, keeping both directions of every residue pair.
 - Per-interface ipTM for AF3 is looked up by chain ID in the chain order of `chain_pair_iptm`, not by position among the scored chains. AF3x names each crosslinker ligand with the first unused chain letter, so a crosslinker can precede or sit between the proteins; on the same 4G3Y prediction (crosslinker chain A, proteins B and C) the B–C interface reported the crosslinker–B ipTM of 0.78 instead of 0.25. A `chain_pair_iptm` whose size does not match the chains is ignored with a warning, and global ipTM is used instead.
 
+### Added
+- `global_confidence_scope` and `iptm_scope` columns in the per-interface score table. `global_confidence_scope` is `includes_excluded_tokens` when AF3's global confidences also cover tokens excluded from interface scoring, `scored_residues` when they do not, and `unknown` for AF2 and Boltz-2. `iptm_scope` says whether `iptm` is the chain-pair value or the global fallback.
+
 ### Changed
 - AF3 models whose PAE cannot be mapped to residues are skipped with an explicit error instead of being scored with a substitute. This covers summary-only runs (`chain_pair_pae_min` without `confidences.json`), PAE matrices of the wrong shape without token identifiers (previously filled with 100 Å), and tokens that cannot be matched unambiguously to scored residues.
+- For AF3 predictions whose global confidences include excluded tokens (AF3x crosslinkers, but also ligands and ions in plain AF3), `confidence_score` and a global-ipTM fallback are kept in the score table but left out of `interface_meta_score` and the report percentiles, because they no longer describe the scored residues alone. The metascore is the mean of the remaining percentiles, so it changes for such predictions relative to 1.4.2. Boltz-2 global confidences are not labelled and are used as before.
+- Cached per-run CSVs without the two new columns are recomputed once, AF2 and Boltz-2 caches included.
 
 ## 1.4.2 - 2026-08-10
 

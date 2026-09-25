@@ -21,3 +21,5 @@ class Confidence:
     contact_prob_source: str | None = None
     # Original order in the summary matrix, including ligand-only chains.
     chain_pair_iptm_chain_ids: list[str] | None = None
+    # AF3 global scores can include tokens excluded from interface scoring.
+    global_confidence_scope: str = "unknown"

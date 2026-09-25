@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 # Cached per-run CSVs from older releases are safe to reuse only when they
 # contain every field introduced by the current output contract.
-_REQUIRED_CACHE_COLUMNS = frozenset({"interface_ccc", "interface_expected_contacts"})
+_REQUIRED_CACHE_COLUMNS = frozenset({
+    "interface_ccc", "interface_expected_contacts", "global_confidence_scope", "iptm_scope",
+})
 
 
 def _save_pae_heatmap(
@@ -102,11 +104,14 @@ def process(
                 label = (
                     f"{iface.chain1[0].get_parent().id}_{iface.chain2[0].get_parent().id}"
                 )
-                iptm_val = iface.iptm_chainpair if iface.iptm_chainpair is not None else confidence.iptm
+                pair_iptm = iface.iptm_chainpair
+                iptm_val = pair_iptm if pair_iptm is not None else confidence.iptm
                 row = {
                     "jobs": job,
                     "model_used": m,
                     "interface": label,
+                    "global_confidence_scope": confidence.global_confidence_scope,
+                    "iptm_scope": "chain_pair" if pair_iptm is not None else "global",
                     "iptm_ptm": float(confidence.iptm_ptm)
                     if confidence.iptm_ptm is not None
                     else float("nan"),

@@ -33,6 +33,8 @@ EXPECTED_OUTPUT_COLUMNS = {
     "iptm",
     "ptm",
     "confidence_score",
+    "global_confidence_scope",
+    "iptm_scope",
     "pDockQ/mpDockQ",
     "average_interface_pae",
     "interface_average_plddt",
@@ -66,6 +68,8 @@ EXPECTED_NUMERIC_COLUMNS = EXPECTED_OUTPUT_COLUMNS - {
     "model_used",
     "interface",
     "interface_contact_prob_source",
+    "global_confidence_scope",
+    "iptm_scope",
 }
 
 

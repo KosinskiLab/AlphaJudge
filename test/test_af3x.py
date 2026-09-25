@@ -1,6 +1,7 @@
 """Regression coverage for AF3/AF3x mixtures of residue and ligand tokens."""
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 from Bio.PDB import Atom, Chain, MMCIFIO, Model, Residue, Structure
 
 from alphajudge.complex import Complex
+from alphajudge.meta_score import interface_meta_score
 from alphajudge.parsers.af3 import AF3Parser
 from alphajudge.runner import process
 
@@ -166,3 +168,99 @@ def test_af3x_pair_iptm_with_wrong_dimensions_is_dropped(tmp_path, caplog):
     assert conf.chain_pair_iptm is None
     assert Complex(structure, conf, 8., 100.).interfaces[0].iptm_chainpair is None
     assert "chain_pair_iptm dimensions" in caplog.text
+
+
+@pytest.mark.parametrize("chain_order, scope", [
+    (("A", "L", "B"), "includes_excluded_tokens"),
+    (("A", "B"), "scored_residues"),
+])
+def test_af3_global_confidence_scope_reports_excluded_tokens(tmp_path, chain_order, scope):
+    run_dir, _, _ = _write_run(tmp_path, chain_order)
+    _, conf = AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
+    assert conf.global_confidence_scope == scope
+
+
+def test_af3x_runner_preserves_global_values_but_excludes_them_from_metascore(tmp_path):
+    run_dir, _, _ = _write_run(tmp_path)
+    path = process(str(run_dir), 8., 100., "best", skip_pae_png=True, skip_biophysical_scores=True)
+    with path.open() as fh:
+        row = next(csv.DictReader(fh))
+    assert row["global_confidence_scope"] == "includes_excluded_tokens"
+    assert row["iptm_scope"] == "chain_pair"
+    assert float(row["iptm"]) == 0.83
+    assert float(row["ptm"]) == 0.6
+    assert float(row["iptm_ptm"]) == pytest.approx(0.44)
+    assert float(row["confidence_score"]) == 0.5
+    without_global = {k: v for k, v in row.items() if k != "confidence_score"}
+    assert float(row["interface_meta_score"]) == pytest.approx(interface_meta_score(without_global))
+
+
+def test_mixed_token_metascore_excludes_global_iptm_fallback():
+    row = {"model_used": "seed-1_sample-0", "interface_LIS": .3,
+           "confidence_score": .9, "iptm": .9, "iptm_scope": "global",
+           "global_confidence_scope": "includes_excluded_tokens"}
+    expected = interface_meta_score({"model_used": row["model_used"], "interface_LIS": .3})
+    assert interface_meta_score(row) == expected
+    row["iptm_scope"] = "chain_pair"
+    assert interface_meta_score(row) != expected
+
+
+def test_mixed_token_report_does_not_show_global_confidence_percentile():
+    from alphajudge.report import _feature_view, _row_meta_score
+    row = {"model_used": "seed-1_sample-0", "interface_LIS": .3, "confidence_score": .9,
+           "global_confidence_scope": "includes_excluded_tokens"}
+    assert _feature_view(row)["confidence_score"] == (.9, None)
+    assert _row_meta_score(row) == interface_meta_score({"model_used": row["model_used"], "interface_LIS": .3})
+
+
+def test_af3x_invalid_pair_iptm_uses_labelled_global_fallback(tmp_path, caplog):
+    run_dir, _, _ = _write_run(tmp_path)
+    path = run_dir / "seed-1_sample-0/summary_confidences.json"
+    summary = json.loads(path.read_text())
+    summary["chain_pair_iptm"] = [[.9, .83], [.83, .8]]
+    path.write_text(json.dumps(summary))
+    output = process(str(run_dir), 8., 100., "best", skip_pae_png=True, skip_biophysical_scores=True)
+    with output.open() as fh:
+        row = next(csv.DictReader(fh))
+    assert row["iptm_scope"] == "global"
+    assert float(row["iptm"]) == .4
+    assert "chain_pair_iptm dimensions" in caplog.text
+    expected = {k: v for k, v in row.items() if k not in {"confidence_score", "iptm"}}
+    assert float(row["interface_meta_score"]) == pytest.approx(interface_meta_score(expected))
+
+
+def test_af3x_report_does_not_restore_stale_metascore():
+    from alphajudge.report import _row_meta_score
+    assert _row_meta_score({"confidence_score": .9, "interface_meta_score": .9,
+                           "global_confidence_scope": "includes_excluded_tokens"}) is None
+
+
+def test_plain_af3_global_confidence_still_contributes_to_metascore():
+    row = {"model_used": "seed-1_sample-0", "interface_LIS": .3, "confidence_score": .9}
+    assert interface_meta_score({**row, "global_confidence_scope": "scored_residues"}) == interface_meta_score(row)
+    assert interface_meta_score(row) != interface_meta_score({"model_used": row["model_used"], "interface_LIS": .3})
+
+
+def test_cached_scores_without_scope_metadata_are_recomputed(tmp_path, monkeypatch):
+    from alphajudge import runner
+    stale = tmp_path / "interfaces.csv"
+    stale.write_text("jobs,interface_ccc,interface_expected_contacts\nold,1,2\n")
+    calls = []
+
+    def recompute(directory, *args, **kwargs):
+        calls.append(directory)
+        stale.write_text(
+            "jobs,interface_ccc,interface_expected_contacts,global_confidence_scope,iptm_scope\n"
+            "new,1,2,includes_excluded_tokens,chain_pair\n"
+        )
+        return stale
+
+    monkeypatch.setattr(runner, "process", recompute)
+    for _ in range(2):
+        _, rows = runner._process_one_run(
+            str(tmp_path), contact_thresh=8., pae_filter=100., models_to_analyse="best",
+            summary_csv="summary.csv", ipsae_pae_cutoff=10., force_recompute=False,
+            per_run_csv_name="interfaces.csv", skip_pae_png=True, skip_biophysical_scores=True,
+        )
+        assert rows[0]["jobs"] == "new"
+    assert calls == [str(tmp_path)]

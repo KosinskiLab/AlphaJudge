@@ -41,6 +41,7 @@ from .meta_score import (
     META_SCORE_FEATURES,
     calibrated_feature_percentile,
     interface_meta_score,
+    feature_is_comparable,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,6 +207,9 @@ def _row_meta_score(row: Mapping[str, Any]) -> float | None:
     computed = interface_meta_score(row)
     if isinstance(computed, float) and math.isfinite(computed):
         return computed
+    if row.get("global_confidence_scope") == "includes_excluded_tokens":
+        # A stale precomputed value may include the global scores just excluded.
+        return None
     return _safe_float(row.get("interface_meta_score"))
 
 
@@ -216,7 +220,7 @@ def _feature_view(row: Mapping[str, Any]) -> "OrderedDict[str, tuple[float | Non
         raw = _safe_float(row.get(feat))
         pct = (
             calibrated_feature_percentile(feat, raw, backend)
-            if raw is not None
+            if raw is not None and feature_is_comparable(row, feat)
             else None
         )
         view[feat] = (raw, pct)
@@ -657,7 +661,7 @@ def _metric_rows_for_slider_panel(
                 try:
                     pct = (
                         calibrated_feature_percentile(feat, raw, backend)
-                        if raw is not None
+                        if raw is not None and feature_is_comparable(row, feat)
                         else None
                     )
                 except KeyError:
@@ -1394,6 +1398,13 @@ def _complex_evidence_page(
             include_overall=False,
             groups=[("complex", _COMPLEX_LEVEL_FEATURES)],
         )
+        if row.get("global_confidence_scope") == "includes_excluded_tokens":
+            fig.text(
+                0.5, 0.615,
+                "Global AF confidence includes unscored ligand/other tokens.\n"
+                "Raw values are retained; excluded from percentiles and the metascore.",
+                ha="center", va="center", fontsize=8, color="#666",
+            )
 
     # Bottom half: PAE heatmap, or a small inline note if no PNG was found.
     img_ax = fig.add_axes((0.10, 0.075, 0.80, 0.530))

@@ -68,6 +68,10 @@ class AF3Parser(BaseParser):
             pae, max_pae = self._normalize_pae_af3(matrix, chains, cid)
             contact_probs = self._normalize_contact_probs_af3(matrix, chains, cid)
             plddt = self._plddt(chains, rim)
+            raw_pae = matrix.get("predicted_aligned_error", matrix.get("pae"))
+            global_scope = (
+                "includes_excluded_tokens" if len(raw_pae) > len(pae) else "scored_residues"
+            )
 
             return struct, Confidence(
                 pae_matrix=pae, max_pae=max_pae,
@@ -76,6 +80,7 @@ class AF3Parser(BaseParser):
                 contact_prob_matrix=contact_probs,
                 contact_prob_source="af3_contact_probs" if contact_probs is not None else None,
                 chain_pair_iptm_chain_ids=summary_chain_ids,
+                global_confidence_scope=global_scope,
             )
         return Run(order=order, source="af3", load_model=load_model)
 
