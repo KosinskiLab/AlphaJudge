@@ -151,3 +151,70 @@ def test_slider_rows_show_ccc_after_full_benchmark_calibration():
     # An unknown feature must not raise either.
     rep._metric_rows_for_slider_panel(
         row, include_overall=False, groups=(("af", ("not_a_real_feature",)),))
+
+
+@pytest.fixture
+def drawn_text(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every string the report draws, in order."""
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
+
+    seen: list[str] = []
+    for cls in (Axes, Figure):
+        def record(self, x, y, s, *args, _original=cls.text, **kwargs):
+            seen.append(str(s))
+            return _original(self, x, y, s, *args, **kwargs)
+
+        monkeypatch.setattr(cls, "text", record)
+    return seen
+
+
+def test_find_pae_png_tolerates_empty_and_glob_special_model_names(tmp_path: Path) -> None:
+    from alphajudge.report import _find_pae_png
+
+    (tmp_path / "other_m1.png").write_bytes(b"")
+    # "[1]" is a character class to glob; the model name must match literally.
+    assert _find_pae_png(tmp_path, "m[1]") is None
+    (tmp_path / "pae_m[1].png").write_bytes(b"")
+    assert _find_pae_png(tmp_path, "m[1]") == tmp_path / "pae_m[1].png"
+
+    # An empty model name used to raise ValueError ("**" glob) on Python < 3.13.
+    assert _find_pae_png(tmp_path, "") is None
+    fallback = tmp_path / "job_PAE_plot_ranked_0.png"
+    fallback.write_bytes(b"")
+    assert _find_pae_png(tmp_path, "") == fallback
+
+
+def test_per_run_report_text_counts_features_and_numbers_appendices(
+    tmp_path: Path, drawn_text: list[str]
+) -> None:
+    from alphajudge.meta_score import META_SCORE_FEATURES
+
+    rows = [
+        dict(_BASE_ROW),
+        {**_BASE_ROW, "interface": "A_C", "interface_LIS": "0.10"},
+        {**_BASE_ROW, "model_used": "model_2_multimer_v3_pred_0", "interface_LIS": "0.05",
+         "iptm": "0.20"},
+    ]
+    _write_csv(tmp_path / "interfaces.csv", rows)
+    assert generate_per_run_report(tmp_path) is not None
+
+    assert any(f"across the {len(META_SCORE_FEATURES)} metascore features" in t for t in drawn_text)
+    assert "A.1" in drawn_text
+    assert "Appendix – model model_2_multimer_v3_pred_0" in drawn_text
+
+
+def test_aggregate_cover_median_averages_the_middle_pair(tmp_path: Path, drawn_text: list[str]) -> None:
+    from alphajudge import report as rep
+
+    rows = [
+        {**_BASE_ROW, "jobs": f"JOB_{k}", "interface_LIS": lis}
+        for k, lis in enumerate(("0.05", "0.30", "0.55", "0.75"))
+    ]
+    summary = tmp_path / "summary.csv"
+    _write_csv(summary, rows)
+    assert generate_aggregate_report(summary, out_pdf=tmp_path / "agg.pdf") is not None
+
+    scores = sorted(rep._row_meta_score(r) for r in rows)
+    median = (scores[1] + scores[2]) / 2
+    assert f"median   = {median:.3f}" in drawn_text
