@@ -362,22 +362,3 @@ class AF3Parser(BaseParser):
         if (index < 0).any():
             return unmappable
         return _ResidueTokens(total, len(ids), index)
-
-    @staticmethod
-    def _residue_token(residue, token_indices: list[int]) -> int | None:
-        """The token carrying a scored residue's PAE row, or None if ambiguous.
-
-        AF3 gives a standard residue one token centred on CA (protein) or C1'
-        (nucleic acid), but a modified residue one token per atom, in the
-        residue's atom order. Take the per-atom token of that same centre atom,
-        and only when the tokens and the residue's atoms correspond one to one.
-        """
-        if len(token_indices) == 1:
-            return token_indices[0]
-        atom_names = [atom.get_id() for atom in residue]
-        if len(token_indices) != len(atom_names):
-            return None
-        for centre in ("CA", "C1'"):
-            if centre in atom_names:
-                return token_indices[atom_names.index(centre)]
-        return None
