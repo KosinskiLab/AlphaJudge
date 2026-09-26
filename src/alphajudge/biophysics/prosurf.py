@@ -112,7 +112,10 @@ class _PisaInterfaceResult:
     atom_int_sas2: tuple[float, ...]
 
 
+# Area, H-bonds, salt bridges and solvation energy of one interface all need
+# the same ProSurf result, and are computed back to back.
 _PISA_INTERFACE_CACHE: dict[tuple, _PisaInterfaceResult] = {}
+_PISA_INTERFACE_CACHE_SIZE = 4
 
 
 def _residue_fingerprint(residue) -> tuple:
@@ -124,13 +127,19 @@ def _residue_fingerprint(residue) -> tuple:
     return (residue.full_id, (float(coord[0]), float(coord[1]), float(coord[2])))
 
 
-def _interface_cache_key(residues1, residues2, probe_radius: float, code_no: int) -> tuple:
+def _side_signature(residues) -> tuple:
+    """Everything ProSurf reads from one side: residue and atom identities and all coordinates."""
     return (
-        tuple(_residue_fingerprint(residue) for residue in residues1),
-        tuple(_residue_fingerprint(residue) for residue in residues2),
-        float(probe_radius),
-        int(code_no),
+        tuple(
+            (residue.full_id, residue.get_resname(), tuple((a.get_id(), a.element) for a in residue))
+            for residue in residues
+        ),
+        np.asarray([a.coord for residue in residues for a in residue], dtype=float).tobytes(),
     )
+
+
+def _interface_cache_key(residues1, residues2, probe_radius: float, code_no: int) -> tuple:
+    return (_side_signature(residues1), _side_signature(residues2), float(probe_radius), int(code_no))
 
 
 def _pisa_interface_result(
@@ -170,8 +179,8 @@ def _pisa_interface_result(
             tuple(atoms1), sas1, int_sas1,
             tuple(atoms2), sas2, int_sas2,
         )
-    if len(_PISA_INTERFACE_CACHE) > 32:
-        _PISA_INTERFACE_CACHE.clear()
+    while len(_PISA_INTERFACE_CACHE) >= _PISA_INTERFACE_CACHE_SIZE:
+        del _PISA_INTERFACE_CACHE[next(iter(_PISA_INTERFACE_CACHE))]
     _PISA_INTERFACE_CACHE[key] = result
     return result
 
