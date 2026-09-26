@@ -74,3 +74,26 @@ END
     )
 
     assert buried_surface_area(residues_a, residues_b) > 0.0
+
+
+def test_interface_cache_distinguishes_models_with_identical_backbone_starts():
+    """Two models of a chain pair whose residues start at the same N atoms are
+    still different structures; the cached ProSurf result must not be reused."""
+    import copy
+
+    from Bio.PDB import PDBParser
+
+    from alphajudge.biophysics import buried_surface_area
+
+    path = "test_data/af2/pos_dimers/Q9BUL8+Q13033/ranked_0.pdb"
+    structure = PDBParser(QUIET=True).get_structure("complex", path)
+    moved = copy.deepcopy(structure)
+    chain1, chain2 = (chain.id for chain in structure[0])
+    for residue in moved[0][chain2]:
+        for atom in list(residue)[1:]:  # keep each residue's first atom in place
+            atom.coord = atom.coord + 50.0
+
+    original = buried_surface_area(list(structure[0][chain1]), list(structure[0][chain2]))
+    shifted = buried_surface_area(list(moved[0][chain1]), list(moved[0][chain2]))
+    assert original > 100.0
+    assert shifted < original

@@ -41,8 +41,9 @@ def test_pisa_area_and_bond_counts_against_ccp4_reference(reference: dict):
     pisa = reference["pisa"]
 
     assert buried_surface_area(residues1, residues2) == pytest.approx(pisa["area"], abs=0.1)
+    # PISA reports int_solv_en to three decimals.
     assert interface_solvation_energy(residues1, residues2) == pytest.approx(
-        pisa["int_solv_en"], abs=1.2
+        pisa["int_solv_en"], abs=1e-3
     )
     assert salt_bridges(residues1, residues2) == pisa["sb"]
     assert disulfide_bonds(residues1, residues2) == pisa["ss"]

@@ -7,11 +7,17 @@ import re
 from typing import Any
 
 import numpy as np
+from Bio.PDB.Polypeptide import is_aa
 
 from . import BaseParser, Run
 from ..confidence import Confidence
+from ..geometry import is_pae_token_residue
 
 logger = logging.getLogger(__name__)
+
+# Residue names Boltz-2 tokenizes as one token; every other residue gets one
+# token per atom (besides the 20 standard amino acids).
+_BOLTZ_STANDARD_NON_AA = frozenset({"UNK", "A", "C", "G", "U", "N", "DA", "DC", "DG", "DT", "DN"})
 
 
 @dataclass(frozen=True)
@@ -44,14 +50,30 @@ class Boltz2Parser(BaseParser):
             chains, rim, cid = self._maps(struct)
 
             summary = self._read_json(entry.confidence_file)
-            pae, max_pae = self._load_pae(entry.pae_file, chains, cid)
-            plddt = self._load_plddt(entry.plddt_file, rim) or self._plddt(chains, rim)
+            token_count, token_index = self._residue_tokens(chains, cid)
+            pae, max_pae = self._load_pae(entry.pae_file, len(rim), token_count, token_index)
+            plddt = (
+                self._load_plddt(entry.plddt_file, len(rim), token_count, token_index)
+                or self._plddt(chains, rim)
+            )
 
             iptm = self._safe_float(summary.get("iptm"))
             ptm = self._safe_float(summary.get("ptm"))
             confidence_score = self._safe_float(summary.get("confidence_score"))
             iptm_ptm = 0.8 * iptm + 0.2 * ptm if (iptm is not None and ptm is not None) else None
+            # Boltz-2 indexes pair_chains_iptm by chain in structure order,
+            # ligand chains included.
+            chain_ids = [str(c.id) for c in chains]
             chain_pair_iptm = self._chain_pair_matrix(summary.get("pair_chains_iptm"))
+            if chain_pair_iptm is not None and (
+                len(chain_pair_iptm) != len(chain_ids)
+                or any(len(row) != len(chain_ids) for row in chain_pair_iptm)
+            ):
+                logger.warning(
+                    "Boltz-2 pair_chains_iptm dimensions do not match the structure's "
+                    "chains; skipping pair ipTM."
+                )
+                chain_pair_iptm = None
 
             return struct, Confidence(
                 pae_matrix=pae,
@@ -62,6 +84,7 @@ class Boltz2Parser(BaseParser):
                 confidence_score=confidence_score,
                 plddt_residue=plddt,
                 chain_pair_iptm=chain_pair_iptm,
+                chain_pair_iptm_chain_ids=chain_ids,
             )
 
         return Run(order=order, source="boltz2", load_model=load_model)
@@ -111,8 +134,35 @@ class Boltz2Parser(BaseParser):
             return None
 
     @classmethod
-    def _load_pae(cls, pae_file: Path | None, chains, cid) -> tuple[np.ndarray, float]:
-        total = sum(len(cid[c.id]) for c in chains)
+    def _residue_tokens(cls, chains, cid) -> tuple[int, np.ndarray | None]:
+        """Boltz-2 token count and the token of each scored residue, in cid order.
+
+        Rebuilt from the structure: Boltz-2 gives a standard residue one token
+        and any other residue (ligands, modified residues) one token per atom,
+        chain by chain in structure order. The index is None when a scored
+        residue's token is ambiguous.
+        """
+        index = np.full(sum(len(cid[c.id]) for c in chains), -1, dtype=int)
+        token = 0
+        for chain in chains:
+            scored = iter(cid[chain.id])
+            for residue in chain:
+                standard = is_aa(residue, standard=True) or (
+                    residue.get_resname().strip().upper() in _BOLTZ_STANDARD_NON_AA
+                )
+                n_tokens = 1 if standard else len(residue)
+                if is_pae_token_residue(residue):
+                    residue_token = cls._residue_token(residue, list(range(token, token + n_tokens)))
+                    if residue_token is None:
+                        return token, None
+                    index[next(scored)] = residue_token
+                token += n_tokens
+        return token, index
+
+    @classmethod
+    def _load_pae(
+        cls, pae_file: Path | None, total: int, token_count: int, token_index: np.ndarray | None
+    ) -> tuple[np.ndarray, float]:
         pae = np.full((total, total), 100.0, dtype=float)
         if pae_file is None:
             return pae, 100.0
@@ -121,11 +171,16 @@ class Boltz2Parser(BaseParser):
         if matrix is None or not matrix.size:
             return pae, 100.0
 
-        max_pae = float(np.nanmax(matrix))
+        if token_index is not None and matrix.shape == (token_count, token_count):
+            selected = matrix[np.ix_(token_index, token_index)]
+            return selected, float(np.nanmax(selected)) if selected.size else 100.0
         if matrix.shape == pae.shape:
-            return matrix, max_pae
-
+            return matrix, float(np.nanmax(matrix))
         if matrix.ndim == 2 and matrix.shape[0] >= total and matrix.shape[1] >= total:
+            logger.warning(
+                f"Cannot map Boltz-2 PAE shape {matrix.shape} to the structure's tokens; "
+                f"using its leading {total}x{total} block."
+            )
             trimmed = matrix[:total, :total]
             return trimmed, float(np.nanmax(trimmed)) if trimmed.size else 100.0
 
@@ -133,25 +188,27 @@ class Boltz2Parser(BaseParser):
             f"Boltz-2 PAE shape {matrix.shape} != expected {pae.shape}; "
             "using default PAE=100 for all residue pairs."
         )
-        return pae, max_pae
+        return pae, float(np.nanmax(matrix))
 
     @classmethod
-    def _load_plddt(cls, plddt_file: Path | None, rim: dict[tuple[str, Any], int]) -> list[float] | None:
+    def _load_plddt(
+        cls, plddt_file: Path | None, total: int, token_count: int, token_index: np.ndarray | None
+    ) -> list[float] | None:
         if plddt_file is None:
             return None
         values = cls._load_npz_array(plddt_file, "plddt")
         if values is None:
             return None
         flat = values.ravel()
-        if flat.size != len(rim):
-            if flat.size > len(rim):
-                return [float(v) for v in flat[:len(rim)]]
+        if token_index is not None and flat.size == token_count:
+            return [float(v) for v in flat[token_index]]
+        if flat.size < total:
             logger.warning(
-                f"Boltz-2 pLDDT length {flat.size} != expected {len(rim)}; "
+                f"Boltz-2 pLDDT length {flat.size} != expected {total}; "
                 "using structure B-factors instead."
             )
             return None
-        return [float(v) for v in flat]
+        return [float(v) for v in flat[:total]]
 
     @staticmethod
     def _chain_pair_matrix(raw: Any) -> list[list[float]] | None:
