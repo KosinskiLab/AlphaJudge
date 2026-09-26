@@ -199,26 +199,36 @@ def _side_interface_area(own, other, code_points, code_areas):
     Each side is (coords, probe-extended radii, atoms). Returns the area, the
     fingerprints of residues with interface area, and per-atom SAS and
     interface SAS.
+
+    Like ProSurf, SAS is computed for every atom of a residue that has any atom
+    near the other side, not only for the atoms that are: the solvation energy
+    types charged groups by comparing SAS between sibling atoms of a residue.
+    Residues wholly away from the interface keep SAS 0; their contribution is
+    the same in the free and bound states and cancels.
     """
     own_coords, own_radii, own_atoms = own
     other_coords, other_radii, _ = other
     own_tree, other_tree = cKDTree(own_coords), cKDTree(other_coords)
     own_max_radius, other_max_radius = float(np.max(own_radii)), float(np.max(other_radii))
+    other_neighbours = [
+        other_tree.query_ball_point(coord, float(ri) + other_max_radius)
+        for coord, ri in zip(own_coords, own_radii)
+    ]
+    near_residues = {id(atom.get_parent()) for atom, nbrs in zip(own_atoms, other_neighbours) if nbrs}
 
     area = 0.0
     interface_residue_keys: set[tuple] = set()
     atom_sas = [0.0] * len(own_coords)
     atom_int_sas = [0.0] * len(own_coords)
     for i, coord in enumerate(own_coords):
-        ri = float(own_radii[i])
-        other_neighbours = other_tree.query_ball_point(coord, ri + other_max_radius)
-        if not other_neighbours:
+        if id(own_atoms[i].get_parent()) not in near_residues:
             continue
+        ri = float(own_radii[i])
         own_neighbours = own_tree.query_ball_point(coord, ri + own_max_radius)
         own_mask = _uncovered_code_points(coord, ri, code_points, own_coords, own_radii, own_neighbours, skip=i)
         if not own_mask.any():
             continue
-        other_mask = _uncovered_code_points(coord, ri, code_points, other_coords, other_radii, other_neighbours)
+        other_mask = _uncovered_code_points(coord, ri, code_points, other_coords, other_radii, other_neighbours[i])
 
         atom_sas[i] = float(np.sum(code_areas[own_mask]) * ri * ri)
         atom_int_sas[i] = float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
