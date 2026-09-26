@@ -94,13 +94,6 @@ class Boltz2Parser(BaseParser):
         return sorted(entries, key=lambda entry: (entry.rank, entry.name))
 
     @staticmethod
-    def _first_existing(paths: list[Path]) -> Path | None:
-        for path in paths:
-            if path.exists():
-                return path
-        return None
-
-    @staticmethod
     def _rank_from_model_name(model_name: str) -> int:
         match = re.search(r"_model_(\d+)$", model_name)
         if match is None:

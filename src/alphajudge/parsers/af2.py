@@ -1,7 +1,5 @@
 from __future__ import annotations
-import gzip
 import logging
-import lzma
 import pickle
 from pathlib import Path
 import numpy as np
@@ -43,17 +41,14 @@ class AF2Parser(BaseParser):
                 iptm_ptm = self._safe_float(rj["iptm+ptm"].get(model))
                 # Backfill when PTM is not provided in AF2 multimer JSON
                 if ptm is None and (iptm_ptm is not None) and (iptm is not None):
-                    try:
-                        ptm = (iptm_ptm - 0.8 * iptm) / 0.2
-                    except Exception:
-                        ptm = None
+                    ptm = (iptm_ptm - 0.8 * iptm) / 0.2
                 # If iptm+ptm itself is missing but both iptm and ptm exist, derive it
                 if iptm_ptm is None and (iptm is not None) and (ptm is not None):
                     iptm_ptm = 0.8 * iptm + 0.2 * ptm
                 conf = iptm_ptm
             else:
                 iptm, ptm = 0.0, self._safe_float(rj["ptm"][model])
-                iptm_ptm = ptm; conf = ptm
+                iptm_ptm = conf = ptm
 
             plddt = self._plddt(chains, rim)
             return struct, Confidence(
@@ -78,7 +73,8 @@ class AF2Parser(BaseParser):
             return None
 
         try:
-            payload = cls._read_pickle(result_pkl)
+            with cls._open_maybe_compressed(result_pkl, "rb") as f:
+                payload = pickle.load(f)
         except Exception as e:
             logger.warning(f"could not read AF2 result pickle {result_pkl}: {e}")
             return None
@@ -125,36 +121,17 @@ class AF2Parser(BaseParser):
 
         return contact_probs
 
-    @staticmethod
-    def _find_result_pkl(d: Path, model: str) -> Path | None:
-        suffixes = ("", ".gz", ".xz")
+    @classmethod
+    def _find_result_pkl(cls, d: Path, model: str) -> Path | None:
         stems = [
             d / f"result_{model}.pkl",
             d / model / "result.pkl",
             d / model / f"result_{model}.pkl",
         ]
-        candidates: list[Path] = []
-        for stem in stems:
-            candidates.extend(stem.with_name(stem.name + suffix) for suffix in suffixes)
+        candidates = [
+            stem.with_name(stem.name + suffix) for stem in stems for suffix in ("", ".gz", ".xz")
+        ]
         candidates.extend(sorted(d.glob(f"result*{model}*.pkl*")))
-        candidates.extend(sorted((d / model).glob("result*.pkl*")) if (d / model).is_dir() else [])
-
-        seen: set[Path] = set()
-        for candidate in candidates:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            if candidate.exists():
-                return candidate
-        return None
-
-    @staticmethod
-    def _read_pickle(path: Path):
-        if path.suffix == ".gz":
-            with gzip.open(path, "rb") as f:
-                return pickle.load(f)
-        if path.suffix == ".xz":
-            with lzma.open(path, "rb") as f:
-                return pickle.load(f)
-        with path.open("rb") as f:
-            return pickle.load(f)
+        if (d / model).is_dir():
+            candidates.extend(sorted((d / model).glob("result*.pkl*")))
+        return cls._first_existing(candidates)
