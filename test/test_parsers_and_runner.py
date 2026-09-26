@@ -4,6 +4,7 @@ import csv
 import gzip
 import json
 import logging
+import lzma
 import math
 import pickle
 import shutil
@@ -14,7 +15,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from alphajudge.parsers import pick_parser
+from alphajudge.parsers import BaseParser, pick_parser
 from alphajudge.parsers.af2 import AF2Parser
 from alphajudge.parsers.af3 import AF3Parser
 from alphajudge.contact_probs import contact_probs_from_distogram
@@ -1076,12 +1077,6 @@ def test_cli_recursive_single_directory_root(tmp_path: Path, af2_dir_src: Path):
 # Compressed-confidences reading (AlphaPulldown slim/minimal storage modes)
 # -------------------------
 
-import gzip
-import lzma
-
-from alphajudge.parsers import BaseParser
-
-
 def test_read_json_reads_plain_xz_and_gz(tmp_path):
     payload = {"a": 1, "pae": [[0.0, 1.0], [1.0, 0.0]]}
     plain = tmp_path / "confidences.json"
@@ -1272,3 +1267,34 @@ def test_confident_contacts_boundary_convention_is_selectable():
     rep = ContactGeometry.REPRESENTATIVE_ATOM
     assert iface.confident_contacts(geometry=rep) == 0                  # strict
     assert iface.confident_contacts(geometry=rep, inclusive=True) == 1  # inclusive
+
+
+# -------------------------
+# AF3 model discovery and ranking
+# -------------------------
+
+def test_af3_ranking_order_puts_missing_scores_last(tmp_path):
+    ranking = tmp_path / "ranking_scores.csv"
+    ranking.write_text(
+        "seed,sample,ranking_score\n"
+        "1,0,\n1,1,0.4\n1,2,nan\n1,3,0.9\n1,4,0.6\n"
+    )
+    order, scores = AF3Parser._read_csv_order(ranking)
+    assert order[:3] == ["seed-1_sample-3", "seed-1_sample-4", "seed-1_sample-1"]
+    assert set(order[3:]) == {"seed-1_sample-0", "seed-1_sample-2"}
+    assert scores == {"seed-1_sample-3": 0.9, "seed-1_sample-4": 0.6, "seed-1_sample-1": 0.4}
+
+
+def test_af3_flat_layout_does_not_confuse_sample_1_with_sample_10(tmp_path):
+    for sample in (1, 10):
+        (tmp_path / f"job_seed-1_sample-{sample}_model.cif").write_text("")
+    found = AF3Parser._guess_af3_struct(tmp_path, "seed-1_sample-1", None, False)
+    assert Path(found).name == "job_seed-1_sample-1_model.cif"
+
+
+def test_best_model_run_without_ranked_models_writes_explained_empty_csv(tmp_path, caplog):
+    (tmp_path / "ranking_scores.csv").write_text("seed,sample,ranking_score\n")
+    caplog.set_level(logging.WARNING, logger="alphajudge.runner")
+    out = process(str(tmp_path), 8.0, 100.0, "best", skip_pae_png=True, skip_biophysical_scores=True)
+    assert out.read_text() == ""
+    assert "no model could be loaded" in caplog.text
