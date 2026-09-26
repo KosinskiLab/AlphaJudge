@@ -33,57 +33,40 @@ def _atom_is_hydrogen_candidate(resname: str, atom_name: str) -> bool:
     return _srs_hb_type(resname, atom_name) == "H"
 
 
-def _select_coords(residues, predicate) -> np.ndarray:
-    """Coords of atoms in `residues` matching predicate(resname, atom_name)."""
-    out = []
-    for r in residues:
-        rn = r.get_resname().strip().upper()
-        for a in r:
-            if predicate(rn, a.id.strip().upper()):
-                out.append(a.coord)
-    return np.asarray(out, dtype=float) if out else np.empty((0, 3))
+_AtomKey = tuple[str, str, str, str]
+_PairKey = tuple[_AtomKey, _AtomKey]
 
 
-def _select_atom_coords(residues, predicate) -> tuple[list, np.ndarray]:
-    atoms = []
-    coords = []
-    for r in residues:
-        rn = r.get_resname().strip().upper()
-        for a in r:
-            if predicate(rn, a.id.strip().upper()):
-                atoms.append(a)
-                coords.append(a.coord)
-    arr = np.asarray(coords, dtype=float) if coords else np.empty((0, 3))
-    return atoms, arr
+def _select_atoms(residues, predicate) -> tuple[list, np.ndarray]:
+    """Atoms of ``residues`` matching predicate(resname, atom_name), with their coords."""
+    atoms = [
+        a
+        for r in residues
+        for a in r
+        if predicate(r.get_resname().strip().upper(), a.id.strip().upper())
+    ]
+    coords = np.asarray([a.coord for a in atoms], dtype=float) if atoms else np.empty((0, 3))
+    return atoms, coords
 
 
-def _count_pairs_within(pts_a: np.ndarray, pts_b: np.ndarray, dmin: float, dmax: float) -> int:
-    if len(pts_a) == 0 or len(pts_b) == 0:
-        return 0
-    tree = cKDTree(pts_b)
-    cnt = 0
-    for c in pts_a:
-        for j in tree.query_ball_point(c, dmax):
-            d = float(np.linalg.norm(c - pts_b[j]))
-            if dmin <= d <= dmax:
-                cnt += 1
-    return cnt
+def _contacts(atoms_a, coords_a, atoms_b, coords_b, dmin: float, dmax: float):
+    """Yield (atom_a, atom_b) pairs whose distance lies in [dmin, dmax]."""
+    if len(coords_a) == 0 or len(coords_b) == 0:
+        return
+    tree = cKDTree(coords_b)
+    for i, coord in enumerate(coords_a):
+        for j in tree.query_ball_point(coord, dmax):
+            if dmin <= float(np.linalg.norm(coord - coords_b[j])) <= dmax:
+                yield atoms_a[i], atoms_b[j]
 
 
-def _residue_seqid(residue) -> str:
-    seqid = str(residue.id[1])
-    insertion = residue.id[2].strip()
-    return seqid + insertion if insertion else seqid
-
-
-def _atom_pair_key(atom1, atom2) -> tuple[tuple[str, str, str, str], tuple[str, str, str, str]]:
+def _atom_pair_key(atom1, atom2) -> _PairKey:
     def one(atom):
         residue = atom.get_parent()
-        chain = residue.get_parent()
         return (
-            chain.id,
+            residue.get_parent().id,
             residue.get_resname().strip().upper(),
-            _residue_seqid(residue),
+            f"{residue.id[1]}{residue.id[2].strip()}",
             atom.id.strip().upper(),
         )
 
@@ -130,20 +113,11 @@ def _standard_chain_residues(chain) -> list:
     ]
 
 
-def _is_n_terminus(atom) -> bool:
+def _is_chain_terminus(atom, position: int) -> bool:
+    """Whether the atom's residue is the first (0) or last (-1) standard residue."""
     residue = atom.get_parent()
-    if atom.id.strip().upper() != "N":
-        return False
     residues = _standard_chain_residues(residue.get_parent())
-    return bool(residues) and residues[0] is residue
-
-
-def _is_c_terminus(atom) -> bool:
-    residue = atom.get_parent()
-    if atom.id.strip().upper() not in {"O", "OXT"}:
-        return False
-    residues = _standard_chain_residues(residue.get_parent())
-    return bool(residues) and residues[-1] is residue
+    return bool(residues) and residues[position] is residue
 
 
 def _is_salt_bridge_pair(donor_atom, acceptor_atom) -> bool:
@@ -155,7 +129,7 @@ def _is_salt_bridge_pair(donor_atom, acceptor_atom) -> bool:
     donor_resname = donor_atom.get_parent().get_resname().strip().upper()
     donor_name = donor_atom.id.strip().upper()
     if donor_name == "N":
-        donor_ok = _is_n_terminus(donor_atom)
+        donor_ok = _is_chain_terminus(donor_atom, 0)
     else:
         donor_ok = donor_resname in {"LYS", "ARG", "HIS"}
     if not donor_ok:
@@ -164,7 +138,7 @@ def _is_salt_bridge_pair(donor_atom, acceptor_atom) -> bool:
     acceptor_resname = acceptor_atom.get_parent().get_resname().strip().upper()
     acceptor_name = acceptor_atom.id.strip().upper()
     if acceptor_name in {"O", "OXT"}:
-        return _is_c_terminus(acceptor_atom)
+        return _is_chain_terminus(acceptor_atom, -1)
     return acceptor_resname in {"GLU", "ASP"}
 
 
@@ -208,34 +182,25 @@ def _hydrogen_bond_pairs_for_contact(donor_atom, acceptor_atom) -> list[tuple[ob
     return [(donor_atom, acceptor_atom)]
 
 
-def _donor_acceptor_contacts(residues1, residues2, max_dist: float):
-    donors1, d1 = _select_atom_coords(residues1, _atom_is_donor)
-    acceptors2, a2 = _select_atom_coords(residues2, _atom_is_acceptor)
-    donors2, d2 = _select_atom_coords(residues2, _atom_is_donor)
-    acceptors1, a1 = _select_atom_coords(residues1, _atom_is_acceptor)
-
-    for donor_atoms, donor_coords, acceptor_atoms, acceptor_coords in (
-        (donors1, d1, acceptors2, a2),
-        (donors2, d2, acceptors1, a1),
-    ):
-        if len(donor_coords) == 0 or len(acceptor_coords) == 0:
-            continue
-        tree = cKDTree(acceptor_coords)
-        for i, donor_coord in enumerate(donor_coords):
-            for j in tree.query_ball_point(donor_coord, max_dist):
-                dist = float(np.linalg.norm(donor_coord - acceptor_coords[j]))
-                if HB_MIN_DIST <= dist <= max_dist:
-                    yield donor_atoms[i], acceptor_atoms[j], dist
+def _donor_acceptor_contacts(residues1, residues2, min_dist: float, max_dist: float):
+    """Yield (donor, acceptor) atom pairs across the two sides, in both directions."""
+    for donor_side, acceptor_side in ((residues1, residues2), (residues2, residues1)):
+        yield from _contacts(
+            *_select_atoms(donor_side, _atom_is_donor),
+            *_select_atoms(acceptor_side, _atom_is_acceptor),
+            min_dist,
+            max_dist,
+        )
 
 
-def _salt_bridge_pairs(residues1, residues2) -> set[
-    tuple[tuple[str, str, str, str], tuple[str, str, str, str]]
-]:
-    pairs = set()
-    for donor_atom, acceptor_atom, dist in _donor_acceptor_contacts(residues1, residues2, SB_MAX_DIST):
-        if SB_MIN_DIST <= dist <= SB_MAX_DIST and _is_salt_bridge_pair(donor_atom, acceptor_atom):
-            pairs.add(_atom_pair_key(donor_atom, acceptor_atom))
-    return pairs
+def _salt_bridge_pairs(residues1, residues2) -> set[_PairKey]:
+    return {
+        _atom_pair_key(donor_atom, acceptor_atom)
+        for donor_atom, acceptor_atom in _donor_acceptor_contacts(
+            residues1, residues2, SB_MIN_DIST, SB_MAX_DIST
+        )
+        if _is_salt_bridge_pair(donor_atom, acceptor_atom)
+    }
 
 
 def hydrogen_bonds(residues1, residues2) -> int:
@@ -248,13 +213,12 @@ def hydrogen_bonds(residues1, residues2) -> int:
     """
     residues1, residues2 = _pisa_interface_residues(residues1, residues2)
     salt_pairs = _salt_bridge_pairs(residues1, residues2)
-    pairs: set[tuple[tuple[str, str, str, str], tuple[str, str, str, str]]] = set()
+    pairs: set[_PairKey] = set()
 
-    for donor_atom, acceptor_atom, dist in _donor_acceptor_contacts(residues1, residues2, HB_MAX_DIST):
-        if not (HB_MIN_DIST <= dist <= HB_MAX_DIST):
-            continue
-        pair_key = _atom_pair_key(donor_atom, acceptor_atom)
-        if pair_key in salt_pairs:
+    for donor_atom, acceptor_atom in _donor_acceptor_contacts(
+        residues1, residues2, HB_MIN_DIST, HB_MAX_DIST
+    ):
+        if _atom_pair_key(donor_atom, acceptor_atom) in salt_pairs:
             continue
         for atom1, atom2 in _hydrogen_bond_pairs_for_contact(donor_atom, acceptor_atom):
             pairs.add(_atom_pair_key(atom1, atom2))
@@ -269,10 +233,11 @@ def salt_bridges(residues1, residues2) -> int:
 
 def disulfide_bonds(residues1, residues2) -> int:
     """Count inter-chain Cys SG-Cys SG disulfide bonds."""
-    sg = lambda rn, an: rn == "CYS" and an == "SG"
-    s1 = _select_coords(residues1, sg)
-    s2 = _select_coords(residues2, sg)
-    return _count_pairs_within(s1, s2, 0.0, SS_MAX_DIST)
+    def is_sg(resname: str, atom_name: str) -> bool:
+        return resname == "CYS" and atom_name == "SG"
+
+    pairs = _contacts(*_select_atoms(residues1, is_sg), *_select_atoms(residues2, is_sg), 0.0, SS_MAX_DIST)
+    return sum(1 for _ in pairs)
 
 
 __all__ = ["disulfide_bonds", "hydrogen_bonds", "salt_bridges"]

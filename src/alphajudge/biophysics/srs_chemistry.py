@@ -126,7 +126,7 @@ SRS_ATOM_HB_TYPES = {
         "HG1": "H",
         "HXT": "H",
     },
-    "TRP": {},
+    "TRP": {},  # CCP4 7.1 SRS assigns TRP no hb_type, so PISA never counts its H-bonds
     "TYR": {"N": "D", "O": "A", "OH": "B", "OXT": "A", "H": "H", "H2": "H", "HH": "H", "HXT": "H"},
     "VAL": {"N": "D", "O": "A", "OXT": "A", "H": "H", "H2": "H", "HXT": "H"},
 }

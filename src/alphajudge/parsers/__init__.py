@@ -1,8 +1,9 @@
 from __future__ import annotations
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
-from abc import ABC, abstractmethod
+from typing import Any
 import gzip
 import json
 import lzma
@@ -10,11 +11,13 @@ from Bio.PDB import PDBParser, MMCIFParser
 from ..confidence import Confidence
 from ..geometry import is_pae_token_residue, representative_atom
 
+
 @dataclass
 class Run:
     order: list[str]
     source: str
     load_model: Callable[[str], tuple[Any, Confidence]]
+
 
 class BaseParser(ABC):
     name: str = "base"
@@ -29,8 +32,8 @@ class BaseParser(ABC):
     _MAGIC = ((b"\xfd7zXZ\x00", lzma.open), (b"\x1f\x8b", gzip.open))
 
     @classmethod
-    def _open_maybe_compressed(cls, p: Path):
-        """Open ``p`` for text reading, detecting xz/gz by its magic bytes.
+    def _open_maybe_compressed(cls, p: Path, mode: str = "rt"):
+        """Open ``p`` for reading, detecting xz/gz by its magic bytes.
 
         Compression is identified from the file header rather than the
         extension, so a compressed file is handled regardless of how it is
@@ -40,8 +43,8 @@ class BaseParser(ABC):
             head = fh.read(6)
         for magic, opener in cls._MAGIC:
             if head.startswith(magic):
-                return opener(p, "rt")
-        return p.open("rt")
+                return opener(p, mode)
+        return p.open(mode)
 
     @classmethod
     def _read_json(cls, p: Path) -> dict:
@@ -54,34 +57,35 @@ class BaseParser(ABC):
         the file's magic bytes, not its extension.
         """
         try:
-            target = p
-            if not target.exists():
-                # Plain path absent: try a compressed sibling from slim/minimal.
-                for ext in (".xz", ".gz"):
-                    cp = p.with_name(p.name + ext)
-                    if cp.exists():
-                        target = cp
-                        break
-                else:
-                    return {}
+            # Plain path absent: try a compressed sibling from slim/minimal.
+            target = cls._first_existing(
+                [p, p.with_name(p.name + ".xz"), p.with_name(p.name + ".gz")]
+            )
+            if target is None:
+                return {}
             with cls._open_maybe_compressed(target) as fh:
                 return json.load(fh)
         except Exception:
             return {}
 
     @staticmethod
+    def _first_existing(paths) -> Path | None:
+        return next((p for p in paths if p.exists()), None)
+
+    @staticmethod
     def _load_structure(path: str):
         p = Path(path)
-        parser = MMCIFParser(QUIET=True) if p.suffix.lower()==".cif" else PDBParser(QUIET=True)
+        parser = MMCIFParser(QUIET=True) if p.suffix.lower() == ".cif" else PDBParser(QUIET=True)
         return parser.get_structure("complex", str(p))
 
     @staticmethod
     def _guess_struct(d: Path, model: str) -> str:
-        md = d / model
-        if (md / "model.cif").exists(): return str(md / "model.cif")
-        for ext in ("*.cif","*.pdb"):
-            hits = list(d.glob(f"*{model}*{ext[1:]}"))
-            if hits: return str(hits[0])
+        if (d / model / "model.cif").exists():
+            return str(d / model / "model.cif")
+        for ext in ("cif", "pdb"):
+            hits = list(d.glob(f"*{model}*.{ext}"))
+            if hits:
+                return str(hits[0])
         raise ValueError(f"struct for model {model} not found")
 
     @staticmethod
@@ -125,40 +129,28 @@ class BaseParser(ABC):
 
     @staticmethod
     def _safe_float(x):
-        try: return float(x)
-        except Exception: return None
+        try:
+            return float(x)
+        except Exception:
+            return None
 
 
 class ParserManager:
+    """Registered parsers, tried in registration order."""
+
     def __init__(self):
-        self._order: list[str] = []
         self._parsers: dict[str, BaseParser] = {}
 
     def register(self, parser_cls: type[BaseParser]) -> None:
         inst = parser_cls()
         self._parsers[inst.name] = inst
-        if inst.name not in self._order:
-            self._order.append(inst.name)
-
-    def unregister(self, name: str) -> None:
-        self._parsers.pop(name, None)
-        if name in self._order: self._order.remove(name)
-
-    def enable_only(self, names: list[str]) -> None:
-        self._order = [n for n in names if n in self._parsers]
-
-    def set_precedence(self, names: list[str]) -> None:
-        remaining = [n for n in self._order if n not in names]
-        self._order = [n for n in names if n in self._parsers] + remaining
-
-    def list_parsers(self) -> list[str]:
-        return [n for n in self._order if n in self._parsers]
 
     def pick(self, d: Path) -> BaseParser:
-        for n in self._order:
-            p = self._parsers.get(n)
-            if p and p.detect(d): return p
+        for p in self._parsers.values():
+            if p.detect(d):
+                return p
         raise ValueError("no supported parser detected")
+
 
 manager = ParserManager()
 

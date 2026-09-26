@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 import numpy as np
@@ -56,21 +57,14 @@ def _pisa_radius(atom) -> float:
     return get_radius(resname, atom_name)
 
 
-def _collect_surface_atoms_with_residues(
-    residues: Iterable,
-) -> tuple[np.ndarray, np.ndarray, list, list]:
-    coords, radii, atom_residues, atoms = [], [], [], []
-    for residue in residues:
-        for atom in residue:
-            if _atom_element(atom) == "H":
-                continue
-            coords.append(atom.coord)
-            radii.append(_pisa_radius(atom))
-            atom_residues.append(residue)
-            atoms.append(atom)
-    if not coords:
-        return np.empty((0, 3), dtype=float), np.empty(0, dtype=float), [], []
-    return np.asarray(coords, dtype=float), np.asarray(radii, dtype=float), atom_residues, atoms
+def _collect_surface_atoms(residues: Iterable) -> tuple[np.ndarray, np.ndarray, list]:
+    """Heavy atoms of ``residues`` with their coordinates and PISA radii."""
+    atoms = [atom for residue in residues for atom in residue if _atom_element(atom) != "H"]
+    if not atoms:
+        return np.empty((0, 3), dtype=float), np.empty(0, dtype=float), []
+    coords = np.asarray([atom.coord for atom in atoms], dtype=float)
+    radii = np.asarray([_pisa_radius(atom) for atom in atoms], dtype=float)
+    return coords, radii, atoms
 
 
 def _mround(value: float) -> int:
@@ -87,11 +81,8 @@ def _pisa_spherical_code(code_no: int = PISA_CODE_NO) -> tuple[np.ndarray, np.nd
     points = []
     areas = []
     for i in range(1, code_no + 1):
-        if i == 1:
-            points.append((0.0, 0.0, 1.0))
-            areas.append(2.0 * math.pi * (1.0 - math.cos(dalpha / 2.0)))
-        elif i == code_no:
-            points.append((0.0, 0.0, -1.0))
+        if i in (1, code_no):
+            points.append((0.0, 0.0, 1.0 if i == 1 else -1.0))
             areas.append(2.0 * math.pi * (1.0 - math.cos(dalpha / 2.0)))
         else:
             beta = (i - 1) * dalpha
@@ -163,121 +154,78 @@ def _pisa_interface_result(
     if cached is not None:
         return cached
 
-    coords1, radii1, atom_residues1, atoms1 = _collect_surface_atoms_with_residues(residues1)
-    coords2, radii2, atom_residues2, atoms2 = _collect_surface_atoms_with_residues(residues2)
+    coords1, radii1, atoms1 = _collect_surface_atoms(residues1)
+    coords2, radii2, atoms2 = _collect_surface_atoms(residues2)
     if len(coords1) == 0 or len(coords2) == 0:
+        result = _PisaInterfaceResult(0.0, frozenset(), frozenset(), tuple(atoms1), (), (), tuple(atoms2), (), ())
+    else:
+        code_points, code_areas = _pisa_spherical_code(code_no)
+        side1 = (coords1, radii1 + float(probe_radius), atoms1)
+        side2 = (coords2, radii2 + float(probe_radius), atoms2)
+        area1, keys1, sas1, int_sas1 = _side_interface_area(side1, side2, code_points, code_areas)
+        area2, keys2, sas2, int_sas2 = _side_interface_area(side2, side1, code_points, code_areas)
         result = _PisaInterfaceResult(
-            0.0,
-            frozenset(),
-            frozenset(),
-            tuple(atoms1),
-            tuple(),
-            tuple(),
-            tuple(atoms2),
-            tuple(),
-            tuple(),
+            float((area1 + area2) / 2.0),
+            keys1, keys2,
+            tuple(atoms1), sas1, int_sas1,
+            tuple(atoms2), sas2, int_sas2,
         )
-        _PISA_INTERFACE_CACHE[key] = result
-        return result
-
-    code_points, code_areas = _pisa_spherical_code(code_no)
-    radii1 = radii1 + float(probe_radius)
-    radii2 = radii2 + float(probe_radius)
-
-    tree1 = cKDTree(coords1)
-    tree2 = cKDTree(coords2)
-    max_r1 = float(np.max(radii1))
-    max_r2 = float(np.max(radii2))
-
-    def side_area(
-        own_coords: np.ndarray,
-        own_radii: np.ndarray,
-        own_tree: cKDTree,
-        other_coords: np.ndarray,
-        other_radii: np.ndarray,
-        other_tree: cKDTree,
-        other_max_radius: float,
-        own_atom_residues: list,
-    ) -> tuple[float, frozenset[tuple], tuple[float, ...], tuple[float, ...]]:
-        area = 0.0
-        interface_residue_keys: set[tuple] = set()
-        own_residue_keys = [_residue_fingerprint(residue) for residue in own_atom_residues]
-        own_max_radius = float(np.max(own_radii))
-        atom_sas = [0.0] * len(own_coords)
-        atom_int_sas = [0.0] * len(own_coords)
-        for i, coord in enumerate(own_coords):
-            ri = float(own_radii[i])
-            other_neighbours = other_tree.query_ball_point(coord, ri + other_max_radius)
-            if not other_neighbours:
-                continue
-
-            own_mask = np.ones(len(code_points), dtype=bool)
-            other_mask = np.ones(len(code_points), dtype=bool)
-
-            for j in own_tree.query_ball_point(coord, ri + own_max_radius):
-                if j == i:
-                    continue
-                rj = float(own_radii[j])
-                delta = coord - own_coords[j]
-                if float(np.dot(delta, delta)) > (ri + rj) ** 2:
-                    continue
-                surface_vectors = delta + ri * code_points
-                covered = (
-                    np.einsum("ij,ij->i", surface_vectors, surface_vectors)
-                    <= (rj * rj + 0.00001)
-                )
-                own_mask &= ~covered
-                if not own_mask.any():
-                    break
-
-            if not own_mask.any():
-                continue
-
-            for j in other_neighbours:
-                rj = float(other_radii[j])
-                delta = coord - other_coords[j]
-                if float(np.dot(delta, delta)) > (ri + rj) ** 2:
-                    continue
-                surface_vectors = delta + ri * code_points
-                covered = (
-                    np.einsum("ij,ij->i", surface_vectors, surface_vectors)
-                    <= (rj * rj + 0.00001)
-                )
-                other_mask &= ~covered
-                if not other_mask.any():
-                    break
-
-            atom_surface_area = float(np.sum(code_areas[own_mask]) * ri * ri)
-            atom_interface_area = float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
-            atom_sas[i] = atom_surface_area
-            atom_int_sas[i] = atom_interface_area
-            area += atom_interface_area
-            if atom_interface_area > 0.0:
-                interface_residue_keys.add(own_residue_keys[i])
-        return area, frozenset(interface_residue_keys), tuple(atom_sas), tuple(atom_int_sas)
-
-    int_area1, int_residue_keys1, atom_sas1, atom_int_sas1 = side_area(
-        coords1, radii1, tree1, coords2, radii2, tree2, max_r2, atom_residues1
-    )
-    int_area2, int_residue_keys2, atom_sas2, atom_int_sas2 = side_area(
-        coords2, radii2, tree2, coords1, radii1, tree1, max_r1, atom_residues2
-    )
-
-    result = _PisaInterfaceResult(
-        float((int_area1 + int_area2) / 2.0),
-        int_residue_keys1,
-        int_residue_keys2,
-        tuple(atoms1),
-        atom_sas1,
-        atom_int_sas1,
-        tuple(atoms2),
-        atom_sas2,
-        atom_int_sas2,
-    )
     if len(_PISA_INTERFACE_CACHE) > 32:
         _PISA_INTERFACE_CACHE.clear()
     _PISA_INTERFACE_CACHE[key] = result
     return result
+
+
+def _uncovered_code_points(coord, ri, code_points, coords, radii, neighbours, skip: int = -1) -> np.ndarray:
+    """Mask of the atom's spherical-code points not covered by any neighbour sphere."""
+    mask = np.ones(len(code_points), dtype=bool)
+    for j in neighbours:
+        if j == skip:
+            continue
+        rj = float(radii[j])
+        delta = coord - coords[j]
+        if float(np.dot(delta, delta)) > (ri + rj) ** 2:
+            continue
+        surface_vectors = delta + ri * code_points
+        mask &= ~(np.einsum("ij,ij->i", surface_vectors, surface_vectors) <= (rj * rj + 0.00001))
+        if not mask.any():
+            break
+    return mask
+
+
+def _side_interface_area(own, other, code_points, code_areas):
+    """Interface area of one side: its accessible surface that the other side covers.
+
+    Each side is (coords, probe-extended radii, atoms). Returns the area, the
+    fingerprints of residues with interface area, and per-atom SAS and
+    interface SAS.
+    """
+    own_coords, own_radii, own_atoms = own
+    other_coords, other_radii, _ = other
+    own_tree, other_tree = cKDTree(own_coords), cKDTree(other_coords)
+    own_max_radius, other_max_radius = float(np.max(own_radii)), float(np.max(other_radii))
+
+    area = 0.0
+    interface_residue_keys: set[tuple] = set()
+    atom_sas = [0.0] * len(own_coords)
+    atom_int_sas = [0.0] * len(own_coords)
+    for i, coord in enumerate(own_coords):
+        ri = float(own_radii[i])
+        other_neighbours = other_tree.query_ball_point(coord, ri + other_max_radius)
+        if not other_neighbours:
+            continue
+        own_neighbours = own_tree.query_ball_point(coord, ri + own_max_radius)
+        own_mask = _uncovered_code_points(coord, ri, code_points, own_coords, own_radii, own_neighbours, skip=i)
+        if not own_mask.any():
+            continue
+        other_mask = _uncovered_code_points(coord, ri, code_points, other_coords, other_radii, other_neighbours)
+
+        atom_sas[i] = float(np.sum(code_areas[own_mask]) * ri * ri)
+        atom_int_sas[i] = float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
+        area += atom_int_sas[i]
+        if atom_int_sas[i] > 0.0:
+            interface_residue_keys.add(_residue_fingerprint(own_atoms[i].get_parent()))
+    return area, frozenset(interface_residue_keys), tuple(atom_sas), tuple(atom_int_sas)
 
 
 def _pisa_interface_residues(residues1, residues2) -> tuple[list, list]:
