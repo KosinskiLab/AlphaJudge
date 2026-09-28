@@ -4,6 +4,7 @@ import csv
 import gzip
 import json
 import logging
+import lzma
 import math
 import pickle
 import shutil
@@ -14,7 +15,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from alphajudge.parsers import pick_parser
+from alphajudge.parsers import BaseParser, pick_parser
 from alphajudge.parsers.af2 import AF2Parser
 from alphajudge.parsers.af3 import AF3Parser
 from alphajudge.contact_probs import contact_probs_from_distogram
@@ -33,6 +34,8 @@ EXPECTED_OUTPUT_COLUMNS = {
     "iptm",
     "ptm",
     "confidence_score",
+    "global_confidence_scope",
+    "iptm_scope",
     "pDockQ/mpDockQ",
     "average_interface_pae",
     "interface_average_plddt",
@@ -66,6 +69,8 @@ EXPECTED_NUMERIC_COLUMNS = EXPECTED_OUTPUT_COLUMNS - {
     "model_used",
     "interface",
     "interface_contact_prob_source",
+    "global_confidence_scope",
+    "iptm_scope",
 }
 
 
@@ -572,7 +577,7 @@ def test_af3_job_prefix_from_ranking_file_handles_plain_prefixed_and_weird():
     )
 
 
-def test_af3_pae_shape_warns_but_unknown_schema_raises(caplog: pytest.LogCaptureFixture):
+def test_af3_pae_shape_mismatch_and_unknown_schema_raise():
     class Chain:
         def __init__(self, chain_id: str):
             self.id = chain_id
@@ -580,19 +585,12 @@ def test_af3_pae_shape_warns_but_unknown_schema_raises(caplog: pytest.LogCapture
     chains = [Chain("A"), Chain("B")]
     cid = {"A": [0], "B": [1]}
 
-    caplog.set_level(logging.WARNING, logger="alphajudge.parsers.af3")
-    pae, max_pae = AF3Parser._normalize_pae_af3(
-        {"predicted_aligned_error": [[3.0]], "max_predicted_aligned_error": 3.0},
-        chains,
-        cid,
-    )
-
-    assert pae.shape == (2, 2)
-    assert np.all(pae == 100.0)
-    assert max_pae == 3.0
-    assert "predicted_aligned_error shape" in caplog.text
-
-    caplog.clear()
+    with pytest.raises(ValueError, match="Cannot align AF3 PAE"):
+        AF3Parser._normalize_pae_af3(
+            {"predicted_aligned_error": [[3.0]], "max_predicted_aligned_error": 3.0},
+            chains,
+            cid,
+        )
     with pytest.raises(ValueError, match="unknown AF3 confidences schema"):
         AF3Parser._normalize_pae_af3({"unexpected_schema": True}, chains, cid)
 
@@ -674,14 +672,12 @@ def test_af3_contact_probs_alignment_uses_token_res_ids_with_extra_tokens():
     residue(chain_b, 1, 3)
 
     token_matrix = np.arange(16, dtype=float).reshape(4, 4)
-    aligned = AF3Parser._align_token_pair_matrix_to_residues(
-        token_matrix,
-        ["A", "A", "A", "B"],
-        [1, 99, 2, 1],
+    residue_tokens = AF3Parser._residue_tokens_af3(
+        {"token_chain_ids": ["A", "A", "A", "B"], "token_res_ids": [1, 99, 2, 1]},
         [chain_a, chain_b],
         {"A": [0, 1], "B": [2]},
-        (3, 3),
     )
+    aligned = residue_tokens.select(token_matrix)
 
     assert aligned is not None
     expected = token_matrix[np.ix_([0, 2, 3], [0, 2, 3])]
@@ -1081,12 +1077,6 @@ def test_cli_recursive_single_directory_root(tmp_path: Path, af2_dir_src: Path):
 # Compressed-confidences reading (AlphaPulldown slim/minimal storage modes)
 # -------------------------
 
-import gzip
-import lzma
-
-from alphajudge.parsers import BaseParser
-
-
 def test_read_json_reads_plain_xz_and_gz(tmp_path):
     payload = {"a": 1, "pae": [[0.0, 1.0], [1.0, 0.0]]}
     plain = tmp_path / "confidences.json"
@@ -1277,3 +1267,35 @@ def test_confident_contacts_boundary_convention_is_selectable():
     rep = ContactGeometry.REPRESENTATIVE_ATOM
     assert iface.confident_contacts(geometry=rep) == 0                  # strict
     assert iface.confident_contacts(geometry=rep, inclusive=True) == 1  # inclusive
+
+
+# -------------------------
+# AF3 model discovery and ranking
+# -------------------------
+
+@pytest.mark.parametrize("invalid_score", ["", "nan", "invalid", "inf", "-inf", "1e309", "-1e309"])
+def test_af3_ranking_order_puts_invalid_scores_last(tmp_path, invalid_score):
+    ranking = tmp_path / "ranking_scores.csv"
+    ranking.write_text(
+        "seed,sample,ranking_score\n"
+        f"1,0,{invalid_score}\n1,1,-0.4\n1,2,nan\n1,3,0.9\n1,4,0.6\n"
+    )
+    order, scores = AF3Parser._read_csv_order(ranking)
+    assert order[:3] == ["seed-1_sample-3", "seed-1_sample-4", "seed-1_sample-1"]
+    assert order[3:] == ["seed-1_sample-0", "seed-1_sample-2"]
+    assert scores == {"seed-1_sample-3": 0.9, "seed-1_sample-4": 0.6, "seed-1_sample-1": -0.4}
+
+
+def test_af3_flat_layout_does_not_confuse_sample_1_with_sample_10(tmp_path):
+    for sample in (1, 10):
+        (tmp_path / f"job_seed-1_sample-{sample}_model.cif").write_text("")
+    found = AF3Parser._guess_af3_struct(tmp_path, "seed-1_sample-1", None, False)
+    assert Path(found).name == "job_seed-1_sample-1_model.cif"
+
+
+def test_best_model_run_without_ranked_models_writes_explained_empty_csv(tmp_path, caplog):
+    (tmp_path / "ranking_scores.csv").write_text("seed,sample,ranking_score\n")
+    caplog.set_level(logging.WARNING, logger="alphajudge.runner")
+    out = process(str(tmp_path), 8.0, 100.0, "best", skip_pae_png=True, skip_biophysical_scores=True)
+    assert out.read_text() == ""
+    assert "no model could be loaded" in caplog.text

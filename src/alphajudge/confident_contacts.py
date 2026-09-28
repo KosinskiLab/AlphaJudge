@@ -54,8 +54,7 @@ from __future__ import annotations
 from enum import Enum
 
 import numpy as np
-
-from .geometry import representative_atom
+from Bio.PDB import NeighborSearch
 
 
 #: Published PAE cutoff, in Angstroms.  A pair counts when its PAE is strictly
@@ -119,8 +118,6 @@ def interactome3d_contact_pairs(chain1, chain2) -> set[tuple[object, object]]:
     directional PAE convention without re-deriving which residue came from
     which chain.
     """
-    from Bio.PDB import NeighborSearch
-
     residues1, residues2 = list(chain1), list(chain2)
     if not residues1 or not residues2:
         return set()
@@ -148,22 +145,6 @@ def interactome3d_contact_pairs(chain1, chain2) -> set[tuple[object, object]]:
             continue
         if _interactome3d_contact(atom1, atom2):
             pairs.add((res1, res2))
-    return pairs
-
-
-def representative_atom_contact_pairs(chain1, chain2, contact_thresh: float):
-    """Unique (chain1, chain2) pairs within ``contact_thresh`` on CB (CA for Gly)."""
-    reps1 = [(res, representative_atom(res)) for res in chain1]
-    reps2 = [(res, representative_atom(res)) for res in chain2]
-    pairs: set[tuple[object, object]] = set()
-    for res1, atom1 in reps1:
-        if atom1 is None:
-            continue
-        for res2, atom2 in reps2:
-            if atom2 is None:
-                continue
-            if float(atom1 - atom2) <= float(contact_thresh):
-                pairs.add((res1, res2))
     return pairs
 
 

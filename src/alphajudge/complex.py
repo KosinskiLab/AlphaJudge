@@ -5,12 +5,11 @@ import math
 from functools import cached_property
 from typing import Any
 
-import numpy as np
-from Bio.PDB import Chain, NeighborSearch
+from Bio.PDB import Chain
 
 from .confidence import Confidence
 from .docking_scores import MPDOCKQ
-from .geometry import is_pae_token_residue, representative_atom
+from .geometry import is_pae_token_residue
 from .interface import Interface
 
 logger = logging.getLogger(__name__)
@@ -37,8 +36,6 @@ class Complex:
         self.ipsae_pae_cutoff = None if ipsae_pae_cutoff is None else float(ipsae_pae_cutoff)
 
         self._res_index_map, self._chain_indices_by_id, self._chains = self._build_maps()
-
-        self._contact_ns_cache: dict[tuple[str, str], tuple[list, list, np.ndarray, np.ndarray]] = {}
 
         self.interfaces: list[Interface] = []
         for i in range(len(self._chains)):
@@ -86,47 +83,21 @@ class Complex:
     def num_chains(self) -> int:
         return len(self._chains)
 
-    @cached_property
-    def average_interface_pae(self) -> float:
-        vals = [
-            i.average_interface_pae for i in self.interfaces
-            if not math.isnan(i.average_interface_pae) and i.average_interface_pae <= self.pae_filter
-        ]
-        return sum(vals) / len(vals) if vals else float(0.0)
+    @property
+    def chain_boundaries(self) -> list[float]:
+        """PAE-matrix positions between consecutive chains (heatmap separators)."""
+        ends = sorted(max(idxs) + 0.5 for idxs in self._chain_indices_by_id.values() if idxs)
+        return ends[:-1]
 
     @cached_property
     def average_interface_plddt(self) -> float:
         vals = [i.average_interface_plddt for i in self.interfaces]
-        return sum(vals) / len(vals) if vals else float(0.0)
+        return sum(vals) / len(vals) if vals else 0.0
 
     @cached_property
     def contact_pairs_global(self) -> int:
-        reps = []
-        for chain in self._chains:
-            for residue in chain:
-                try:
-                    reps.append((representative_atom(residue), residue))
-                except Exception:
-                    continue
-        if not reps:
-            return 0
-
-        ns = NeighborSearch([atom for atom, _ in reps])
-        seen, count = set(), 0
-        for atom1, residue1 in reps:
-            for atom2 in ns.search(atom1.coord, self.contact_thresh):
-                if atom2 is atom1:
-                    continue
-                residue2 = atom2.get_parent()
-                chain1 = residue1.get_parent().id
-                chain2 = residue2.get_parent().id
-                if chain1 == chain2:
-                    continue
-                key = tuple(sorted([(chain1, residue1.id), (chain2, residue2.id)]))
-                if key not in seen:
-                    seen.add(key)
-                    count += 1
-        return count
+        """Inter-chain residue contacts summed over every chain pair."""
+        return sum(i.contact_pairs for i in self.interfaces)
 
     @cached_property
     def mpDockQ(self) -> float:

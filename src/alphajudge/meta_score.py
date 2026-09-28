@@ -5,6 +5,8 @@ from bisect import bisect_right
 from collections.abc import Mapping
 from typing import Any
 
+from .confidence import IPTM_SCOPE_CHAIN_PAIR, SCOPE_INCLUDES_EXCLUDED_TOKENS
+
 META_SCORE_FEATURES = (
     "interface_LIS",
     "interface_ipSAE",
@@ -577,24 +579,16 @@ def calibrated_feature_percentile(
     quantiles = BENCHMARK_QUANTILES_BY_BACKEND.get(backend, {}).get(
         feature, BENCHMARK_QUANTILES[feature]
     )
-    levels = CALIBRATION_LEVELS
-
     if oriented <= quantiles[0]:
-        return levels[0]
+        return CALIBRATION_LEVELS[0]
     if oriented >= quantiles[-1]:
-        return levels[-1]
+        return CALIBRATION_LEVELS[-1]
 
-    lower_idx = bisect_right(quantiles, oriented) - 1
-    lower_idx = max(0, min(lower_idx, len(quantiles) - 2))
-    q0 = quantiles[lower_idx]
-    q1 = quantiles[lower_idx + 1]
-    p0 = levels[lower_idx]
-    p1 = levels[lower_idx + 1]
-
-    if oriented == q0 or q1 <= q0:
-        return p0
-    fraction = (oriented - q0) / (q1 - q0)
-    return p0 + fraction * (p1 - p0)
+    # quantiles[i] <= oriented < quantiles[i + 1], so the bracket is never empty.
+    i = bisect_right(quantiles, oriented) - 1
+    q0, q1 = quantiles[i], quantiles[i + 1]
+    p0, p1 = CALIBRATION_LEVELS[i], CALIBRATION_LEVELS[i + 1]
+    return p0 + (oriented - q0) / (q1 - q0) * (p1 - p0)
 
 
 def infer_backend(row: Mapping[str, Any]) -> str | None:
@@ -612,24 +606,37 @@ def infer_backend(row: Mapping[str, Any]) -> str | None:
     return None
 
 
+def feature_is_comparable(row: Mapping[str, Any], feature: str) -> bool:
+    """Whether the feature has the scope used by the frozen calibration.
+
+    Keep native global confidences in the CSV, but do not calibrate them as
+    polymer-only evidence when AF3 also scored discarded ligand/other tokens.
+    Older rows without scope metadata retain their existing interpretation.
+    """
+    if row.get("global_confidence_scope") != SCOPE_INCLUDES_EXCLUDED_TOKENS:
+        return True
+    if feature in {"confidence_score", "ptm", "iptm_ptm"}:
+        return False
+    return feature != "iptm" or row.get("iptm_scope") == IPTM_SCOPE_CHAIN_PAIR
+
+
 def interface_meta_score(row: Mapping[str, Any]) -> float:
     """
     Transparent rank-style interface metascore.
 
     Each selected AlphaJudge feature is converted to a frozen benchmark
     percentile where higher means stronger interaction evidence. Missing or
-    non-finite inputs are ignored. The final score is the mean percentile.
+    non-finite and scope-incompatible inputs are ignored. The final score is
+    the mean of the remaining percentiles; no AF3x-specific calibration is implied.
     """
-    percentiles = [
-        percentile
-        for feature in META_SCORE_FEATURES
-        if (
-            percentile := calibrated_feature_percentile(
-                feature, row.get(feature), infer_backend(row)
-            )
-        )
-        is not None
-    ]
+    backend = infer_backend(row)
+    percentiles = []
+    for feature in META_SCORE_FEATURES:
+        if not feature_is_comparable(row, feature):
+            continue
+        percentile = calibrated_feature_percentile(feature, row.get(feature), backend)
+        if percentile is not None:
+            percentiles.append(percentile)
     if not percentiles:
         return float("nan")
     return float(sum(percentiles) / len(percentiles))

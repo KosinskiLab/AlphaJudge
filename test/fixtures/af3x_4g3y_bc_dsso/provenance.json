@@ -1,0 +1,37 @@
+{
+  "af3x_commit": "374cb352936e57a27ad43bea7fa191e81d78dc7d",
+  "input_source": "af3x/src/alphafold3/test_data/crosslinks/4G3Y/4g3y_input.json",
+  "input_sha256": "4165a0943457de619e25907d77c5f30640337dd48614effdc484b0ebfd5075e4",
+  "chains": {
+    "B": 226,
+    "C": 158
+  },
+  "crosslinks": [
+    {
+      "name": "DSSO",
+      "residue_pairs": [
+        [
+          [
+            "B",
+            53
+          ],
+          [
+            "C",
+            66
+          ]
+        ]
+      ]
+    }
+  ],
+  "model_seed": 30,
+  "num_recycles": 1,
+  "num_diffusion_samples": 1,
+  "run_data_pipeline": false,
+  "total_tokens": 394,
+  "scored_residues": 384,
+  "source_sha256": {
+    "model.cif": "a2aa7857af980b287c72058dfe22050021716592d439e06f6361b0aea86113ee",
+    "summary_confidences.json": "39afefd0416a978800ccd8c77bc9858f3aa34d49574e7f742522202127f1fdad",
+    "confidences.json": "271457ef85ab6b07e58ee2b906ee64fd11056e59351934f1f516d2c02782ac49"
+  }
+}
