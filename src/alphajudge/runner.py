@@ -90,7 +90,7 @@ def process(
     d = Path(directory)
     parser = pick_parser(d)
     run = parser.parse_run(d)
-    models = [run.order[0]] if models_to_analyse == "best" else run.order
+    models = run.order[:1] if models_to_analyse == "best" else run.order
     job = d.resolve().name
 
     rows: list[dict] = []

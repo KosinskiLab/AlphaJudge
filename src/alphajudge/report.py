@@ -14,8 +14,10 @@ colour bar.
 from __future__ import annotations
 
 import csv
+import glob
 import logging
 import math
+import statistics
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -722,8 +724,8 @@ def _per_interface_page(
     intro_ax = _text_axes(fig, (0.10, 0.83, 0.80, 0.06))
     for y, line in (
         (1.0, "Each row is one chain pair detected by AlphaJudge."),
-        (0.55, "The Meta column is the averaged percentile across the 10 metascore "
-               "features (higher is better)."),
+        (0.55, f"The Meta column is the averaged percentile across the {len(META_SCORE_FEATURES)} "
+               "metascore features (higher is better)."),
     ):
         intro_ax.text(0.0, y, line, fontsize=9, ha="left", va="top", transform=intro_ax.transAxes)
 
@@ -981,7 +983,7 @@ def _aggregate_cover_page(
 
     stats_ax = _text_axes(fig, (0.64, 0.36, 0.26, 0.14))
     if scores:
-        median = sorted(scores)[len(scores) // 2]
+        median = statistics.median(scores)
         mean = sum(scores) / len(scores)
         n_05 = sum(1 for s in scores if s >= 0.5)
         n_07 = sum(1 for s in scores if s >= 0.7)
@@ -1062,12 +1064,15 @@ def _interface_summary_page(
 def _find_pae_png(run_dir: Path, model_used: str) -> Path | None:
     if not run_dir.is_dir():
         return None
-    candidates = [
-        run_dir / f"pae_{model_used}.png",
-        *run_dir.glob(f"*{model_used}*PAE*plot*.png"),
-        *run_dir.glob(f"*{model_used}*.png"),
-        *run_dir.glob("*PAE*plot*ranked_0*.png"),
-    ]
+    candidates = []
+    if model_used:
+        model = glob.escape(model_used)
+        candidates += [
+            run_dir / f"pae_{model_used}.png",
+            *run_dir.glob(f"*{model}*PAE*plot*.png"),
+            *run_dir.glob(f"*{model}*.png"),
+        ]
+    candidates += run_dir.glob("*PAE*plot*ranked_0*.png")
     return next((c for c in candidates if c.is_file()), None)
 
 
@@ -1184,13 +1189,13 @@ def generate_per_run_report(
             complex_label=run_dir.name,
         )
 
-        for m in other_models:
+        for appendix_no, m in enumerate(other_models, start=1):
             m_best = _best_row(by_model[m])
             page_no += 1
             _quality_page(
                 pdf,
                 entry_id=entry_id,
-                section_no=f"A.{m}",
+                section_no=f"A.{appendix_no}",
                 section_title=f"Appendix – model {m}",
                 pre_lines=[
                     f"Interface: {m_best.get('interface', '?')}",

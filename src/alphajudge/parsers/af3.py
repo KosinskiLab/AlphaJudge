@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import csv
 import logging
+import re
 import numpy as np
 from . import BaseParser, Run
 from ..confidence import SCOPE_INCLUDES_EXCLUDED_TOKENS, SCOPE_SCORED_RESIDUES, Confidence
@@ -49,7 +50,6 @@ class AF3Parser(BaseParser):
         job_prefix = self._job_prefix_from_ranking_file(ranking_file)
 
         def load_model(model: str):
-            model_dir = d / model
             is_best_model = bool(order and model == order[0])
             struct = self._load_structure(
                 self._guess_af3_struct(d, model, job_prefix, is_best_model)
@@ -66,7 +66,7 @@ class AF3Parser(BaseParser):
             ) or summary
 
             iptm = self._safe_float(summary.get("iptm"))
-            ptm  = self._safe_float(summary.get("ptm"))
+            ptm = self._safe_float(summary.get("ptm"))
             ranking_score = self._safe_float(summary.get("ranking_score"))
             if ranking_score is None:
                 ranking_score = ranking_scores.get(model)
@@ -130,30 +130,32 @@ class AF3Parser(BaseParser):
 
     @staticmethod
     def _read_csv_order(p: Path) -> tuple[list[str], dict[str, float]]:
+        """Models in a ranking_scores CSV, best first, and their finite scores."""
         with p.open(newline="") as f:
-            rows = [r for r in csv.DictReader(f) if r]
-        def pf(x: str | None) -> float:
-            try: return float(x)  # type: ignore[arg-type]
-            except Exception: return float("nan")
-        rows.sort(key=lambda r: pf(r.get("ranking_score")), reverse=True)
+            rows = list(csv.DictReader(f))
+
+        def score(row: dict) -> float:
+            try:
+                return float(row.get("ranking_score"))
+            except (TypeError, ValueError):
+                return float("nan")
+
+        def rank(row: dict) -> float:
+            # A missing score ranks last; a NaN sort key would scramble the order.
+            value = score(row)
+            return -np.inf if np.isnan(value) else value
+
         order: list[str] = []
         scores: dict[str, float] = {}
-        for r in rows:
+        for r in sorted(rows, key=rank, reverse=True):
             if "seed" not in r or "sample" not in r:
                 continue
             model = f"seed-{r['seed']}_sample-{r['sample']}"
             order.append(model)
-            score = pf(r.get("ranking_score"))
-            if np.isfinite(score):
-                scores[model] = score
+            value = score(r)
+            if np.isfinite(value):
+                scores[model] = value
         return order, scores
-
-    @staticmethod
-    def _find_existing(paths: list[Path]) -> Path | None:
-        for p in paths:
-            if p.exists():
-                return p
-        return None
 
     @classmethod
     def _find_af3_json(
@@ -203,7 +205,7 @@ class AF3Parser(BaseParser):
                         continue
                     candidates.append(hit)
 
-        return cls._find_existing(candidates) or candidates[0]
+        return cls._first_existing(candidates) or candidates[0]
 
     @classmethod
     def _guess_af3_struct(
@@ -214,6 +216,12 @@ class AF3Parser(BaseParser):
         is_best_model: bool,
     ) -> str:
         model_dir = d / model
+        # "seed-1_sample-1" must not pick up "seed-1_sample-10".
+        this_model = re.compile(rf"{re.escape(model)}(?!\d)")
+
+        def model_files(directory: Path, pattern: str) -> list[Path]:
+            return sorted(p for p in directory.glob(pattern) if this_model.search(p.name))
+
         candidates: list[Path] = []
         for ext in ("cif", "pdb"):
             candidates.append(model_dir / f"model.{ext}")
@@ -221,14 +229,14 @@ class AF3Parser(BaseParser):
                 candidates.append(model_dir / f"{job_prefix}_{model}_model.{ext}")
         if model_dir.is_dir():
             for ext in ("cif", "pdb"):
-                candidates.extend(sorted(model_dir.glob(f"*{model}*_model.{ext}")))
+                candidates.extend(model_files(model_dir, f"*{model}*_model.{ext}"))
                 candidates.extend(sorted(model_dir.glob(f"*.{ext}")))
         if job_prefix and is_best_model:
             for ext in ("cif", "pdb"):
                 candidates.append(d / f"{job_prefix}_model.{ext}")
         for ext in ("cif", "pdb"):
-            candidates.extend(sorted(d.glob(f"*{model}*.{ext}")))
-        found = cls._find_existing(candidates)
+            candidates.extend(model_files(d, f"*{model}*.{ext}"))
+        found = cls._first_existing(candidates)
         if found is not None:
             return str(found)
         raise ValueError(f"struct for model {model} not found")
@@ -362,22 +370,3 @@ class AF3Parser(BaseParser):
         if (index < 0).any():
             return unmappable
         return _ResidueTokens(total, len(ids), index)
-
-    @staticmethod
-    def _residue_token(residue, token_indices: list[int]) -> int | None:
-        """The token carrying a scored residue's PAE row, or None if ambiguous.
-
-        AF3 gives a standard residue one token centred on CA (protein) or C1'
-        (nucleic acid), but a modified residue one token per atom, in the
-        residue's atom order. Take the per-atom token of that same centre atom,
-        and only when the tokens and the residue's atoms correspond one to one.
-        """
-        if len(token_indices) == 1:
-            return token_indices[0]
-        atom_names = [atom.get_id() for atom in residue]
-        if len(token_indices) != len(atom_names):
-            return None
-        for centre in ("CA", "C1'"):
-            if centre in atom_names:
-                return token_indices[atom_names.index(centre)]
-        return None

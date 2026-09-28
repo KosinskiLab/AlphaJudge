@@ -34,7 +34,7 @@ class Confidence:
     contact_prob_matrix: np.ndarray | None = None
     contact_prob_source: str | None = None
     # Chain order of chain_pair_iptm as the source wrote it, including
-    # ligand-only chains (recorded by AF3).
+    # ligand-only chains (recorded by the AF3 and Boltz-2 parsers).
     chain_pair_iptm_chain_ids: list[str] | None = None
     # AF3 global scores can include tokens excluded from interface scoring.
     global_confidence_scope: str = SCOPE_UNKNOWN
@@ -44,9 +44,9 @@ class Confidence:
     ) -> float | None:
         """ipTM of one chain pair from ``chain_pair_iptm``, or None if unavailable.
 
-        The matrix is indexed in ``chain_pair_iptm_chain_ids`` order. A parser
-        that does not record the order (Boltz-2, or a Confidence built
-        directly) is taken to index it by ``default_chain_ids``.
+        The matrix is indexed in ``chain_pair_iptm_chain_ids`` order. A
+        Confidence that does not record the order (one built directly) is taken
+        to index it by ``default_chain_ids``.
         """
         matrix = self.chain_pair_iptm
         if matrix is None or not matrix:

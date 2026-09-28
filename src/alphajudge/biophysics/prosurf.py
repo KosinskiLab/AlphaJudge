@@ -112,7 +112,10 @@ class _PisaInterfaceResult:
     atom_int_sas2: tuple[float, ...]
 
 
+# Area, H-bonds, salt bridges and solvation energy of one interface all need
+# the same ProSurf result, and are computed back to back.
 _PISA_INTERFACE_CACHE: dict[tuple, _PisaInterfaceResult] = {}
+_PISA_INTERFACE_CACHE_SIZE = 4
 
 
 def _residue_fingerprint(residue) -> tuple:
@@ -124,13 +127,19 @@ def _residue_fingerprint(residue) -> tuple:
     return (residue.full_id, (float(coord[0]), float(coord[1]), float(coord[2])))
 
 
-def _interface_cache_key(residues1, residues2, probe_radius: float, code_no: int) -> tuple:
+def _side_signature(residues) -> tuple:
+    """Everything ProSurf reads from one side: residue and atom identities and all coordinates."""
     return (
-        tuple(_residue_fingerprint(residue) for residue in residues1),
-        tuple(_residue_fingerprint(residue) for residue in residues2),
-        float(probe_radius),
-        int(code_no),
+        tuple(
+            (residue.full_id, residue.get_resname(), tuple((a.get_id(), a.element) for a in residue))
+            for residue in residues
+        ),
+        np.asarray([a.coord for residue in residues for a in residue], dtype=float).tobytes(),
     )
+
+
+def _interface_cache_key(residues1, residues2, probe_radius: float, code_no: int) -> tuple:
+    return (_side_signature(residues1), _side_signature(residues2), float(probe_radius), int(code_no))
 
 
 def _pisa_interface_result(
@@ -170,8 +179,8 @@ def _pisa_interface_result(
             tuple(atoms1), sas1, int_sas1,
             tuple(atoms2), sas2, int_sas2,
         )
-    if len(_PISA_INTERFACE_CACHE) > 32:
-        _PISA_INTERFACE_CACHE.clear()
+    while len(_PISA_INTERFACE_CACHE) >= _PISA_INTERFACE_CACHE_SIZE:
+        del _PISA_INTERFACE_CACHE[next(iter(_PISA_INTERFACE_CACHE))]
     _PISA_INTERFACE_CACHE[key] = result
     return result
 
@@ -199,26 +208,36 @@ def _side_interface_area(own, other, code_points, code_areas):
     Each side is (coords, probe-extended radii, atoms). Returns the area, the
     fingerprints of residues with interface area, and per-atom SAS and
     interface SAS.
+
+    Like ProSurf, SAS is computed for every atom of a residue that has any atom
+    near the other side, not only for the atoms that are: the solvation energy
+    types charged groups by comparing SAS between sibling atoms of a residue.
+    Residues wholly away from the interface keep SAS 0; their contribution is
+    the same in the free and bound states and cancels.
     """
     own_coords, own_radii, own_atoms = own
     other_coords, other_radii, _ = other
     own_tree, other_tree = cKDTree(own_coords), cKDTree(other_coords)
     own_max_radius, other_max_radius = float(np.max(own_radii)), float(np.max(other_radii))
+    other_neighbours = [
+        other_tree.query_ball_point(coord, float(ri) + other_max_radius)
+        for coord, ri in zip(own_coords, own_radii)
+    ]
+    near_residues = {id(atom.get_parent()) for atom, nbrs in zip(own_atoms, other_neighbours) if nbrs}
 
     area = 0.0
     interface_residue_keys: set[tuple] = set()
     atom_sas = [0.0] * len(own_coords)
     atom_int_sas = [0.0] * len(own_coords)
     for i, coord in enumerate(own_coords):
-        ri = float(own_radii[i])
-        other_neighbours = other_tree.query_ball_point(coord, ri + other_max_radius)
-        if not other_neighbours:
+        if id(own_atoms[i].get_parent()) not in near_residues:
             continue
+        ri = float(own_radii[i])
         own_neighbours = own_tree.query_ball_point(coord, ri + own_max_radius)
         own_mask = _uncovered_code_points(coord, ri, code_points, own_coords, own_radii, own_neighbours, skip=i)
         if not own_mask.any():
             continue
-        other_mask = _uncovered_code_points(coord, ri, code_points, other_coords, other_radii, other_neighbours)
+        other_mask = _uncovered_code_points(coord, ri, code_points, other_coords, other_radii, other_neighbours[i])
 
         atom_sas[i] = float(np.sum(code_areas[own_mask]) * ri * ri)
         atom_int_sas[i] = float(np.sum(code_areas[own_mask & ~other_mask]) * ri * ri)
