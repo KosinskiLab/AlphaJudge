@@ -17,9 +17,9 @@ import shlex
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from Bio.PDB import MMCIFParser, PDBIO, PDBParser
 
@@ -100,26 +100,24 @@ def _text(node: ET.Element, name: str, default: str = "") -> str:
     return found.text.strip()
 
 
-def _parse_bonds(interface: ET.Element, tag: str) -> list[dict[str, str | float]]:
+_BOND_FIELDS = {
+    f"{field}_{side}": f"{tag}-{side}"
+    for side in (1, 2)
+    for field, tag in (("chain", "chain"), ("res", "res"), ("seqnum", "seqnum"), ("atom", "atname"))
+}
+
+
+def _parse_bonds(interface: ET.Element, tag: str) -> tuple[int, list[dict[str, str | float]]]:
+    """Reported bond count and per-bond records of one PISA bond section."""
     section = interface.find(tag)
     if section is None:
-        return []
-    bonds = []
-    for bond in section.findall("bond"):
-        bonds.append(
-            {
-                "chain_1": _text(bond, "chain-1"),
-                "res_1": _text(bond, "res-1"),
-                "seqnum_1": _text(bond, "seqnum-1"),
-                "atom_1": _text(bond, "atname-1"),
-                "chain_2": _text(bond, "chain-2"),
-                "res_2": _text(bond, "res-2"),
-                "seqnum_2": _text(bond, "seqnum-2"),
-                "atom_2": _text(bond, "atname-2"),
-                "dist": float(_text(bond, "dist", "nan")),
-            }
-        )
-    return bonds
+        return 0, []
+    bonds = [
+        {**{key: _text(bond, xml_tag) for key, xml_tag in _BOND_FIELDS.items()},
+         "dist": float(_text(bond, "dist", "nan"))}
+        for bond in section.findall("bond")
+    ]
+    return int(_text(section, "n_bonds", "0")), bonds
 
 
 def _parse_pisa_xml(xml_text: str) -> dict:
@@ -138,17 +136,14 @@ def _parse_pisa_xml(xml_text: str) -> dict:
             "bonds": {"hb": [], "sb": [], "ss": []},
         }
 
-    hb = _parse_bonds(interface, "h-bonds")
-    sb = _parse_bonds(interface, "salt-bridges")
-    ss = _parse_bonds(interface, "ss-bonds")
-    h_section = interface.find("h-bonds")
-    sb_section = interface.find("salt-bridges")
-    ss_section = interface.find("ss-bonds")
+    n_hb, hb = _parse_bonds(interface, "h-bonds")
+    n_sb, sb = _parse_bonds(interface, "salt-bridges")
+    n_ss, ss = _parse_bonds(interface, "ss-bonds")
     return {
         "area": float(_text(interface, "int_area", "0")),
-        "hb": int(_text(h_section if h_section is not None else ET.Element("x"), "n_bonds", "0")),
-        "sb": int(_text(sb_section if sb_section is not None else ET.Element("x"), "n_bonds", "0")),
-        "ss": int(_text(ss_section if ss_section is not None else ET.Element("x"), "n_bonds", "0")),
+        "hb": n_hb,
+        "sb": n_sb,
+        "ss": n_ss,
         "int_solv_en": float(_text(interface, "int_solv_en", "0")),
         "bonds": {"hb": hb, "sb": sb, "ss": ss},
     }
@@ -159,12 +154,11 @@ def _run_pisa(fixture: Fixture, pdb_path: Path, out_dir: Path) -> dict:
     session = f"aj_{digest}"
     work = out_dir / fixture.id
     work.mkdir(parents=True, exist_ok=True)
-    analyse = _run_ccp4(f"pisa {session} -analyse {pdb_path}", cwd=work)
-    (work / "pisa_analyse.log").write_text(analyse.stdout + analyse.stderr)
-    xml_result = _run_ccp4(f"pisa {session} -xml interfaces", cwd=work)
-    xml = xml_result.stdout
-    (work / "pisa_interfaces.xml").write_text(xml)
     try:
+        analyse = _run_ccp4(f"pisa {session} -analyse {pdb_path}", cwd=work)
+        (work / "pisa_analyse.log").write_text(analyse.stdout + analyse.stderr)
+        xml = _run_ccp4(f"pisa {session} -xml interfaces", cwd=work).stdout
+        (work / "pisa_interfaces.xml").write_text(xml)
         listing = _run_ccp4(f"pisa {session} -list interfaces", cwd=work).stdout
         (work / "pisa_interfaces.txt").write_text(listing)
     finally:

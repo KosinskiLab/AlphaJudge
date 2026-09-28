@@ -57,18 +57,14 @@ def symmetrize_contact_probs(matrix) -> tuple[np.ndarray, float]:
     if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
         raise ValueError(f"contact probability matrix must be square, got {arr.shape}")
 
-    finite = np.isfinite(arr) & np.isfinite(arr.T)
-    max_delta = (
-        float(np.max(np.abs(arr[finite] - arr.T[finite]))) if np.any(finite) else 0.0
-    )
+    forward, reverse = np.isfinite(arr), np.isfinite(arr.T)
+    both = forward & reverse
+    max_delta = float(np.max(np.abs(arr[both] - arr.T[both]))) if np.any(both) else 0.0
 
-    both = np.isfinite(arr) & np.isfinite(arr.T)
-    only_forward = np.isfinite(arr) & ~np.isfinite(arr.T)
-    only_reverse = ~np.isfinite(arr) & np.isfinite(arr.T)
     sym = np.full(arr.shape, np.nan, dtype=float)
     sym[both] = 0.5 * (arr[both] + arr.T[both])
-    sym[only_forward] = arr[only_forward]
-    sym[only_reverse] = arr.T[only_reverse]
+    sym[forward & ~reverse] = arr[forward & ~reverse]
+    sym[reverse & ~forward] = arr.T[reverse & ~forward]
     return sym, max_delta
 
 
@@ -80,27 +76,23 @@ def summarize_contact_prob_block(
     top_n: int = 10,
 ) -> tuple[float, float, float]:
     """Return max, top-N mean, and expected contacts for one inter-chain block."""
+    missing = (float("nan"),) * 3
     if matrix is None:
-        nan = float("nan")
-        return nan, nan, nan
+        return missing
 
     idx1_arr = np.asarray(idx1, dtype=int)
     idx2_arr = np.asarray(idx2, dtype=int)
     if idx1_arr.size == 0 or idx2_arr.size == 0:
-        nan = float("nan")
-        return nan, nan, nan
+        return missing
 
-    arr = np.asarray(matrix, dtype=float)
     try:
-        vals = arr[np.ix_(idx1_arr, idx2_arr)].ravel()
-    except Exception:
-        nan = float("nan")
-        return nan, nan, nan
+        vals = np.asarray(matrix, dtype=float)[np.ix_(idx1_arr, idx2_arr)].ravel()
+    except IndexError:
+        return missing
 
     vals = vals[np.isfinite(vals)]
     if vals.size == 0:
-        nan = float("nan")
-        return nan, nan, nan
+        return missing
 
     max_prob = float(np.max(vals))
     n = min(int(top_n), vals.size)

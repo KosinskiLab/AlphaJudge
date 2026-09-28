@@ -5,18 +5,13 @@ import csv
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
-
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
+from functools import partial
 
 from .parsers import pick_parser
 from .complex import Complex
 from .confidence import IPTM_SCOPE_CHAIN_PAIR, IPTM_SCOPE_GLOBAL
 from .meta_score import interface_meta_score
-from .report import render_pae_png
+from .report import generate_per_run_report, render_pae_png
 
 logger = logging.getLogger(__name__)
 
@@ -28,36 +23,57 @@ _REQUIRED_CACHE_COLUMNS = frozenset({
 })
 
 
-def _save_pae_heatmap(
-    pae_matrix,
-    out_file: Path,
-    chain_boundaries: list[float] | None = None,
-    figsize: tuple[int, int] = (8, 8),
-    model_label: str | None = None,
-) -> None:
-    """
-    Save a PAE heatmap PNG for a given residue×residue PAE matrix.
+def _float_or_nan(value) -> float:
+    return float(value) if value is not None else float("nan")
 
-    Uses ``alphajudge.report.render_pae_png`` so the standalone PNG matches
-    the in-report PAE page exactly (AlphaFold-DB-like green palette, horizontal
-    "Expected position error (Å)" colour bar, Scored/Aligned residue axes).
 
-    Optionally draws thin grey separator lines at positions provided in
-    ``chain_boundaries`` (between different chains).
-    """
-    if pae_matrix is None:
-        return
-    try:
-        render_pae_png(
-            out_file,
-            pae_matrix,
-            model_label=model_label,
-            chain_boundaries=chain_boundaries,
-            figsize=figsize,
-        )
-        logger.info(f"wrote {out_file}")
-    except Exception as e:
-        logger.error(f"Could not create PAE heatmap {out_file}: {e}")
+def _interface_row(
+    job: str, model: str, iface, confidence, global_score: float, skip_biophysical_scores: bool
+) -> dict:
+    """One output CSV row for a scored interface."""
+    pd2, _ = iface.pDockQ2()
+    pair_iptm = iface.iptm_chainpair
+    row = {
+        "jobs": job,
+        "model_used": model,
+        "interface": iface.label,
+        "global_confidence_scope": confidence.global_confidence_scope,
+        "iptm_scope": IPTM_SCOPE_CHAIN_PAIR if pair_iptm is not None else IPTM_SCOPE_GLOBAL,
+        "iptm_ptm": _float_or_nan(confidence.iptm_ptm),
+        "iptm": _float_or_nan(pair_iptm if pair_iptm is not None else confidence.iptm),
+        "ptm": _float_or_nan(confidence.ptm),
+        "confidence_score": _float_or_nan(confidence.confidence_score),
+        "pDockQ/mpDockQ": global_score,
+        "average_interface_pae": iface.average_interface_pae,
+        "interface_average_plddt": iface.average_interface_plddt,
+        "interface_num_intf_residues": iface.num_intf_residues,
+        "interface_polar": iface.polar,
+        "interface_hydrophobic": iface.hydrophobic,
+        "interface_charged": iface.charged,
+        "interface_contact_pairs": iface.contact_pairs,
+        "interface_contact_prob_source": confidence.contact_prob_source or "",
+        "interface_contact_prob_max": iface.contact_prob_max,
+        "interface_contact_prob_top10_mean": iface.contact_prob_top10_mean,
+        "interface_expected_contacts": iface.expected_contacts,
+        "interface_ccc": iface.ccc,
+        "interface_score": iface.score_complex,
+        "interface_pDockQ2": pd2,
+        "interface_ipSAE": iface.ipsae(),
+        "interface_LIS": iface.lis(),
+        "interface_cLIS": iface.clis(),
+        "interface_iLIS": iface.ilis(),
+    }
+    if not skip_biophysical_scores:
+        row.update({
+            "interface_hb": iface.hb,
+            "interface_sb": iface.sb,
+            "interface_ss": iface.ss,
+            "interface_sc": iface.sc,
+            "interface_area": iface.int_area,
+            "interface_solv_en": iface.int_solv_en,
+        })
+    row["interface_meta_score"] = interface_meta_score(row)
+    return row
 
 
 def process(
@@ -70,7 +86,7 @@ def process(
     per_run_csv_name: str = "interfaces.csv",
     skip_pae_png: bool = False,
     skip_biophysical_scores: bool = False,
-) -> Path | None:
+) -> Path:
     d = Path(directory)
     parser = pick_parser(d)
     run = parser.parse_run(d)
@@ -101,92 +117,29 @@ def process(
                 if iface.average_interface_pae > pae_filter:
                     dropped_by_pae += 1
                     continue
-                pd2, _ = iface.pDockQ2()
-                label = (
-                    f"{iface.chain1[0].get_parent().id}_{iface.chain2[0].get_parent().id}"
+                rows.append(
+                    _interface_row(job, m, iface, confidence, global_score, skip_biophysical_scores)
                 )
-                pair_iptm = iface.iptm_chainpair
-                iptm_val = pair_iptm if pair_iptm is not None else confidence.iptm
-                row = {
-                    "jobs": job,
-                    "model_used": m,
-                    "interface": label,
-                    "global_confidence_scope": confidence.global_confidence_scope,
-                    "iptm_scope": (
-                        IPTM_SCOPE_CHAIN_PAIR if pair_iptm is not None else IPTM_SCOPE_GLOBAL
-                    ),
-                    "iptm_ptm": float(confidence.iptm_ptm)
-                    if confidence.iptm_ptm is not None
-                    else float("nan"),
-                    "iptm": float(iptm_val) if iptm_val is not None else float("nan"),
-                    "ptm": float(confidence.ptm)
-                    if confidence.ptm is not None
-                    else float("nan"),
-                    "confidence_score": float(confidence.confidence_score)
-                    if confidence.confidence_score is not None
-                    else float("nan"),
-                    "pDockQ/mpDockQ": global_score,
-                    "average_interface_pae": iface.average_interface_pae,
-                    "interface_average_plddt": iface.average_interface_plddt,
-                    "interface_num_intf_residues": iface.num_intf_residues,
-                    "interface_polar": iface.polar,
-                    "interface_hydrophobic": iface.hydrophobic,
-                    "interface_charged": iface.charged,
-                    "interface_contact_pairs": iface.contact_pairs,
-                    "interface_contact_prob_source": confidence.contact_prob_source or "",
-                    "interface_contact_prob_max": iface.contact_prob_max,
-                    "interface_contact_prob_top10_mean": iface.contact_prob_top10_mean,
-                    "interface_expected_contacts": iface.expected_contacts,
-                    "interface_ccc": iface.ccc,
-                    "interface_score": iface.score_complex,
-                    "interface_pDockQ2": pd2,
-                    "interface_ipSAE": iface.ipsae(),
-                    "interface_LIS": iface.lis(),
-                    "interface_cLIS": iface.clis(),
-                    "interface_iLIS": iface.ilis(),
-                }
-
-                # Add expensive metrics only if not skipped
-                if not skip_biophysical_scores:
-                    row.update({
-                        "interface_hb": iface.hb,
-                        "interface_sb": iface.sb,
-                        "interface_ss": iface.ss,
-                        "interface_sc": iface.sc,
-                        "interface_area": iface.int_area,
-                        "interface_solv_en": iface.int_solv_en,
-                    })
-
-                row["interface_meta_score"] = interface_meta_score(row)
-                rows.append(row)
-
-            # Compute chain boundaries for separator lines on PAE heatmap
-            chain_boundaries: list[float] = []
-            try:
-                idx_lists = [
-                    idxs
-                    for idxs in comp._chain_indices_by_id.values()  # type: ignore[attr-defined]
-                    if idxs
-                ]
-                if idx_lists:
-                    sorted_bounds = sorted(max(idxs) + 0.5 for idxs in idx_lists)
-                    chain_boundaries = sorted_bounds[:-1] if len(sorted_bounds) > 1 else []
-            except Exception:
-                chain_boundaries = []
 
             if not skip_pae_png:
                 pae_png = d / f"pae_{m}.png"
-                _save_pae_heatmap(
-                    confidence.pae_matrix, pae_png, chain_boundaries=chain_boundaries
-                )
+                try:
+                    render_pae_png(
+                        pae_png,
+                        confidence.pae_matrix,
+                        chain_boundaries=comp.chain_boundaries,
+                        figsize=(8, 8),
+                    )
+                    logger.info(f"wrote {pae_png}")
+                except Exception as e:
+                    logger.error(f"Could not create PAE heatmap {pae_png}: {e}")
 
             logger.info(f"processed model: {m} via {parser.name}")
         except Exception as e:
             logger.error(f"error processing model {m}: {e}")
 
     out = d / per_run_csv_name
-    out.parent.mkdir(parents=True, exist_ok=True)
-
+    out.parent.mkdir(parents=True, exist_ok=True)  # per_run_csv_name may hold a subdir
     if not rows:
         # Explain *why* the CSV is empty instead of writing a silent zero-byte file
         # (see https://github.com/KosinskiLab/AlphaJudge/issues/17). The common case
@@ -211,34 +164,29 @@ def process(
 
     with out.open("w", newline="") as f:
         if rows:
-            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
             w.writeheader()
             w.writerows(rows)
-        else:
-            f.write("")
     logger.info(f"wrote {out}")
     return out
 
 
+def _is_run_dir(d: Path) -> bool:
+    try:
+        pick_parser(d)
+    except Exception:
+        return False
+    return True
+
+
 def _discover_run_dirs(root: Path) -> list[Path]:
     """Walk a directory tree and collect directories that look like supported runs."""
-    results: list[Path] = []
-
-    # include root too (rglob doesn't include it)
-    candidates = [root] if root.is_dir() else []
-    if root.is_dir():
-        candidates.extend([p for p in root.rglob("*") if p.is_dir()])
-
-    for d in candidates:
-        try:
-            pick_parser(d)  # raises if not supported
-            results.append(d)
-        except Exception:
-            continue
-
-    # De-dupe + stable sort (shallow first)
-    uniq = sorted(set(p.resolve() for p in results), key=lambda p: (len(p.parts), str(p)))
-    return [Path(p) for p in uniq]
+    if not root.is_dir():
+        return []
+    candidates = [root, *(p for p in root.rglob("*") if p.is_dir())]
+    runs = {p.resolve() for p in candidates if _is_run_dir(p)}
+    # Stable order, shallow first
+    return sorted(runs, key=lambda p: (len(p.parts), str(p)))
 
 
 def _read_csv_rows(path: Path) -> list[dict]:
@@ -277,71 +225,65 @@ def _process_one_run(
     write_per_run_report: bool = False,
 ) -> tuple[str, list[dict]]:
     """
-    Worker: process a single run dir (or reuse interfaces.csv) and optionally return rows for aggregation.
-    Returns (run_dir, rows_for_summary).
+    Worker: process a single run dir (or reuse its per-run CSV) and return
+    (run_dir, rows_for_summary); rows are only collected when summary_csv is set.
     """
     d = Path(d_str)
-    existing_csv = d / per_run_csv_name
-
-    want_summary = summary_csv is not None
-
-    source_dir = str(d.resolve())
-
-    def _stamp(rows: list[dict]) -> list[dict]:
-        """Add an absolute ``source_dir`` to every row so the aggregate report
-        can locate per-run side files (PAE PNGs, etc.) from the summary CSV."""
-        for r in rows:
-            r.setdefault("source_dir", source_dir)
-        return rows
+    csv_path = d / per_run_csv_name
 
     # Reuse a precomputed CSV only if its header satisfies the current output
     # contract. This prevents an upgrade from silently aggregating stale rows.
-    if existing_csv.exists() and not force_recompute:
+    rows = None
+    if csv_path.exists() and not force_recompute:
         try:
-            rows = _read_reusable_csv(existing_csv)
-            if rows is not None:
-                if want_summary:
-                    logger.info(f"reused existing {existing_csv} for aggregation")
-                else:
-                    logger.info(f"reused existing {existing_csv}; skipping recompute")
-                if write_per_run_report:
-                    _safe_write_per_run_report(d, csv_name=per_run_csv_name)
-                return (d_str, _stamp(rows) if want_summary else [])
+            rows = _read_reusable_csv(csv_path)
         except Exception as e:
-            logger.warning(f"could not reuse {existing_csv}; recomputing: {e}")
+            logger.warning(f"could not reuse {csv_path}; recomputing: {e}")
+        if rows is not None and summary_csv is not None:
+            logger.info(f"reused existing {csv_path} for aggregation")
+        elif rows is not None:
+            logger.info(f"reused existing {csv_path}; skipping recompute")
 
-    out_path = process(
-        d_str,
-        contact_thresh,
-        pae_filter,
-        models_to_analyse,
-        ipsae_pae_cutoff,
-        per_run_csv_name=per_run_csv_name,
-        skip_pae_png=skip_pae_png,
-        skip_biophysical_scores=skip_biophysical_scores,
-    )
+    if rows is None:
+        csv_path = process(
+            d_str,
+            contact_thresh,
+            pae_filter,
+            models_to_analyse,
+            ipsae_pae_cutoff,
+            per_run_csv_name=per_run_csv_name,
+            skip_pae_png=skip_pae_png,
+            skip_biophysical_scores=skip_biophysical_scores,
+        )
 
-    if write_per_run_report and out_path is not None:
-        _safe_write_per_run_report(d, csv_name=per_run_csv_name)
-
-    if want_summary and out_path is not None:
+    if write_per_run_report:
         try:
-            return (d_str, _stamp(_read_csv_rows(Path(out_path))))
+            generate_per_run_report(d, csv_name=per_run_csv_name)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"per-run report failed for {d}: {e}")
+
+    if summary_csv is None:
+        return d_str, []
+    if rows is None:
+        try:
+            rows = _read_csv_rows(csv_path)
         except Exception as e:
-            logger.error(f"failed reading {out_path} for aggregation: {e}")
+            logger.error(f"failed reading {csv_path} for aggregation: {e}")
+            return d_str, []
+    # Absolute source_dir lets the aggregate report locate per-run side files
+    # (PAE PNGs, etc.) from the summary CSV.
+    source_dir = str(d.resolve())
+    for r in rows:
+        r.setdefault("source_dir", source_dir)
+    return d_str, rows
 
-    return (d_str, [])
 
-
-def _safe_write_per_run_report(run_dir: Path, *, csv_name: str = "interfaces.csv") -> None:
-    """Generate report.pdf next to the per-run CSV, swallowing import/runtime errors."""
+def _iptm_sort_key(row: dict) -> float:
     try:
-        # Import here so a missing matplotlib backend, etc., never blocks scoring.
-        from .report import generate_per_run_report
-
-        generate_per_run_report(run_dir, csv_name=csv_name)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"per-run report failed for {run_dir}: {e}")
+        val = float(row.get("iptm"))
+    except (TypeError, ValueError):
+        return float("-inf")
+    return val if val == val else float("-inf")  # NaN -> -inf
 
 
 def process_many(
@@ -373,137 +315,77 @@ def process_many(
         logger.warning("no input paths provided")
         return None
 
-    # Resolve set of run directories to process
-    run_dirs: list[Path] = []
+    # Resolve set of run directories to process (dict keeps first-seen order)
+    run_dirs: dict[Path, None] = {}
     for p in paths:
         rp = Path(p).resolve()
         if not rp.exists():
             logger.warning(f"path does not exist: {rp}")
-            continue
-
-        if recursive and rp.is_dir():
-            run_dirs.extend(_discover_run_dirs(rp))
-            continue
-
-        # Try direct path as a run directory
-        try:
-            pick_parser(rp)
-            run_dirs.append(rp)
-        except Exception:
+        elif recursive and rp.is_dir():
+            run_dirs.update(dict.fromkeys(_discover_run_dirs(rp)))
+        elif _is_run_dir(rp):
+            run_dirs[rp] = None
+        else:
             logger.warning(
                 f"no supported run detected at {rp} (use --recursive to search within)"
             )
 
-    # Deduplicate
-    seen: set[Path] = set()
-    unique_run_dirs: list[Path] = []
-    for d in run_dirs:
-        r = d.resolve()
-        if r not in seen:
-            seen.add(r)
-            unique_run_dirs.append(d)
-
-    if not unique_run_dirs:
+    if not run_dirs:
         logger.warning("no runnable directories found")
         return None
 
-    # Normalize cores
     if cores <= 0:
         cores = os.cpu_count() or 1
-    if cores > len(unique_run_dirs):
-        cores = len(unique_run_dirs)
+    cores = min(cores, len(run_dirs))
 
+    worker = partial(
+        _process_one_run,
+        contact_thresh=contact_thresh,
+        pae_filter=pae_filter,
+        models_to_analyse=models_to_analyse,
+        summary_csv=summary_csv,
+        ipsae_pae_cutoff=ipsae_pae_cutoff,
+        force_recompute=force_recompute,
+        per_run_csv_name=per_run_csv_name,
+        skip_pae_png=skip_pae_png,
+        skip_biophysical_scores=skip_biophysical_scores,
+        write_per_run_report=write_per_run_report,
+    )
     aggregated_rows: list[dict] = []
-    logger.info(f"Processing {len(unique_run_dirs)} runs with {cores} cores")
-    # Serial
+    logger.info(f"Processing {len(run_dirs)} runs with {cores} cores")
     if cores == 1:
-        for d in unique_run_dirs:
+        for d in run_dirs:
             try:
-                _, rows = _process_one_run(
-                    str(d),
-                    contact_thresh,
-                    pae_filter,
-                    models_to_analyse,
-                    summary_csv,
-                    ipsae_pae_cutoff,
-                    force_recompute,
-                    per_run_csv_name,
-                    skip_pae_png,
-                    skip_biophysical_scores,
-                    write_per_run_report,
-                )
-                if summary_csv and rows:
-                    aggregated_rows.extend(rows)
+                aggregated_rows.extend(worker(str(d))[1])
             except Exception as e:
                 logger.error(f"failed processing {d}: {e}")
-
-    # Parallel
     else:
         # Important: logging from multiple processes can interleave; acceptable.
         with ProcessPoolExecutor(max_workers=cores) as ex:
-            futures = [
-                ex.submit(
-                    _process_one_run,
-                    str(d),
-                    contact_thresh,
-                    pae_filter,
-                    models_to_analyse,
-                    summary_csv,
-                    ipsae_pae_cutoff,
-                    force_recompute,
-                    per_run_csv_name,
-                    skip_pae_png,
-                    skip_biophysical_scores,
-                    write_per_run_report,
-                )
-                for d in unique_run_dirs
-            ]
-            for fut in as_completed(futures):
+            for fut in as_completed([ex.submit(worker, str(d)) for d in run_dirs]):
                 try:
-                    _, rows = fut.result()
-                    if summary_csv and rows:
-                        aggregated_rows.extend(rows)
+                    aggregated_rows.extend(fut.result()[1])
                 except Exception as e:
                     logger.error(f"worker failed: {e}")
 
-    if summary_csv:
-        if not aggregated_rows:
-            logger.info("no rows to write to summary; skipping creation")
-            return None
+    if not summary_csv:
+        return None
+    if not aggregated_rows:
+        logger.info("no rows to write to summary; skipping creation")
+        return None
 
-        # Compute union of all keys to accommodate AF2/AF3 variations
-        fieldnames: list[str] = []
-        seen_fields: set[str] = set()
-        for row in aggregated_rows:
-            for k in row.keys():
-                if k not in seen_fields:
-                    seen_fields.add(k)
-                    fieldnames.append(k)
+    # Union of all keys to accommodate AF2/AF3 variations
+    fieldnames = list(dict.fromkeys(k for row in aggregated_rows for k in row))
+    aggregated_rows.sort(key=_iptm_sort_key, reverse=True)
 
-        def _iptm_sort_key(row: dict) -> float:
-            v = row.get("iptm")
-            if v is None or v == "":
-                return float("-inf")
-            try:
-                val = float(v)
-            except Exception:
-                return float("-inf")
-            return val if val == val else float("-inf")  # NaN -> -inf
+    summary_path = Path(summary_csv).resolve()
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with summary_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, restval="")
+        w.writeheader()
+        w.writerows(aggregated_rows)
 
-        aggregated_rows = sorted(aggregated_rows, key=_iptm_sort_key, reverse=True)
-
-        summary_path = Path(summary_csv).resolve()
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with summary_path.open("w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            for row in aggregated_rows:
-                w.writerow({k: row.get(k, "") for k in fieldnames})
-
-        logger.info(
-            f"wrote summary {summary_path} ({len(aggregated_rows)} rows from {len(unique_run_dirs)} runs)"
-        )
-        return summary_path
-
-    return None
+    logger.info(
+        f"wrote summary {summary_path} ({len(aggregated_rows)} rows from {len(run_dirs)} runs)"
+    )
+    return summary_path

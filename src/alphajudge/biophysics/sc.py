@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -10,17 +10,27 @@ from scipy.spatial import cKDTree
 from .connolly import BURIED_FLAG, PROBE_RADIUS, get_radius, mds as _connolly_mds
 
 
-def _collect_atoms(residues: Iterable) -> tuple[list, np.ndarray, list[str], list[str]]:
-    atoms, coords, resnames, atom_names = [], [], [], []
+def _collect_atoms(residues: Iterable) -> tuple[np.ndarray, np.ndarray]:
+    """Coordinates and CCP4 SC radii of every atom in ``residues``."""
+    coords, radii = [], []
     for r in residues:
         rn = r.get_resname().strip().upper()
         for a in r:
-            atoms.append(a)
             coords.append(a.coord)
-            resnames.append(rn)
-            atom_names.append(a.id.strip().upper())
-    arr = np.asarray(coords, dtype=float) if coords else np.empty((0, 3))
-    return atoms, arr, resnames, atom_names
+            radii.append(get_radius(rn, a.id.strip().upper()))
+    if not coords:
+        return np.empty((0, 3)), np.empty(0)
+    return np.asarray(coords, dtype=float), np.asarray(radii, dtype=float)
+
+
+def _has_neighbour(points: np.ndarray, others: np.ndarray, distance: float) -> np.ndarray:
+    return cKDTree(others).query_ball_point(points, distance, return_length=True) > 0
+
+
+def _nearest(points: np.ndarray, others: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Index of, and distance to, each point's nearest neighbour in ``others``."""
+    _, idx = cKDTree(others).query(points)
+    return idx, np.linalg.norm(points - others[idx], axis=1)
 
 
 def shape_complementarity(
@@ -37,38 +47,24 @@ def shape_complementarity(
     Ported from SCASA (Lawrence & Colman, 1993; Connolly, 1983).
     Returns SC in [-1, 1]; 0 on failure.
     """
-    _, coords1, rn1, an1 = _collect_atoms(residues1)
-    _, coords2, rn2, an2 = _collect_atoms(residues2)
+    coords1, radii1 = _collect_atoms(residues1)
+    coords2, radii2 = _collect_atoms(residues2)
     if coords1.size == 0 or coords2.size == 0:
         return 0.0
 
     # SCASA filters side 1 against side 2, then side 2 against the filtered
     # side 1. This slightly asymmetric ordering matches its CLI/reference path.
-    t2 = cKDTree(coords2)
-    neighbours1 = t2.query_ball_point(coords1, distance)
-    mask1 = np.fromiter((len(nbrs) > 0 for nbrs in neighbours1), dtype=bool, count=len(coords1))
-
+    mask1 = _has_neighbour(coords1, coords2, distance)
     c1 = coords1[mask1]
-    n1_rn = [rn1[i] for i in np.where(mask1)[0]]
-    n1_an = [an1[i] for i in np.where(mask1)[0]]
     if c1.size == 0:
         return 0.0
-
-    t1_filtered = cKDTree(c1)
-    neighbours2 = t1_filtered.query_ball_point(coords2, distance)
-    mask2 = np.fromiter((len(nbrs) > 0 for nbrs in neighbours2), dtype=bool, count=len(coords2))
-
+    mask2 = _has_neighbour(coords2, c1, distance)
     c2 = coords2[mask2]
-    n2_rn = [rn2[i] for i in np.where(mask2)[0]]
-    n2_an = [an2[i] for i in np.where(mask2)[0]]
-    if c1.size == 0 or c2.size == 0:
+    if c2.size == 0:
         return 0.0
 
     atoms = np.vstack([c1, c2])
-    radii = np.array(
-        [get_radius(r, a) for r, a in zip(n1_rn + n2_rn, n1_an + n2_an)],
-        dtype=float,
-    )
+    radii = np.concatenate([radii1[mask1], radii2[mask2]])
     mol = np.array([1] * len(c1) + [2] * len(c2), dtype=int)
 
     dots, normals, flags, dot_mol = _connolly_mds(
@@ -88,23 +84,17 @@ def shape_complementarity(
     # This is the SCASA/CCP4-compatible edge trim used by the frozen
     # references. Applying Connolly's same-surface trim directly removes too
     # many buried dots on AlphaFold interfaces.
-    _, i2 = cKDTree(d2).query(d1)
-    _, i1 = cKDTree(d1).query(d2)
-    dist1 = np.linalg.norm(d1 - d2[i2], axis=1)
-    dist2 = np.linalg.norm(d2 - d1[i1], axis=1)
+    _, dist1 = _nearest(d1, d2)
+    _, dist2 = _nearest(d2, d1)
     m1 = dist1 <= trim_cutoff
     m2 = dist2 <= trim_cutoff
-    d1 = d1[m1]
-    nA = nA[m1]
-    d2 = d2[m2]
-    nB = nB[m2]
+    d1, nA = d1[m1], nA[m1]
+    d2, nB = d2[m2], nB[m2]
     if len(d1) == 0 or len(d2) == 0:
         return 0.0
 
-    _, i2 = cKDTree(d2).query(d1)
-    _, i1 = cKDTree(d1).query(d2)
-    dist1 = np.linalg.norm(d1 - d2[i2], axis=1)
-    dist2 = np.linalg.norm(d2 - d1[i1], axis=1)
+    i2, dist1 = _nearest(d1, d2)
+    i1, dist2 = _nearest(d2, d1)
     dot1 = -(np.einsum("ij,ij->i", nA, nB[i2]))
     dot2 = -(np.einsum("ij,ij->i", nB, nA[i1]))
 

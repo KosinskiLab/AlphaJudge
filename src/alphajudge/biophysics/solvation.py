@@ -28,57 +28,55 @@ def _state_sas_lookup(atoms, state_sas: np.ndarray) -> dict[tuple[int, str], flo
     }
 
 
+# Charged nitrogens whose charge PISA assigns to the most exposed of the group.
+_CHARGED_N_PARTNERS = {
+    "NE2": ("ND1",),
+    "ND1": ("NE2",),
+    "NE": ("NH1", "NH2"),
+    "NH1": ("NE", "NH2"),
+    "NH2": ("NE", "NH1"),
+}
+
+
 def _asp_type_pair(
     atom,
     paired_names: tuple[str, ...],
     charged: int,
-    neutral: int,
     state_sas: dict[tuple[int, str], float],
 ) -> int:
-    current = state_sas.get((id(atom.get_parent()), atom.id.strip().upper()), 0.0)
-    paired = [
-        state_sas[(id(atom.get_parent()), name)]
-        for name in paired_names
-        if (id(atom.get_parent()), name) in state_sas
-    ]
+    residue_id = id(atom.get_parent())
+    current = state_sas.get((residue_id, atom.id.strip().upper()), 0.0)
+    paired = [state_sas[(residue_id, name)] for name in paired_names if (residue_id, name) in state_sas]
     if not paired:
         return charged
     if len(paired) == 1:
-        return charged if current > paired[0] else neutral
-    return charged if current == max([current] + paired) else neutral
+        return charged if current > paired[0] else ASP_NEUTRAL_NO
+    return charged if current == max([current] + paired) else ASP_NEUTRAL_NO
 
 
 def _special_asp_type(atom, state_sas: dict[tuple[int, str], float]) -> int:
     element = _atom_element(atom)
     atom_name = atom.id.strip().upper()
-    resname = atom.get_parent().get_resname().strip().upper()
 
     if element == "N":
-        if atom_name == "NE2":
-            if resname != "HIS":
-                return ASP_NEUTRAL_NO
-            return _asp_type_pair(atom, ("ND1",), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
-        if atom_name == "ND1":
-            return _asp_type_pair(atom, ("NE2",), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
-        if atom_name == "NE":
-            return _asp_type_pair(atom, ("NH1", "NH2"), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
-        if atom_name == "NH1":
-            return _asp_type_pair(atom, ("NE", "NH2"), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
-        if atom_name == "NH2":
-            return _asp_type_pair(atom, ("NE", "NH1"), ASP_CHARGED_N, ASP_NEUTRAL_NO, state_sas)
-        return ASP_CHARGED_N
+        if atom_name == "NE2" and atom.get_parent().get_resname().strip().upper() != "HIS":
+            return ASP_NEUTRAL_NO
+        partners = _CHARGED_N_PARTNERS.get(atom_name)
+        return _asp_type_pair(atom, partners, ASP_CHARGED_N, state_sas) if partners else ASP_CHARGED_N
 
     if element == "O":
         if atom_name.endswith("1"):
-            return _asp_type_pair(atom, (atom_name[:-1] + "2",), ASP_CHARGED_O, ASP_NEUTRAL_NO, state_sas)
-        if atom_name.endswith("2"):
-            return _asp_type_pair(atom, (atom_name[:-1] + "1",), ASP_CHARGED_O, ASP_NEUTRAL_NO, state_sas)
-        return ASP_NEUTRAL_NO
+            partner = atom_name[:-1] + "2"
+        elif atom_name.endswith("2"):
+            partner = atom_name[:-1] + "1"
+        else:
+            return ASP_NEUTRAL_NO
+        return _asp_type_pair(atom, (partner,), ASP_CHARGED_O, state_sas)
 
     return ASP_OTHER
 
 
-def _pisa_solvation_energy_for_state(atoms, state_sas: np.ndarray) -> tuple[float, tuple[float, ...]]:
+def _pisa_solvation_energy_for_state(atoms, state_sas: np.ndarray) -> float:
     state_lookup = _state_sas_lookup(atoms, state_sas)
     asp_area = [0.0] * len(PISA_ASP_PARAMETERS)
     energy = 0.0
@@ -104,7 +102,7 @@ def _pisa_solvation_energy_for_state(atoms, state_sas: np.ndarray) -> tuple[floa
 
     for asp_type, area in enumerate(asp_area):
         energy += area * PISA_ASP_PARAMETERS[asp_type]
-    return float(energy), tuple(asp_area)
+    return float(energy)
 
 
 def _side_interface_solvation_energy(atoms, atom_sas, atom_int_sas) -> float:
@@ -112,10 +110,10 @@ def _side_interface_solvation_energy(atoms, atom_sas, atom_int_sas) -> float:
     atom_int_sas_arr = np.asarray(atom_int_sas, dtype=float)
     if len(atom_sas_arr) == 0:
         return 0.0
-    free_energy, _ = _pisa_solvation_energy_for_state(atoms, atom_sas_arr)
+    free_energy = _pisa_solvation_energy_for_state(atoms, atom_sas_arr)
     bound_sas = atom_sas_arr - atom_int_sas_arr
     bound_sas[bound_sas < 1.0e-8] = 0.0
-    bound_energy, _ = _pisa_solvation_energy_for_state(atoms, bound_sas)
+    bound_energy = _pisa_solvation_energy_for_state(atoms, bound_sas)
     return float(bound_energy - free_energy)
 
 

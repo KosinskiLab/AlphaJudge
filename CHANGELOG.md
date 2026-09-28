@@ -14,6 +14,9 @@
 - For AF3 predictions whose global confidences include excluded tokens (AF3x crosslinkers, but also ligands and ions in plain AF3), `confidence_score` and a global-ipTM fallback are kept in the score table but left out of `interface_meta_score` and the report percentiles, because they no longer describe the scored residues alone. The metascore is the mean of the remaining percentiles, so it changes for such predictions relative to 1.4.2. Boltz-2 global confidences are not labelled and are used as before.
 - Cached per-run CSVs without the two new columns are recomputed once, AF2 and Boltz-2 caches included.
 
+### Removed
+- Helpers that nothing called: `ParserManager.unregister`, `enable_only`, `set_precedence` and `list_parsers`; `confident_contacts.representative_atom_contact_pairs`; `biophysics.connolly.trim`; and the ignored `residue_names` argument of `biophysics.connolly.mds`. This is part of a simplification pass over scoring, parsing, report rendering and the biophysics ports that leaves scores, CSVs, reports and PAE images byte-identical on the bundled AF2, AF3, AF3x and Boltz-2 test runs.
+
 ## 1.4.2 - 2026-08-10
 
 ### Fixed

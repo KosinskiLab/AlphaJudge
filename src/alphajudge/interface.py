@@ -5,7 +5,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from Bio.PDB import NeighborSearch
 
 from .biophysics import (
     buried_surface_area as _pisa_buried_surface_area,
@@ -35,59 +34,60 @@ from .geometry import (
 if TYPE_CHECKING:
     from .complex import Complex
 
+#: PAE (Angstrom) below which a residue pair contributes to LIS / cLIS.
+LIS_PAE_CUTOFF = 12.0
+
+
+def _representative_atoms(residues) -> tuple[list, np.ndarray]:
+    atoms = []
+    for residue in residues:
+        try:
+            atoms.append(representative_atom(residue))
+        except KeyError:
+            pass
+    coords = np.array([a.coord for a in atoms], dtype=float) if atoms else np.empty((0, 3))
+    return atoms, coords
+
 
 class Interface:
     def __init__(self, chain1, chain2, complex_ctx: Complex):
         self.c = complex_ctx
         self.chain1 = list(chain1)
         self.chain2 = list(chain2)
-
-        if not self.chain1 or not self.chain2:
-            # pae_matrix is already a numpy array for memory efficiency
-            self._pae = self.c.conf.pae_matrix
-            self._contact_prob = self.c.conf.contact_prob_matrix
-            self._rim = self.c._res_index_map
-            self._cid = self.c._chain_indices_by_id
-            self._cid1_id = ""
-            self._cid2_id = ""
-            self._idx1 = np.array([], dtype=int)
-            self._idx2 = np.array([], dtype=int)
-            self._has_na = False
-            self._res1, self._res2, self._pairs = set(), set(), set()
-            self._avg_plddt = 0.0
-            self._avg_pae = 0.0
-            return
-
         # pae_matrix is already a numpy array for memory efficiency
         self._pae = self.c.conf.pae_matrix
         self._contact_prob = self.c.conf.contact_prob_matrix
         self._rim = self.c._res_index_map
-        self._cid = self.c._chain_indices_by_id
 
+        if not self.chain1 or not self.chain2:
+            self._cid1_id = self._cid2_id = ""
+            self._idx1 = self._idx2 = np.array([], dtype=int)
+            self._has_na = False
+            self._res1, self._res2, self._pairs = set(), set(), set()
+            self.average_interface_plddt = self.average_interface_pae = 0.0
+            return
+
+        cid = self.c._chain_indices_by_id
         self._cid1_id = self.chain1[0].get_parent().id
         self._cid2_id = self.chain2[0].get_parent().id
-        self._idx1 = np.asarray(self._cid.get(self._cid1_id, []), dtype=int)
-        self._idx2 = np.asarray(self._cid.get(self._cid2_id, []), dtype=int)
+        self._idx1 = np.asarray(cid.get(self._cid1_id, []), dtype=int)
+        self._idx2 = np.asarray(cid.get(self._cid2_id, []), dtype=int)
 
         self._has_na = any(
             r.get_resname().strip().upper() in NA_RES for r in (self.chain1 + self.chain2)
         )
 
         self._res1, self._res2, self._pairs = self._get_pairs()
-        self._avg_plddt = self._avg_plddt_union()
-        self._avg_pae = self._avg_pae_over_pairs()
+        self.average_interface_plddt = self._avg_plddt_union()
+        self.average_interface_pae = self._avg_pae_over_pairs()
+
+    @property
+    def label(self) -> str:
+        return f"{self._cid1_id}_{self._cid2_id}"
 
     @property
     def num_intf_residues(self) -> int:
         return len(self._res1 | self._res2)
-
-    @cached_property
-    def average_interface_plddt(self) -> float:
-        return self._avg_plddt
-
-    @cached_property
-    def average_interface_pae(self) -> float:
-        return self._avg_pae
 
     @cached_property
     def iptm_chainpair(self) -> float | None:
@@ -103,19 +103,26 @@ class Interface:
     def contact_pairs(self) -> int:
         return len(self._pairs)
 
+    def _no_contacts(self) -> bool:
+        return self.contact_pairs <= 0 or math.isnan(self.average_interface_plddt)
+
     @cached_property
     def pDockQ(self) -> float:
-        if self.contact_pairs <= 0 or math.isnan(self._avg_plddt):
+        if self._no_contacts():
             return 0.0
-        return PDOCKQ.score(self._avg_plddt * math.log10(self.contact_pairs))
+        return PDOCKQ.score(self.average_interface_plddt * math.log10(self.contact_pairs))
 
-    def _mean_ptm_dir(self, reverse: bool) -> float:
-        vals = []
+    def _pair_indices(self):
+        """PAE indices (i, j) of each contacting pair whose residues both carry a token."""
         for r1, r2 in self._pairs:
             i = self._rim.get((r1.get_parent().id, r1.id))
             j = self._rim.get((r2.get_parent().id, r2.id))
-            if i is None or j is None:
-                continue
+            if i is not None and j is not None:
+                yield i, j
+
+    def _mean_ptm_dir(self, reverse: bool) -> float:
+        vals = []
+        for i, j in self._pair_indices():
             pae = float(self._pae[j, i] if reverse else self._pae[i, j])
             vals.append(1.0 / (1.0 + (pae / D0) ** 2))
         return float(np.mean(vals)) if vals else float("nan")
@@ -125,28 +132,41 @@ class Interface:
         Return (score_max, mean_ptm_for_direction_that_won).
         Returns (0.0, 0.0) when interface is not found.
         """
-        if self.contact_pairs <= 0 or math.isnan(self._avg_plddt):
+        if self._no_contacts():
             return 0.0, 0.0
+        # Ties go to the chain1 -> chain2 direction.
+        scored = [
+            (PDOCKQ2.score(self.average_interface_plddt * m), m)
+            for m in (self._mean_ptm_dir(reverse=False), self._mean_ptm_dir(reverse=True))
+            if not math.isnan(m)
+        ]
+        return max(scored, key=lambda s: s[0]) if scored else (0.0, 0.0)
 
-        m_ab = self._mean_ptm_dir(reverse=False)
-        m_ba = self._mean_ptm_dir(reverse=True)
-
-        s_ab = PDOCKQ2.score(self._avg_plddt * m_ab) if not math.isnan(m_ab) else float("nan")
-        s_ba = PDOCKQ2.score(self._avg_plddt * m_ba) if not math.isnan(m_ba) else float("nan")
-
-        if math.isnan(s_ab) and math.isnan(s_ba):
-            return 0.0, 0.0
-        if math.isnan(s_ba) or (not math.isnan(s_ab) and s_ab >= s_ba):
-            return s_ab, (0.0 if math.isnan(m_ab) else m_ab)
-        return s_ba, (0.0 if math.isnan(m_ba) else m_ba)
-
-    def ipsae(self, pae_cutoff=10.0) -> float:
+    def ipsae(self, pae_cutoff: float = 10.0) -> float:
         """
-        Interface pTM-based Surface Accuracy Estimation (ipSAE).
+        Interface pTM-based Surface Accuracy Estimation (ipSAE), the larger of
+        the two chain directions. The complex's ``ipsae_pae_cutoff``, when set,
+        takes precedence over ``pae_cutoff``.
         """
-        if getattr(self.c, "ipsae_pae_cutoff", None) is not None:
-            pae_cutoff = float(self.c.ipsae_pae_cutoff)
-        return self._ipsae_asym(float(pae_cutoff))
+        if self.c.ipsae_pae_cutoff is not None:
+            pae_cutoff = self.c.ipsae_pae_cutoff
+        cutoff = float(pae_cutoff)
+        min_d0 = 2.0 if self._has_na else 1.0
+
+        def calc(idx_src: np.ndarray, idx_dst: np.ndarray) -> float:
+            best = 0.0
+            for i in idx_src:
+                row = self._pae[i, idx_dst]
+                valid = row < cutoff
+                n = int(np.count_nonzero(valid))
+                if n == 0:
+                    continue
+                d0 = max(min_d0, 1.24 * (max(27.0, float(n)) - 15.0) ** (1.0 / 3.0) - 1.8)
+                ptm = 1.0 / (1.0 + (row[valid] / d0) ** 2)
+                best = max(best, float(np.mean(ptm)))
+            return best
+
+        return max(calc(self._idx1, self._idx2), calc(self._idx2, self._idx1))
 
     def lis(self) -> float:
         """Returns 0.0 when interface is not found or no valid PAE pairs."""
@@ -154,10 +174,10 @@ class Interface:
             if idx_src.size == 0 or idx_dst.size == 0:
                 return 0.0
             sub = self._pae[np.ix_(idx_src, idx_dst)].ravel()
-            valid = sub[sub < 12.0]
+            valid = sub[sub < LIS_PAE_CUTOFF]
             if valid.size == 0:
                 return 0.0
-            return float(np.mean((12.0 - valid) / 12.0))
+            return float(np.mean((LIS_PAE_CUTOFF - valid) / LIS_PAE_CUTOFF))
 
         a = _lis_dir(self._idx1, self._idx2)
         b = _lis_dir(self._idx2, self._idx1)
@@ -171,21 +191,15 @@ class Interface:
         chain directions are scored separately and averaged, mirroring lis().
         Returns 0.0 when no contacts or no valid PAE pairs.
         """
-        if not self._pairs:
-            return 0.0
         ab: list[float] = []
         ba: list[float] = []
-        for r1, r2 in self._pairs:
-            i = self._rim.get((r1.get_parent().id, r1.id))
-            j = self._rim.get((r2.get_parent().id, r2.id))
-            if i is None or j is None:
-                continue
+        for i, j in self._pair_indices():
             p_ab = float(self._pae[i, j])
             p_ba = float(self._pae[j, i])
-            if p_ab < 12.0:
-                ab.append((12.0 - p_ab) / 12.0)
-            if p_ba < 12.0:
-                ba.append((12.0 - p_ba) / 12.0)
+            if p_ab < LIS_PAE_CUTOFF:
+                ab.append((LIS_PAE_CUTOFF - p_ab) / LIS_PAE_CUTOFF)
+            if p_ba < LIS_PAE_CUTOFF:
+                ba.append((LIS_PAE_CUTOFF - p_ba) / LIS_PAE_CUTOFF)
         a = float(np.mean(ab)) if ab else 0.0
         b = float(np.mean(ba)) if ba else 0.0
         return float(0.5 * (a + b))
@@ -248,15 +262,15 @@ class Interface:
     def contact_probability_scores(self) -> tuple[float, float, float]:
         return summarize_contact_prob_block(self._contact_prob, self._idx1, self._idx2)
 
-    @cached_property
+    @property
     def contact_prob_max(self) -> float:
         return self.contact_probability_scores[0]
 
-    @cached_property
+    @property
     def contact_prob_top10_mean(self) -> float:
         return self.contact_probability_scores[1]
 
-    @cached_property
+    @property
     def expected_contacts(self) -> float:
         return self.contact_probability_scores[2]
 
@@ -274,9 +288,9 @@ class Interface:
 
     @cached_property
     def score_complex(self) -> float:
-        if self.contact_pairs <= 0 or math.isnan(self._avg_plddt):
+        if self._no_contacts():
             return float("nan")
-        return self._avg_plddt * math.log10(self.contact_pairs)
+        return self.average_interface_plddt * math.log10(self.contact_pairs)
 
     @cached_property
     def hb(self) -> int:
@@ -303,96 +317,39 @@ class Interface:
         return _pisa_interface_solvation_energy(self.chain1, self.chain2)
 
     def _get_pairs(self):
-        res_pairs: set[tuple[Any, Any]] = set()
-        a1, a2, coords1, coords2 = self._contact_atom_data()
-        if not len(a1) or not len(a2):
-            return set(), set(), res_pairs
+        """Residue pairs whose representative atoms lie within contact_thresh."""
+        a1, coords1 = _representative_atoms(self.chain1)
+        a2, coords2 = _representative_atoms(self.chain2)
+        if not a1 or not a2:
+            return set(), set(), set()
 
         diff = coords1[:, None, :] - coords2[None, :, :]
         dist2 = np.sum(diff * diff, axis=2)
-        mask = dist2 <= (self.c.contact_thresh ** 2)
-        idx_i, idx_j = np.where(mask)
+        idx_i, idx_j = np.where(dist2 <= self.c.contact_thresh ** 2)
 
-        for i, j in zip(idx_i.tolist(), idx_j.tolist()):
-            res_pairs.add((a1[i].get_parent(), a2[j].get_parent()))
-
-        r1 = {p[0] for p in res_pairs}
-        r2 = {p[1] for p in res_pairs}
-        return r1, r2, res_pairs
-
-    def _contact_atom_data(self) -> tuple[list, list, np.ndarray, np.ndarray]:
-        key = (self._cid1_id, self._cid2_id)
-        cached = self.c._contact_ns_cache.get(key)
-        if cached is None:
-            a1, a2 = [], []
-            for residue in self.chain1:
-                try:
-                    a1.append(representative_atom(residue))
-                except Exception:
-                    pass
-            for residue in self.chain2:
-                try:
-                    a2.append(representative_atom(residue))
-                except Exception:
-                    pass
-
-            coords1 = np.array([a.coord for a in a1], dtype=float) if a1 else np.empty((0, 3))
-            coords2 = np.array([a.coord for a in a2], dtype=float) if a2 else np.empty((0, 3))
-            cached = (a1, a2, coords1, coords2)
-            self.c._contact_ns_cache[key] = cached
-        return cached
+        res_pairs: set[tuple[Any, Any]] = {
+            (a1[i].get_parent(), a2[j].get_parent())
+            for i, j in zip(idx_i.tolist(), idx_j.tolist())
+        }
+        return {p[0] for p in res_pairs}, {p[1] for p in res_pairs}, res_pairs
 
     def _avg_plddt_union(self) -> float:
-        res_set = self._res1 | self._res2
-        if not res_set:
-            return float("nan")
-
         vals = []
-        for residue in res_set:
+        for residue in self._res1 | self._res2:
             try:
                 vals.append(float(representative_atom(residue).get_bfactor()))
-            except Exception:
+            except KeyError:
                 continue
         return float(sum(vals) / len(vals)) if vals else float("nan")
 
     def _avg_pae_over_pairs(self) -> float:
         vals = []
-        for r1, r2 in self._pairs:
-            i = self._rim.get((r1.get_parent().id, r1.id))
-            j = self._rim.get((r2.get_parent().id, r2.id))
-            if i is None or j is None:
-                continue
+        for i, j in self._pair_indices():
             try:
-                vals.append(float(self._pae[i, j]))
-                vals.append(float(self._pae[j, i]))
-            except Exception:
+                vals.extend((float(self._pae[i, j]), float(self._pae[j, i])))
+            except IndexError:  # PAE smaller than the scored residues
                 continue
         return sum(vals) / len(vals) if vals else float("nan")
-
-    def _ipsae_asym(self, cutoff: float) -> float:
-        def calc(idx_src: np.ndarray, idx_dst: np.ndarray) -> float:
-            if idx_src.size == 0 or idx_dst.size == 0:
-                return 0.0
-
-            min_d0 = 2.0 if self._has_na else 1.0
-
-            best, found = 0.0, False
-            for i in idx_src:
-                row = self._pae[i, idx_dst]
-                valid = row < cutoff
-                if not np.any(valid):
-                    continue
-                n = int(np.count_nonzero(valid))
-                length = max(27.0, float(n))
-                d0 = max(min_d0, 1.24 * (length - 15.0) ** (1.0 / 3.0) - 1.8)
-                ptm = 1.0 / (1.0 + (row[valid] / d0) ** 2)
-                best = max(best, float(np.mean(ptm)))
-                found = True
-            return best if found else 0.0
-
-        a = calc(self._idx1, self._idx2)
-        b = calc(self._idx2, self._idx1)
-        return max(a, b)
 
     def _frac(self, names: set[str]) -> float:
         residues = self._res1 | self._res2

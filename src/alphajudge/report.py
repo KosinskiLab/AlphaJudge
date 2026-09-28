@@ -16,7 +16,7 @@ from __future__ import annotations
 import csv
 import logging
 import math
-from collections import OrderedDict
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -30,19 +30,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.patches import Circle, Rectangle
+from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from .confidence import SCOPE_INCLUDES_EXCLUDED_TOKENS
 from .meta_score import (
-    infer_backend,
-    BENCHMARK_QUANTILES,
-    CALIBRATION_LEVELS,
-    FEATURE_DIRECTIONS,
     META_SCORE_FEATURES,
     calibrated_feature_percentile,
-    interface_meta_score,
     feature_is_comparable,
+    infer_backend,
+    interface_meta_score,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,11 +74,7 @@ _INFO_BG = "#ffb3b3"
 _INFO_EDGE = "#ff0000"
 _HEADER_RULE = "#303030"
 _TABLE_RULE = "#202020"
-
-_AJ_BLUE = "#1f4e79"
-_AJ_GREEN = "#2e8b57"
-_AJ_GOLD = "#d08c00"
-_AJ_DARK = "#111111"
+_MARKER = "#0b0b0b"
 
 _REPORT_TITLE = "AlphaJudge Interface validation Report"
 _BENCHMARK_TAG = (
@@ -94,23 +87,19 @@ _GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
 _FEATURE_DISPLAY = {
     "interface_contact_prob_top10_mean": "Contact probability",
     "interface_ccc": "Confident contacts",
-    "interface_LIS": "Interface LIS",
     "interface_ipSAE": "Interface ipSAE",
-    "interface_pDockQ2": "Interface pDockQ2",
     "iptm": "ipTM",
     "confidence_score": "Confidence score",
     "average_interface_pae": "Avg. interface PAE",
     "pDockQ/mpDockQ": "pDockQ / mpDockQ",
     "interface_sc": "Shape complementarity",
     "interface_hb": "Hydrogen bonds",
-    "interface_area": "Interface area",
     "interface_solv_en": "Solvation energy",
 }
 
 _FEATURE_UNITS = {
     "interface_ccc": "contacts, PAE < 4 Å",
     "average_interface_pae": "Å",
-    "interface_area": "Å²",
     "interface_solv_en": "kcal/mol",
 }
 
@@ -206,7 +195,7 @@ def _row_meta_score(row: Mapping[str, Any]) -> float | None:
     # externally merged CSV could carry the legacy all-rows calibration; only
     # fall back to it when the raw feature columns are unavailable.
     computed = interface_meta_score(row)
-    if isinstance(computed, float) and math.isfinite(computed):
+    if math.isfinite(computed):
         return computed
     if row.get("global_confidence_scope") == SCOPE_INCLUDES_EXCLUDED_TOKENS:
         # A stale precomputed value may include the global scores just excluded.
@@ -214,41 +203,33 @@ def _row_meta_score(row: Mapping[str, Any]) -> float | None:
     return _safe_float(row.get("interface_meta_score"))
 
 
-def _feature_view(row: Mapping[str, Any]) -> "OrderedDict[str, tuple[float | None, float | None]]":
-    view: "OrderedDict[str, tuple[float | None, float | None]]" = OrderedDict()
+def _meta_sort_key(row: Mapping[str, Any]) -> float:
+    score = _row_meta_score(row)
+    return score if score is not None else -1.0
+
+
+def _raw_and_pct(row: Mapping[str, Any], feat: str, backend: str | None) -> tuple[float | None, float | None]:
+    """Raw feature value and its calibrated percentile (None when unavailable)."""
+    raw = _safe_float(row.get(feat))
+    pct = (
+        calibrated_feature_percentile(feat, raw, backend)
+        if raw is not None and feature_is_comparable(row, feat)
+        else None
+    )
+    return raw, pct
+
+
+def _feature_view(row: Mapping[str, Any]) -> dict[str, tuple[float | None, float | None]]:
     backend = infer_backend(row)
-    for feat in META_SCORE_FEATURES:
-        raw = _safe_float(row.get(feat))
-        pct = (
-            calibrated_feature_percentile(feat, raw, backend)
-            if raw is not None and feature_is_comparable(row, feat)
-            else None
-        )
-        view[feat] = (raw, pct)
-    return view
+    return {feat: _raw_and_pct(row, feat, backend) for feat in META_SCORE_FEATURES}
 
 
 def _best_row(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    best: tuple[float, Mapping[str, Any]] | None = None
-    for r in rows:
-        s = _row_meta_score(r)
-        if s is None:
-            continue
-        if best is None or s > best[0]:
-            best = (s, r)
-    if best is not None:
-        return best[1]
+    """Highest-metascore row (first on ties), else the first row."""
+    scored = [(s, r) for r in rows if (s := _row_meta_score(r)) is not None]
+    if scored:
+        return max(scored, key=lambda sr: sr[0])[1]
     return rows[0] if rows else None
-
-
-def _group_complex_rows(rows: Sequence[Mapping[str, Any]]) -> "OrderedDict[str, list[Mapping[str, Any]]]":
-    grouped: "OrderedDict[str, list[Mapping[str, Any]]]" = OrderedDict()
-    for r in rows:
-        key = str(r.get("jobs") or r.get("pair") or r.get("complex") or "")
-        if not key:
-            continue
-        grouped.setdefault(key, []).append(r)
-    return grouped
 
 
 def _format_raw(value: float | None, *, decimals: int = 3) -> str:
@@ -322,247 +303,76 @@ def _new_figure() -> plt.Figure:
     return plt.figure(figsize=_A4, facecolor="white")
 
 
-def _draw_info_icon(fig: plt.Figure, *, x: float, y: float, r: float = 0.010) -> None:
-    """Small circled 'i' marker using AlphaJudge brand colour."""
-    ax = fig.add_axes((x - r, y - r, 2 * r, 2 * r))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    ax.add_patch(
-        Circle(
-            (0.5, 0.5),
-            0.47,
-            facecolor="white",
-            edgecolor=_AJ_BLUE,
-            linewidth=1.0,
-            transform=ax.transAxes,
-        )
-    )
-    ax.text(
-        0.5,
-        0.48,
-        "i",
-        ha="center",
-        va="center",
-        fontsize=8,
-        color=_AJ_BLUE,
-        fontweight="bold",
-        transform=ax.transAxes,
-    )
-
-
-def _draw_alphajudge_logo(
-    fig: plt.Figure,
-    *,
-    x: float = 0.5,
-    y: float = 0.93,
-    w: float = 0.30,
-    h: float = 0.080,
-    compact: bool = False,
-) -> None:
-    """Plain-text AlphaJudge mark.
-
-    Renders just "AlphaJudge report" (and a small "interface validation"
-    sub-line in the non-compact form). Intentionally text-only to avoid
-    any resemblance to third-party logos.
-    """
-    ax = fig.add_axes((x - w / 2, y - h / 2, w, h))
+def _text_axes(fig: plt.Figure, rect: tuple[float, float, float, float]):
+    """Invisible unit-square axes for placing text and shapes in ``transAxes``."""
+    ax = fig.add_axes(rect)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
-
-    if compact:
-        ax.text(
-            0.5,
-            0.5,
-            "AlphaJudge report",
-            ha="center",
-            va="center",
-            fontsize=9,
-            fontweight="bold",
-            color=_AJ_DARK,
-            transform=ax.transAxes,
-        )
-        return
-
-    ax.text(
-        0.5,
-        0.62,
-        "AlphaJudge report",
-        ha="center",
-        va="center",
-        fontsize=22,
-        fontweight="bold",
-        color=_AJ_DARK,
-        transform=ax.transAxes,
-    )
-    ax.text(
-        0.5,
-        0.28,
-        "interface validation",
-        ha="center",
-        va="center",
-        fontsize=9,
-        color="#444444",
-        transform=ax.transAxes,
-    )
+    return ax
 
 
-def _add_page_header(fig: plt.Figure, *, page_no: int, total: int, title: str, entry: str) -> None:
-    """RCSB-style running header.
+def _label_axes(fig: plt.Figure, rect: tuple[float, float, float, float], text: str, **kwargs) -> None:
+    """A single line of text centred in its own invisible axes."""
+    ax = _text_axes(fig, rect)
+    ax.text(0.5, 0.5, text, ha="center", va="center", transform=ax.transAxes, **kwargs)
 
-    The cover page in wwPDB reports has no running header; page 2 onward does.
-    """
-    if page_no <= 1:
-        return
 
-    ax = fig.add_axes((0.07, 0.952, 0.86, 0.036))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    ax.text(
-        0.0,
-        0.62,
-        f"Page {page_no}",
-        fontsize=10,
-        ha="left",
-        va="center",
-        color="#111111",
-        transform=ax.transAxes,
-    )
-    ax.text(
-        0.5,
-        0.62,
-        title,
-        fontsize=10,
-        ha="center",
-        va="center",
-        color="#111111",
-        transform=ax.transAxes,
-    )
-    ax.text(
-        1.0,
-        0.62,
-        entry,
-        fontsize=10,
-        ha="right",
-        va="center",
-        color="#111111",
-        transform=ax.transAxes,
-    )
+def _kv_rows(ax, pairs: Sequence[tuple[str, str]], *, xs: tuple[float, float, float],
+             top: float, line_h: float, fontsize: float) -> None:
+    """Right-aligned label, centred colon, then left-aligned value per line."""
+    for i, (label, value) in enumerate(pairs):
+        ypos = top - i * line_h
+        for x, text, ha in zip(xs, (label, ":", value), ("right", "center", "left")):
+            ax.text(x, ypos, text, fontsize=fontsize, ha=ha, va="top", transform=ax.transAxes)
+
+
+def _save_page(pdf: PdfPages, fig: plt.Figure) -> None:
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
+def _add_page_header(fig: plt.Figure, *, page_no: int, entry: str) -> None:
+    """RCSB-style running header (the cover page has none)."""
+    ax = _text_axes(fig, (0.07, 0.952, 0.86, 0.036))
+    for x, text, ha in ((0.0, f"Page {page_no}", "left"), (0.5, _REPORT_TITLE, "center"), (1.0, entry, "right")):
+        ax.text(x, 0.62, text, fontsize=10, ha=ha, va="center", color="#111111", transform=ax.transAxes)
     ax.plot([0.0, 1.0], [0.18, 0.18], color=_HEADER_RULE, linewidth=0.6, transform=ax.transAxes)
-
-
-def _add_page_footer(fig: plt.Figure, *, page_no: int, total: int, last: bool) -> None:
-    """No footer mark; the running header already identifies the report."""
-    return
 
 
 def _draw_info_box(fig: plt.Figure, *, x: float, y: float, w: float, h: float, lines: Sequence[str]) -> None:
     """Square-corner pink/red cover callout, closer to wwPDB style."""
-    ax = fig.add_axes((x, y, w, h))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
+    ax = _text_axes(fig, (x, y, w, h))
     ax.add_patch(
         Rectangle(
-            (0.0, 0.0),
-            1.0,
-            1.0,
-            linewidth=0.8,
-            edgecolor=_INFO_EDGE,
-            facecolor=_INFO_BG,
-            transform=ax.transAxes,
+            (0.0, 0.0), 1.0, 1.0,
+            linewidth=0.8, edgecolor=_INFO_EDGE, facecolor=_INFO_BG, transform=ax.transAxes,
         )
     )
-    if not lines:
-        return
-
     n = len(lines)
-    top = 0.83
-    line_h = 0.68 / max(1, n - 1) if n > 1 else 0.0
+    line_h = 0.68 / (n - 1) if n > 1 else 0.0
     for i, line in enumerate(lines):
-        ax.text(
-            0.5,
-            top - i * line_h,
-            line,
-            ha="center",
-            va="top",
-            fontsize=10.5,
-            color="#111111",
-            transform=ax.transAxes,
-        )
+        ax.text(0.5, 0.83 - i * line_h, line, ha="center", va="top", fontsize=10.5,
+                color="#111111", transform=ax.transAxes)
 
 
 def _draw_meta_block(fig: plt.Figure, *, x: float, y: float, w: float, h: float, pairs: Sequence[tuple[str, str]]) -> None:
     """Right-aligned label, colon, then value (RCSB style)."""
-    ax = fig.add_axes((x, y, w, h))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    n = len(pairs)
-    if n == 0:
-        return
-    top = 0.92
-    line_h = 0.85 / max(1, n)
-    label_x = 0.36
-    sep_x = 0.40
-    val_x = 0.44
-    for i, (label, value) in enumerate(pairs):
-        ypos = top - i * line_h
-        ax.text(label_x, ypos, label, fontsize=10.5, ha="right", va="top", transform=ax.transAxes)
-        ax.text(sep_x, ypos, ":", fontsize=10.5, ha="center", va="top", transform=ax.transAxes)
-        ax.text(val_x, ypos, value, fontsize=10.5, ha="left", va="top", transform=ax.transAxes)
+    ax = _text_axes(fig, (x, y, w, h))
+    if pairs:
+        _kv_rows(ax, pairs, xs=(0.36, 0.40, 0.44), top=0.92, line_h=0.85 / len(pairs), fontsize=10.5)
 
 
 def _draw_section_heading(
-    fig: plt.Figure,
-    *,
-    x: float,
-    y: float,
-    w: float,
-    h: float,
-    number: str,
-    title: str,
-    show_info: bool = False,
+    fig: plt.Figure, *, x: float, y: float, w: float, h: float, number: str, title: str
 ) -> None:
     """Large numbered section heading with RCSB-like spacing."""
-    ax = fig.add_axes((x, y, w, h))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-
+    ax = _text_axes(fig, (x, y, w, h))
     number_text = _truncate(str(number), 8)
     title_x = 0.060 + max(0, len(number_text) - 2) * 0.010
-
-    ax.text(
-        0.0,
-        0.50,
-        number_text,
-        fontsize=17,
-        fontweight="bold",
-        ha="left",
-        va="center",
-        color="#101010",
-        transform=ax.transAxes,
-    )
-    ax.text(
-        title_x,
-        0.50,
-        title,
-        fontsize=17,
-        fontweight="bold",
-        ha="left",
-        va="center",
-        color="#101010",
-        transform=ax.transAxes,
-    )
-
-    if show_info:
-        # Approximate icon placement immediately after the heading.
-        icon_x = min(x + w - 0.020, x + title_x * w + 0.0120 * len(title) + 0.020)
-        _draw_info_icon(fig, x=icon_x, y=y + h * 0.52, r=0.011)
+    for tx, text in ((0.0, number_text), (title_x, title)):
+        ax.text(tx, 0.50, text, fontsize=17, fontweight="bold", ha="left", va="center",
+                color="#101010", transform=ax.transAxes)
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +385,6 @@ _RCSB_SLIDER_LAYOUT = {
     "bar_x": 0.240,
     "bar_width": 0.382,
     "value_x": 0.632,
-    "value_width": 0.120,
     "bar_height": 0.0105,
     "row_height": 0.0315,
 }
@@ -585,41 +394,6 @@ def _clip_pct(pct: float | None) -> float | None:
     if pct is None or not math.isfinite(pct):
         return None
     return max(0.0, min(1.0, pct))
-
-
-def _draw_slider_bar(
-    ax,
-    percentile: float | None = None,
-    *,
-    cmap=_SLIDER_CMAP,
-    draw_marker: bool = True,
-) -> None:
-    """Thin wwPDB-style red-white-blue percentile bar."""
-    ax.imshow(
-        _GRADIENT,
-        aspect="auto",
-        cmap=cmap,
-        extent=(0.0, 1.0, 0.0, 1.0),
-        interpolation="bilinear",
-    )
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
-    ax.axis("off")
-
-    pct = _clip_pct(percentile)
-    if draw_marker and pct is not None:
-        ax.add_patch(
-            Rectangle(
-                (pct - 0.006, -0.15),
-                0.012,
-                1.30,
-                facecolor="#0b0b0b",
-                edgecolor="#0b0b0b",
-                linewidth=0.4,
-                clip_on=False,
-                zorder=5,
-            )
-        )
 
 
 def _metric_rows_for_slider_panel(
@@ -648,37 +422,19 @@ def _metric_rows_for_slider_panel(
         score = _row_meta_score(row)
         rows.append(("Meta score", score, score, "", "overall"))
 
-    fv = _feature_view(row)
     backend = infer_backend(row)
     for group_tag, features in groups:
         for feat in features:
-            if feat in fv:
-                raw, pct = fv[feat]
-            else:
-                # Compute percentile even when feature isn't in METASCORE
-                # (e.g. complex-level features were dropped from the metascore
-                # but still need a slider bar).
-                raw = _safe_float(row.get(feat))
-                try:
-                    pct = (
-                        calibrated_feature_percentile(feat, raw, backend)
-                        if raw is not None and feature_is_comparable(row, feat)
-                        else None
-                    )
-                except KeyError:
-                    # No frozen benchmark ladder for this feature yet. A slider
-                    # with no percentile would be misleading rather than merely
-                    # empty, so the row is omitted until the deciles exist; it
-                    # appears automatically once they are frozen.
-                    continue
+            try:
+                raw, pct = _raw_and_pct(row, feat, backend)
+            except KeyError:
+                # No frozen benchmark ladder for this feature yet. A slider
+                # with no percentile would be misleading rather than merely
+                # empty, so the row is omitted until the deciles exist; it
+                # appears automatically once they are frozen.
+                continue
             rows.append(
-                (
-                    _FEATURE_DISPLAY.get(feat, feat),
-                    raw,
-                    pct,
-                    _FEATURE_UNITS.get(feat, ""),
-                    group_tag,
-                )
+                (_FEATURE_DISPLAY.get(feat, feat), raw, pct, _FEATURE_UNITS.get(feat, ""), group_tag)
             )
 
     return rows
@@ -692,32 +448,15 @@ def _draw_percentile_legend(
     w: float,
     label: str = "Percentile vs interacting (positive) benchmark pairs",
 ) -> None:
-    ax = fig.add_axes((x, y, w, 0.032))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-
+    ax = _text_axes(fig, (x, y, w, 0.032))
     ax.add_patch(
         Rectangle(
-            (0.000, 0.55),
-            0.010,
-            0.30,
-            facecolor="#0b0b0b",
-            edgecolor="#0b0b0b",
-            linewidth=0.4,
-            transform=ax.transAxes,
+            (0.000, 0.55), 0.010, 0.30,
+            facecolor=_MARKER, edgecolor=_MARKER, linewidth=0.4, transform=ax.transAxes,
         )
     )
-    ax.text(
-        0.018,
-        0.70,
-        label,
-        ha="left",
-        va="center",
-        fontsize=7.2,
-        color="#111111",
-        transform=ax.transAxes,
-    )
+    ax.text(0.018, 0.70, label, ha="left", va="center", fontsize=7.2, color="#111111",
+            transform=ax.transAxes)
 
 
 def _draw_slider_panel(
@@ -754,7 +493,7 @@ def _draw_slider_panel(
     bar_h = L["bar_height"]
 
     # Vertical layout: row height shrinks if the panel has to fit many rows.
-    # Inter-group gap pushes Q-score / AF / biophys apart.
+    # Inter-group gap pushes the metascore / AF / biophys blocks apart.
     group_gap = 0.012
     n_group_changes = sum(
         1 for i in range(1, n_rows) if rows[i][4] != rows[i - 1][4]
@@ -764,38 +503,13 @@ def _draw_slider_panel(
     header_y = top - 0.012
 
     # Column headers - no beige band, no boxed cells.
-    fig.text(
-        label_right - 0.020,
-        header_y,
-        "Metric",
-        ha="center",
-        va="center",
-        fontsize=10,
-        color="#111111",
-    )
-    fig.text(
-        bar_x + bar_w / 2,
-        header_y,
-        "Percentile Ranks",
-        ha="center",
-        va="center",
-        fontsize=10,
-        color="#111111",
-    )
-    fig.text(
-        value_x + 0.035,
-        header_y,
-        "Value",
-        ha="center",
-        va="center",
-        fontsize=10,
-        color="#111111",
-    )
+    for hx, text in ((label_right - 0.020, "Metric"), (bar_x + bar_w / 2, "Percentile Ranks"),
+                     (value_x + 0.035, "Value")):
+        fig.text(hx, header_y, text, ha="center", va="center", fontsize=10, color="#111111")
 
     # Compute per-row centres with extra spacing at group transitions.
-    first_center = top - 0.048
     centers: list[float] = []
-    cur_y = first_center
+    cur_y = top - 0.048
     prev_group: str | None = None
     for _label, _raw, _pct, _units, group in rows:
         if prev_group is not None and group != prev_group:
@@ -807,39 +521,20 @@ def _draw_slider_panel(
     # Rows: label, thin gradient bar, raw value. All rows share the same
     # typography (PDB-validation-style uniform treatment); the inter-group
     # gap is what separates the overall metascore from the feature rows.
-    pct_positions: list[tuple[int, float, str]] = []
-    for i, ((label, raw, pct, units, group), center_y) in enumerate(zip(rows, centers)):
-        pct_clipped = _clip_pct(pct)
-
-        fig.text(
-            label_right,
-            center_y,
-            label,
-            ha="right",
-            va="center",
-            fontsize=9.2,
-            color="#111111",
-        )
+    for (label, raw, _pct, units, _group), center_y in zip(rows, centers):
+        fig.text(label_right, center_y, label, ha="right", va="center", fontsize=9.2, color="#111111")
 
         bar_ax = fig.add_axes((bar_x, center_y - bar_h / 2, bar_w, bar_h), zorder=2)
-        _draw_slider_bar(bar_ax, None, draw_marker=False)
+        bar_ax.imshow(_GRADIENT, aspect="auto", cmap=_SLIDER_CMAP, extent=(0.0, 1.0, 0.0, 1.0),
+                      interpolation="bilinear")
+        bar_ax.set_xlim(0.0, 1.0)
+        bar_ax.set_ylim(0.0, 1.0)
+        bar_ax.axis("off")
 
         raw_text = _format_raw(raw)
         if units and raw_text != "—":
             raw_text = f"{raw_text} {units}"
-
-        fig.text(
-            value_x,
-            center_y,
-            raw_text,
-            ha="left",
-            va="center",
-            fontsize=9.2,
-            color="#111111",
-        )
-
-        if pct_clipped is not None:
-            pct_positions.append((i, pct_clipped, group))
+        fig.text(value_x, center_y, raw_text, ha="left", va="center", fontsize=9.2, color="#111111")
 
     chart_top = centers[0] + row_h * 0.50
     chart_bottom = centers[-1] - row_h * 0.50
@@ -850,48 +545,23 @@ def _draw_slider_panel(
     line_ax.axis("off")
     line_ax.patch.set_alpha(0.0)
 
-    def _row_y(idx: int) -> float:
-        return centers[idx]
-
     marker_w = 0.012
     marker_h = max(0.0042, min(0.0070, bar_h * 1.35))
-    for idx, pct, group in pct_positions:
-        y = _row_y(idx)
+    for (_label, _raw, pct, _units, _group), y in zip(rows, centers):
+        pct = _clip_pct(pct)
+        if pct is None:
+            continue
         line_ax.add_patch(
             Rectangle(
-                (pct - marker_w / 2, y - marker_h / 2),
-                marker_w,
-                marker_h,
-                facecolor="#0b0b0b",
-                edgecolor="#0b0b0b",
-                linewidth=0.45,
-                zorder=6,
-                clip_on=False,
+                (pct - marker_w / 2, y - marker_h / 2), marker_w, marker_h,
+                facecolor=_MARKER, edgecolor=_MARKER, linewidth=0.45, zorder=6, clip_on=False,
             )
         )
 
     # Worse / Better labels directly beneath the bars.
     wb_y = chart_bottom - 0.011
-    fig.text(
-        bar_x,
-        wb_y,
-        "Worse",
-        ha="left",
-        va="center",
-        fontsize=6.8,
-        fontstyle="italic",
-        color="#111111",
-    )
-    fig.text(
-        bar_x + bar_w,
-        wb_y,
-        "Better",
-        ha="right",
-        va="center",
-        fontsize=6.8,
-        fontstyle="italic",
-        color="#111111",
-    )
+    for wx, text, ha in ((bar_x, "Worse", "left"), (bar_x + bar_w, "Better", "right")):
+        fig.text(wx, wb_y, text, ha=ha, va="center", fontsize=6.8, fontstyle="italic", color="#111111")
 
     legend_y = chart_bottom - 0.045
     _draw_percentile_legend(fig, x=bar_x - 0.002, y=legend_y, w=0.55)
@@ -913,8 +583,6 @@ def _draw_fixed_table(
     rows: Sequence[Sequence[str]],
     col_fracs: Sequence[float],
     row_height: float = 0.024,
-    header_color: str = "#efe9d8",
-    font_size: float = 8.5,
 ) -> float:
     """Draw a table anchored at top ``y_top``, growing downward.
 
@@ -923,12 +591,10 @@ def _draw_fixed_table(
 
     assert abs(sum(col_fracs) - 1.0) < 1e-6, "col_fracs must sum to 1"
 
+    font_size = 8.5
     n_rows = len(rows)
     table_h = row_height * (n_rows + 1)
-    ax = fig.add_axes((x, y_top - table_h, w, table_h))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
+    ax = _text_axes(fig, (x, y_top - table_h, w, table_h))
     if not rows:
         ax.text(0.5, 0.5, "no data", ha="center", va="center", fontsize=10, color="#555")
         return y_top - table_h
@@ -936,31 +602,15 @@ def _draw_fixed_table(
     # Header row at the top of the axes
     cell_h = 1.0 / (n_rows + 1)
     header_top = 1.0
-    ax.add_patch(Rectangle((0.0, header_top - cell_h), 1.0, cell_h, color=header_color, zorder=1))
+    ax.add_patch(Rectangle((0.0, header_top - cell_h), 1.0, cell_h, color="#efe9d8", zorder=1))
     x_left = 0.0
     for frac, label in zip(col_fracs, headers):
         ax.add_patch(
-            Rectangle(
-                (x_left, header_top - cell_h),
-                frac,
-                cell_h,
-                fill=False,
-                edgecolor=_TABLE_RULE,
-                linewidth=0.5,
-                zorder=2,
-            )
+            Rectangle((x_left, header_top - cell_h), frac, cell_h,
+                      fill=False, edgecolor=_TABLE_RULE, linewidth=0.5, zorder=2)
         )
-        ax.text(
-            x_left + frac / 2,
-            header_top - cell_h / 2,
-            label,
-            ha="center",
-            va="center",
-            fontsize=font_size + 0.5,
-            fontweight="bold",
-            color="#111111",
-            transform=ax.transAxes,
-        )
+        ax.text(x_left + frac / 2, header_top - cell_h / 2, label, ha="center", va="center",
+                fontsize=font_size + 0.5, fontweight="bold", color="#111111", transform=ax.transAxes)
         x_left += frac
 
     # Approx max characters per column based on width and font size
@@ -975,26 +625,12 @@ def _draw_fixed_table(
         x_left = 0.0
         for frac, cell, max_chars in zip(col_fracs, row_vals, max_chars_per_col):
             ax.add_patch(
-                Rectangle(
-                    (x_left, cell_bot),
-                    frac,
-                    cell_h,
-                    fill=False,
-                    edgecolor=_TABLE_RULE,
-                    linewidth=0.4,
-                    zorder=2,
-                )
+                Rectangle((x_left, cell_bot), frac, cell_h,
+                          fill=False, edgecolor=_TABLE_RULE, linewidth=0.4, zorder=2)
             )
-            ax.text(
-                x_left + frac / 2,
-                cell_bot + cell_h / 2,
-                _truncate(str(cell), max_chars),
-                ha="center",
-                va="center",
-                fontsize=font_size,
-                color="#1a1a1a",
-                transform=ax.transAxes,
-            )
+            ax.text(x_left + frac / 2, cell_bot + cell_h / 2, _truncate(str(cell), max_chars),
+                    ha="center", va="center", fontsize=font_size, color="#1a1a1a",
+                    transform=ax.transAxes)
             x_left += frac
         cur_y = cell_bot
 
@@ -1008,216 +644,108 @@ def _draw_fixed_table(
 def _cover_page(
     pdf: PdfPages,
     *,
-    title: str,
     subtitle_lines: Sequence[str],
-    entry_id: str,
     meta_pairs: Sequence[tuple[str, str]],
     info_lines: Sequence[str],
     software_lines: Sequence[tuple[str, str]],
-    page_no: int,
-    total: int,
 ) -> None:
     fig = _new_figure()
 
     # Cover: no running header. Just the report title (no separate logo/wordmark).
-    title_ax = fig.add_axes((0.07, 0.830, 0.86, 0.060))
-    title_ax.axis("off")
-    title_ax.text(
-        0.5,
-        0.5,
-        title,
-        ha="center",
-        va="center",
-        fontsize=22,
-        fontweight="bold",
-        color="#101010",
-        transform=title_ax.transAxes,
-    )
-
-    sub_ax = fig.add_axes((0.07, 0.690, 0.86, 0.040))
-    sub_ax.axis("off")
-    sub_ax.text(
-        0.5,
-        0.5,
-        " - ".join(subtitle_lines),
-        ha="center",
-        va="center",
-        fontsize=13,
-        color="#1f1f1f",
-        transform=sub_ax.transAxes,
-    )
+    _label_axes(fig, (0.07, 0.830, 0.86, 0.060), _REPORT_TITLE,
+                fontsize=22, fontweight="bold", color="#101010")
+    _label_axes(fig, (0.07, 0.690, 0.86, 0.040), " - ".join(subtitle_lines),
+                fontsize=13, color="#1f1f1f")
 
     _draw_meta_block(fig, x=0.10, y=0.535, w=0.80, h=0.135, pairs=meta_pairs)
 
     _draw_info_box(fig, x=0.09, y=0.350, w=0.82, h=0.135, lines=info_lines)
 
-    sw_ax = fig.add_axes((0.10, 0.090, 0.80, 0.210))
-    sw_ax.set_xlim(0, 1)
-    sw_ax.set_ylim(0, 1)
-    sw_ax.axis("off")
-
+    sw_ax = _text_axes(fig, (0.10, 0.090, 0.80, 0.210))
     # Short horizontal rule above the software block, as on the wwPDB cover.
     sw_ax.plot([0.0, 0.42], [0.98, 0.98], color=_HEADER_RULE, linewidth=0.6, transform=sw_ax.transAxes)
-
-    sw_ax.text(
-        0.0,
-        0.84,
-        "The following software and reference data were used in this report:",
-        fontsize=10,
-        ha="left",
-        va="top",
-        transform=sw_ax.transAxes,
-    )
-
+    sw_ax.text(0.0, 0.84, "The following software and reference data were used in this report:",
+               fontsize=10, ha="left", va="top", transform=sw_ax.transAxes)
     n = len(software_lines)
-    if n:
-        top = 0.66
-        line_h = 0.56 / max(1, n - 1) if n > 1 else 0.0
-        for i, (k, v) in enumerate(software_lines):
-            ypos = top - i * line_h
-            sw_ax.text(0.39, ypos, k, fontsize=10, ha="right", va="top", transform=sw_ax.transAxes)
-            sw_ax.text(0.415, ypos, ":", fontsize=10, ha="center", va="top", transform=sw_ax.transAxes)
-            sw_ax.text(0.445, ypos, v, fontsize=10, ha="left", va="top", transform=sw_ax.transAxes)
+    _kv_rows(sw_ax, software_lines, xs=(0.39, 0.415, 0.445), top=0.66,
+             line_h=0.56 / (n - 1) if n > 1 else 0.0, fontsize=10)
 
-    pdf.savefig(fig)
-    plt.close(fig)
+    _save_page(pdf, fig)
 
 
 def _quality_page(
     pdf: PdfPages,
     *,
-    title: str,
     entry_id: str,
     section_no: str,
     section_title: str,
     pre_lines: Sequence[str],
     row: Mapping[str, Any],
     page_no: int,
-    total: int,
-    last: bool = False,
 ) -> None:
     fig = _new_figure()
-    _add_page_header(fig, page_no=page_no, total=total, title=title, entry=entry_id)
+    _add_page_header(fig, page_no=page_no, entry=entry_id)
+    _draw_section_heading(fig, x=0.07, y=0.895, w=0.86, h=0.045, number=section_no, title=section_title)
 
-    _draw_section_heading(
-        fig,
-        x=0.07,
-        y=0.895,
-        w=0.86,
-        h=0.045,
-        number=section_no,
-        title=section_title,
-    )
-
-    intro_ax = fig.add_axes((0.10, 0.810, 0.80, 0.070))
-    intro_ax.axis("off")
+    intro_ax = _text_axes(fig, (0.10, 0.810, 0.80, 0.070))
     for i, line in enumerate(pre_lines):
-        intro_ax.text(
-            0.0,
-            0.95 - i * 0.32,
-            line,
-            fontsize=10,
-            ha="left",
-            va="top",
-            transform=intro_ax.transAxes,
-        )
-
+        intro_ax.text(0.0, 0.95 - i * 0.32, line, fontsize=10, ha="left", va="top",
+                      transform=intro_ax.transAxes)
     intro_ax.text(
-        0.0,
-        0.05,
+        0.0, 0.05,
         "Percentile scores ranging between 0-100 for AlphaJudge interface metrics are shown in "
         "the following graphic.",
-        fontsize=10,
-        ha="left",
-        va="bottom",
-        transform=intro_ax.transAxes,
+        fontsize=10, ha="left", va="bottom", transform=intro_ax.transAxes,
     )
 
     _draw_slider_panel(fig, top=0.775, height=0.56, row=row, include_overall=True)
+    _save_page(pdf, fig)
 
-    _add_page_footer(fig, page_no=page_no, total=total, last=last)
-    pdf.savefig(fig)
-    plt.close(fig)
+
+def _raw_cells(row: Mapping[str, Any], columns: Sequence[str]) -> list[str]:
+    return [_format_raw(_safe_float(row.get(c))) for c in columns]
 
 
 def _per_interface_page(
     pdf: PdfPages,
     *,
-    title: str,
     entry_id: str,
     section_no: str,
     rows: Sequence[Mapping[str, Any]],
     page_no: int,
-    total: int,
-    last: bool = False,
 ) -> None:
     fig = _new_figure()
-    _add_page_header(fig, page_no=page_no, total=total, title=title, entry=entry_id)
-    _draw_section_heading(
-        fig, x=0.07, y=0.91, w=0.86, h=0.03,
-        number=section_no, title="Per-interface raw scores",
-    )
+    _add_page_header(fig, page_no=page_no, entry=entry_id)
+    _draw_section_heading(fig, x=0.07, y=0.91, w=0.86, h=0.03,
+                          number=section_no, title="Per-interface raw scores")
 
-    intro_ax = fig.add_axes((0.10, 0.83, 0.80, 0.06))
-    intro_ax.axis("off")
-    intro_ax.text(
-        0.0,
-        1.0,
-        "Each row is one chain pair detected by AlphaJudge.",
-        fontsize=9,
-        ha="left",
-        va="top",
-        transform=intro_ax.transAxes,
-    )
-    intro_ax.text(
-        0.0,
-        0.55,
-        "The Meta column is the averaged percentile across the 10 metascore "
-        "features (higher is better).",
-        fontsize=9,
-        ha="left",
-        va="top",
-        transform=intro_ax.transAxes,
-    )
+    intro_ax = _text_axes(fig, (0.10, 0.83, 0.80, 0.06))
+    for y, line in (
+        (1.0, "Each row is one chain pair detected by AlphaJudge."),
+        (0.55, "The Meta column is the averaged percentile across the 10 metascore "
+               "features (higher is better)."),
+    ):
+        intro_ax.text(0.0, y, line, fontsize=9, ha="left", va="top", transform=intro_ax.transAxes)
 
     headers = ["Model", "Interface", "Residues", "Meta", "LIS", "ipSAE", "pDockQ2", "ipTM", "PAE", "Sc"]
-    sorted_rows = sorted(
-        rows,
-        key=lambda r: (_row_meta_score(r) if _row_meta_score(r) is not None else -1.0),
-        reverse=True,
-    )
-    body: list[list[str]] = []
-    for r in sorted_rows:
-        body.append(
-            [
-                _truncate(str(r.get("model_used") or ""), 26),
-                str(r.get("interface") or ""),
-                str(r.get("interface_num_intf_residues") or ""),
-                _format_raw(_row_meta_score(r)),
-                _format_raw(_safe_float(r.get("interface_LIS"))),
-                _format_raw(_safe_float(r.get("interface_ipSAE"))),
-                _format_raw(_safe_float(r.get("interface_pDockQ2"))),
-                _format_raw(_safe_float(r.get("iptm"))),
-                _format_raw(_safe_float(r.get("average_interface_pae"))),
-                _format_raw(_safe_float(r.get("interface_sc"))),
-            ]
-        )
-
-    col_fracs = [0.18, 0.10, 0.10, 0.08, 0.08, 0.09, 0.10, 0.07, 0.08, 0.12]
+    raw_columns = ("interface_LIS", "interface_ipSAE", "interface_pDockQ2", "iptm",
+                   "average_interface_pae", "interface_sc")
+    body = [
+        [
+            _truncate(str(r.get("model_used") or ""), 26),
+            str(r.get("interface") or ""),
+            str(r.get("interface_num_intf_residues") or ""),
+            _format_raw(_row_meta_score(r)),
+            *_raw_cells(r, raw_columns),
+        ]
+        for r in sorted(rows, key=_meta_sort_key, reverse=True)
+    ]
     _draw_fixed_table(
-        fig,
-        x=0.07,
-        y_top=0.78,
-        w=0.86,
-        headers=headers,
-        rows=body,
-        col_fracs=col_fracs,
+        fig, x=0.07, y_top=0.78, w=0.86, headers=headers, rows=body,
+        col_fracs=[0.18, 0.10, 0.10, 0.08, 0.08, 0.09, 0.10, 0.07, 0.08, 0.12],
         row_height=0.024,
     )
-
-    _add_page_footer(fig, page_no=page_no, total=total, last=last)
-    pdf.savefig(fig)
-    plt.close(fig)
+    _save_page(pdf, fig)
 
 
 def _format_residue_tick(value: float, _pos: int | None = None) -> str:
@@ -1338,15 +866,12 @@ def render_pae_png(
 def _complex_evidence_page(
     pdf: PdfPages,
     *,
-    title: str,
     entry_id: str,
     section_no: str,
     row: Mapping[str, Any] | None,
     pae_path: Path | None,
     model_label: str,
     page_no: int,
-    total: int,
-    last: bool = False,
     complex_label: str | None = None,
 ) -> None:
     """One end-of-report page that combines:
@@ -1357,18 +882,9 @@ def _complex_evidence_page(
     - The PAE heatmap for the same model (when a PNG is available).
     """
     fig = _new_figure()
-    _add_page_header(fig, page_no=page_no, total=total, title=title, entry=entry_id)
-
-    _draw_section_heading(
-        fig,
-        x=0.07,
-        y=0.895,
-        w=0.86,
-        h=0.045,
-        number=section_no,
-        title="Complex-level confidence & PAE",
-        show_info=False,
-    )
+    _add_page_header(fig, page_no=page_no, entry=entry_id)
+    _draw_section_heading(fig, x=0.07, y=0.895, w=0.86, h=0.045,
+                          number=section_no, title="Complex-level confidence & PAE")
 
     sub_bits: list[str] = []
     if complex_label:
@@ -1376,18 +892,8 @@ def _complex_evidence_page(
     if model_label:
         sub_bits.append(f"Model {model_label}")
     if sub_bits:
-        sub_ax = fig.add_axes((0.10, 0.855, 0.80, 0.030))
-        sub_ax.axis("off")
-        sub_ax.text(
-            0.5,
-            0.5,
-            "  •  ".join(sub_bits),
-            ha="center",
-            va="center",
-            fontsize=10,
-            color="#1f1f1f",
-            transform=sub_ax.transAxes,
-        )
+        _label_axes(fig, (0.10, 0.855, 0.80, 0.030), "  •  ".join(sub_bits),
+                    fontsize=10, color="#1f1f1f")
 
     # Top half: complex-level slider mini-panel.
     if row is not None:
@@ -1411,29 +917,19 @@ def _complex_evidence_page(
     img_ax = fig.add_axes((0.10, 0.075, 0.80, 0.530))
     if pae_path is not None and Path(pae_path).exists():
         try:
-            img = mpimg.imread(str(pae_path))
-            img_ax.imshow(img)
+            img_ax.imshow(mpimg.imread(str(pae_path)))
         except Exception as e:
             img_ax.text(0.5, 0.5, f"PAE image unavailable\n({e})",
                         ha="center", va="center", fontsize=10, color="#666")
     else:
-        img_ax.text(
-            0.5,
-            0.5,
-            "No PAE heatmap available for this model.",
-            ha="center",
-            va="center",
-            fontsize=10,
-            color="#666",
-        )
+        img_ax.text(0.5, 0.5, "No PAE heatmap available for this model.",
+                    ha="center", va="center", fontsize=10, color="#666")
     img_ax.set_xticks([])
     img_ax.set_yticks([])
     for spine in img_ax.spines.values():
         spine.set_visible(False)
 
-    _add_page_footer(fig, page_no=page_no, total=total, last=last)
-    pdf.savefig(fig)
-    plt.close(fig)
+    _save_page(pdf, fig)
 
 
 # ---------------------------------------------------------------------------
@@ -1449,39 +945,13 @@ def _aggregate_cover_page(
     scores: Sequence[float],
     top_rows: Sequence[tuple[str, float, Mapping[str, Any]]],
     backends: Mapping[str, int],
-    page_no: int,
-    total: int,
 ) -> None:
     fig = _new_figure()
-    _add_page_header(
-        fig, page_no=page_no, total=total,
-        title=_REPORT_TITLE, entry="Aggregate report",
-    )
 
-    title_ax = fig.add_axes((0.07, 0.87, 0.86, 0.06))
-    title_ax.axis("off")
-    title_ax.text(
-        0.5,
-        0.5,
-        _REPORT_TITLE,
-        fontsize=22,
-        fontweight="bold",
-        ha="center",
-        va="center",
-        transform=title_ax.transAxes,
-    )
-    sub_ax = fig.add_axes((0.07, 0.835, 0.86, 0.025))
-    sub_ax.axis("off")
-    sub_ax.text(
-        0.5,
-        0.5,
-        f"Aggregate report – {n_interfaces} interfaces across {n_complexes} complexes",
-        ha="center",
-        va="center",
-        fontsize=11,
-        color="#1f1f1f",
-        transform=sub_ax.transAxes,
-    )
+    _label_axes(fig, (0.07, 0.87, 0.86, 0.06), _REPORT_TITLE, fontsize=22, fontweight="bold")
+    _label_axes(fig, (0.07, 0.835, 0.86, 0.025),
+                f"Aggregate report – {n_interfaces} interfaces across {n_complexes} complexes",
+                fontsize=11, color="#1f1f1f")
 
     meta = [
         ("Source", _shorten_path(str(summary_csv), max_len=58)),
@@ -1509,65 +979,38 @@ def _aggregate_cover_page(
     hist_ax.set_title("Distribution across cohort", fontsize=10, loc="left")
     hist_ax.tick_params(labelsize=8)
 
-    stats_ax = fig.add_axes((0.64, 0.36, 0.26, 0.14))
-    stats_ax.axis("off")
+    stats_ax = _text_axes(fig, (0.64, 0.36, 0.26, 0.14))
     if scores:
         median = sorted(scores)[len(scores) // 2]
         mean = sum(scores) / len(scores)
+        n_05 = sum(1 for s in scores if s >= 0.5)
+        n_07 = sum(1 for s in scores if s >= 0.7)
         stats_ax.text(0.0, 0.95, "Cohort statistics", fontsize=11, fontweight="bold", transform=stats_ax.transAxes)
         lines = [
             f"min      = {min(scores):.3f}",
             f"median   = {median:.3f}",
             f"mean     = {mean:.3f}",
             f"max      = {max(scores):.3f}",
-            f"≥ 0.5  = {sum(1 for s in scores if s >= 0.5)} ({100*sum(1 for s in scores if s >= 0.5)/len(scores):.0f}%)",
-            f"≥ 0.7  = {sum(1 for s in scores if s >= 0.7)} ({100*sum(1 for s in scores if s >= 0.7)/len(scores):.0f}%)",
+            f"≥ 0.5  = {n_05} ({100*n_05/len(scores):.0f}%)",
+            f"≥ 0.7  = {n_07} ({100*n_07/len(scores):.0f}%)",
         ]
         for i, line in enumerate(lines):
             stats_ax.text(0.0, 0.78 - i * 0.12, line, fontsize=10, family="monospace", transform=stats_ax.transAxes)
 
-    title2_ax = fig.add_axes((0.07, 0.305, 0.86, 0.020))
-    title2_ax.axis("off")
-    title2_ax.text(
-        0.5,
-        0.5,
-        f"Top {len(top_rows)} interfaces by meta score",
-        ha="center",
-        va="center",
-        fontsize=11,
-        fontweight="bold",
-        transform=title2_ax.transAxes,
-    )
+    _label_axes(fig, (0.07, 0.305, 0.86, 0.020), f"Top {len(top_rows)} interfaces by meta score",
+                fontsize=11, fontweight="bold")
     headers = ["Rank", "Complex / interface", "Meta", "LIS", "ipSAE", "ipTM", "PAE", "Sc"]
-    body: list[list[str]] = []
-    for i, (name, score, row) in enumerate(top_rows, start=1):
-        body.append(
-            [
-                str(i),
-                _truncate(name, 34),
-                _format_raw(score),
-                _format_raw(_safe_float(row.get("interface_LIS"))),
-                _format_raw(_safe_float(row.get("interface_ipSAE"))),
-                _format_raw(_safe_float(row.get("iptm"))),
-                _format_raw(_safe_float(row.get("average_interface_pae"))),
-                _format_raw(_safe_float(row.get("interface_sc"))),
-            ]
-        )
-    col_fracs = [0.07, 0.34, 0.09, 0.09, 0.10, 0.09, 0.10, 0.12]
+    raw_columns = ("interface_LIS", "interface_ipSAE", "iptm", "average_interface_pae", "interface_sc")
+    body = [
+        [str(i), _truncate(name, 34), _format_raw(score), *_raw_cells(row, raw_columns)]
+        for i, (name, score, row) in enumerate(top_rows, start=1)
+    ]
     _draw_fixed_table(
-        fig,
-        x=0.07,
-        y_top=0.285,
-        w=0.86,
-        headers=headers,
-        rows=body,
-        col_fracs=col_fracs,
+        fig, x=0.07, y_top=0.285, w=0.86, headers=headers, rows=body,
+        col_fracs=[0.07, 0.34, 0.09, 0.09, 0.10, 0.09, 0.10, 0.12],
         row_height=0.020,
     )
-
-    _add_page_footer(fig, page_no=page_no, total=total, last=False)
-    pdf.savefig(fig)
-    plt.close(fig)
+    _save_page(pdf, fig)
 
 
 def _interface_summary_page(
@@ -1578,31 +1021,14 @@ def _interface_summary_page(
     row: Mapping[str, Any],
     cohort_position: tuple[int, int] | None,
     page_no: int,
-    total: int,
-    last: bool,
 ) -> None:
     fig = _new_figure()
     entry = f"{_truncate(complex_name, 26)} / {interface_label}"
-    _add_page_header(
-        fig, page_no=page_no, total=total,
-        title=_REPORT_TITLE, entry=_truncate(entry, 40),
-    )
+    _add_page_header(fig, page_no=page_no, entry=_truncate(entry, 40))
 
-    title_ax = fig.add_axes((0.07, 0.91, 0.86, 0.05))
-    title_ax.axis("off")
-    title_ax.text(
-        0.5,
-        0.5,
-        _truncate(complex_name, 60),
-        ha="center",
-        va="center",
-        fontsize=17,
-        fontweight="bold",
-        transform=title_ax.transAxes,
-    )
+    _label_axes(fig, (0.07, 0.91, 0.86, 0.05), _truncate(complex_name, 60),
+                fontsize=17, fontweight="bold")
 
-    sub_ax = fig.add_axes((0.07, 0.875, 0.86, 0.025))
-    sub_ax.axis("off")
     bits = [
         f"Interface {interface_label}",
         f"Model {row.get('model_used', '?')}",
@@ -1612,32 +1038,21 @@ def _interface_summary_page(
     n_res = row.get("interface_num_intf_residues")
     if n_res:
         bits.append(f"{n_res} interface residues")
-    sub_ax.text(0.5, 0.5, "  •  ".join(bits), ha="center", va="center", fontsize=10, color="#222", transform=sub_ax.transAxes)
+    _label_axes(fig, (0.07, 0.875, 0.86, 0.025), "  •  ".join(bits), fontsize=10, color="#222")
 
-    _draw_section_heading(
-        fig, x=0.07, y=0.83, w=0.86, h=0.025,
-        number="1", title="Overall quality at a glance",
-    )
+    _draw_section_heading(fig, x=0.07, y=0.83, w=0.86, h=0.025,
+                          number="1", title="Overall quality at a glance")
 
     _draw_slider_panel(fig, top=0.79, height=0.62, row=row, include_overall=True)
 
-    note_ax = fig.add_axes((0.10, 0.07, 0.80, 0.06))
-    note_ax.axis("off")
+    note_ax = _text_axes(fig, (0.10, 0.07, 0.80, 0.06))
     note_ax.text(
-        0.5,
-        1.0,
+        0.5, 1.0,
         "Black marker shows this interface's percentile rank against the AlphaJudge "
         "interacting (positive) benchmark pairs (higher = better).",
-        ha="center",
-        va="top",
-        fontsize=9,
-        color="#555",
-        transform=note_ax.transAxes,
+        ha="center", va="top", fontsize=9, color="#555", transform=note_ax.transAxes,
     )
-
-    _add_page_footer(fig, page_no=page_no, total=total, last=last)
-    pdf.savefig(fig)
-    plt.close(fig)
+    _save_page(pdf, fig)
 
 
 # ---------------------------------------------------------------------------
@@ -1653,14 +1068,7 @@ def _find_pae_png(run_dir: Path, model_used: str) -> Path | None:
         *run_dir.glob(f"*{model_used}*.png"),
         *run_dir.glob("*PAE*plot*ranked_0*.png"),
     ]
-    seen: set[Path] = set()
-    for cand in candidates:
-        if cand in seen:
-            continue
-        seen.add(cand)
-        if cand.exists() and cand.is_file():
-            return cand
-    return None
+    return next((c for c in candidates if c.is_file()), None)
 
 
 def generate_per_run_report(
@@ -1685,11 +1093,8 @@ def generate_per_run_report(
 
     out_pdf = Path(out_pdf) if out_pdf is not None else run_dir / "report.pdf"
     best = _best_row(rows)
-    if best is None:
-        logger.warning("no usable rows in %s; skipping report", interfaces_csv)
-        return None
 
-    by_model: "OrderedDict[str, list[Mapping[str, Any]]]" = OrderedDict()
+    by_model: dict[str, list[Mapping[str, Any]]] = {}
     for r in rows:
         by_model.setdefault(str(r.get("model_used") or ""), []).append(r)
     best_model = str(best.get("model_used") or "")
@@ -1698,24 +1103,10 @@ def generate_per_run_report(
     pae_path = _find_pae_png(run_dir, best_model)
     # Pick the best model's rows for the per-interface slider pages; sort by
     # metascore descending so the strongest interface comes first.
-    best_model_rows = by_model.get(best_model, list(rows))
-    interface_rows = sorted(
-        best_model_rows,
-        key=lambda r: (_row_meta_score(r) if _row_meta_score(r) is not None else -1.0),
-        reverse=True,
-    )
+    interface_rows = sorted(by_model.get(best_model, rows), key=_meta_sort_key, reverse=True)
     show_interface_table = len(interface_rows) > 1
 
-    total = (
-        1  # cover
-        + (1 if show_interface_table else 0)  # overview table
-        + len(interface_rows)  # one slider page per interface
-        + 1  # complex-level confidence + PAE evidence
-        + len(other_models)  # non-best-model appendix
-    )
-
     entry_id = _truncate(run_dir.name, 36)
-    chains = _detect_chain_set(rows)
     backend = _detect_backend(rows)
     score = _row_meta_score(best)
     score_label = "n/a" if score is None else f"{score:.3f} ({_decile_label(score)})"
@@ -1724,7 +1115,7 @@ def generate_per_run_report(
         ("Complex", run_dir.name),
         ("Date", datetime.now().strftime("%Y-%m-%d %H:%M")),
         ("Backend", backend),
-        ("Chains", ", ".join(sorted(chains)) or "?"),
+        ("Chains", ", ".join(sorted(_detect_chain_set(rows))) or "?"),
         ("Interface rows", str(len(rows))),
         ("Best model", best_model or "?"),
         ("Best meta score", score_label),
@@ -1738,40 +1129,26 @@ def generate_per_run_report(
     software_lines: list[tuple[str, str]] = [
         ("Reference distribution", _BENCHMARK_TAG),
         ("Source CSV", _shorten_path(str(interfaces_csv), max_len=62)),
-        ("Models analysed", _truncate(", ".join(by_model.keys()) or "?", 60)),
+        ("Models analysed", _truncate(", ".join(by_model) or "?", 60)),
     ]
 
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
     with PdfPages(str(out_pdf)) as pdf:
-        page_no = 1
         _cover_page(
             pdf,
-            title=_REPORT_TITLE,
             subtitle_lines=[run_dir.name, backend],
-            entry_id=entry_id,
             meta_pairs=meta_pairs,
             info_lines=info_lines,
             software_lines=software_lines,
-            page_no=page_no,
-            total=total,
         )
+        page_no = 1
 
-        next_section = 1
+        quality_section_no = 1
         if show_interface_table:
             page_no += 1
-            _per_interface_page(
-                pdf,
-                title=_REPORT_TITLE,
-                entry_id=entry_id,
-                section_no=str(next_section),
-                rows=rows,
-                page_no=page_no,
-                total=total,
-                last=(page_no == total),
-            )
-            next_section += 1
+            _per_interface_page(pdf, entry_id=entry_id, section_no="1", rows=rows, page_no=page_no)
+            quality_section_no = 2
 
-        quality_section_no = next_section
         for i, row in enumerate(interface_rows):
             page_no += 1
             iface_label = str(row.get("interface") or "?")
@@ -1784,7 +1161,6 @@ def generate_per_run_report(
                 section_no = str(quality_section_no)
             _quality_page(
                 pdf,
-                title=_REPORT_TITLE,
                 entry_id=entry_id,
                 section_no=section_no,
                 section_title=section_title,
@@ -1794,34 +1170,25 @@ def generate_per_run_report(
                 ],
                 row=row,
                 page_no=page_no,
-                total=total,
-                last=(page_no == total),
             )
-        next_section = quality_section_no + 1
 
         page_no += 1
         _complex_evidence_page(
             pdf,
-            title=_REPORT_TITLE,
             entry_id=entry_id,
-            section_no=str(next_section),
+            section_no=str(quality_section_no + 1),
             row=best,
             pae_path=pae_path,
             model_label=best_model,
             page_no=page_no,
-            total=total,
-            last=(page_no == total),
             complex_label=run_dir.name,
         )
-        next_section += 1
 
         for m in other_models:
-            m_rows = by_model[m]
-            m_best = _best_row(m_rows) or m_rows[0]
+            m_best = _best_row(by_model[m])
             page_no += 1
             _quality_page(
                 pdf,
-                title=_REPORT_TITLE,
                 entry_id=entry_id,
                 section_no=f"A.{m}",
                 section_title=f"Appendix – model {m}",
@@ -1831,8 +1198,6 @@ def generate_per_run_report(
                 ],
                 row=m_best,
                 page_no=page_no,
-                total=total,
-                last=(page_no == total),
             )
 
     logger.info("wrote %s", out_pdf)
@@ -1897,35 +1262,18 @@ def generate_aggregate_report(
                 seen_complex.add(cname)
                 ranked_per_page.append(entry)
 
-    # Backends counted per complex (so a multimer doesn't multi-count).
-    seen_backend: dict[str, str] = {}
+    # ``ranked`` is sorted by descending metascore, so the first row seen for
+    # each complex is its best, and complexes appear in best-score order.
+    best_per_complex: dict[str, Mapping[str, Any]] = {}
     for _label, cname, _iface, _score, r in ranked:
-        if cname not in seen_backend:
-            seen_backend[cname] = _detect_backend([r])
-    backends: dict[str, int] = {}
-    for b in seen_backend.values():
-        backends[b] = backends.get(b, 0) + 1
+        best_per_complex.setdefault(cname, r)
+    # Backends counted per complex (so a multimer doesn't multi-count).
+    backends = dict(Counter(_detect_backend([r]) for r in best_per_complex.values()))
 
-    scores = [s for _, _, _, s, _ in ranked]
-    n_complexes = len(seen_backend)
-    n_interfaces = len(ranked)
-
-    # Pick a best-row per complex for the "Per-complex evidence" section so
-    # we can render one PAE+complex-level slider page per complex. Limit to
-    # the same top_n the cover table shows so the aggregate PDF stays bounded.
-    best_per_complex: "OrderedDict[str, tuple[float, Mapping[str, Any]]]" = OrderedDict()
-    for _label, cname, _iface, score, r in ranked:
-        cur = best_per_complex.get(cname)
-        if cur is None or score > cur[0]:
-            best_per_complex[cname] = (score, r)
+    # One PAE + complex-level slider page per complex, limited to the same
+    # top_n the cover table shows so the aggregate PDF stays bounded.
     evidence_cap = top_n if max_complexes is None else min(top_n, max_complexes)
-    complex_evidence = sorted(
-        best_per_complex.items(),
-        key=lambda kv: kv[1][0],
-        reverse=True,
-    )[:evidence_cap]
-
-    total = 1 + len(ranked_per_page) + len(complex_evidence)
+    complex_evidence = list(best_per_complex.items())[:evidence_cap]
 
     out_pdf = Path(out_pdf)
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
@@ -1933,13 +1281,11 @@ def generate_aggregate_report(
         _aggregate_cover_page(
             pdf,
             summary_csv=summary_csv,
-            n_complexes=n_complexes,
-            n_interfaces=n_interfaces,
-            scores=scores,
+            n_complexes=len(best_per_complex),
+            n_interfaces=len(ranked),
+            scores=[score for _, _, _, score, _ in ranked],
             top_rows=top_rows,
             backends=backends,
-            page_no=1,
-            total=total,
         )
         for rank, (_label, cname, iface, _score, r) in enumerate(ranked_per_page, start=1):
             _interface_summary_page(
@@ -1949,29 +1295,20 @@ def generate_aggregate_report(
                 row=r,
                 cohort_position=(rank, len(ranked_per_page)),
                 page_no=1 + rank,
-                total=total,
-                last=False,  # not last; complex evidence pages follow
             )
 
-        ev_page = 1 + len(ranked_per_page)
-        for ev_rank, (cname, (cscore, crow)) in enumerate(complex_evidence, start=1):
-            ev_page += 1
+        for ev_rank, (cname, crow) in enumerate(complex_evidence, start=1):
             source_dir = str(crow.get("source_dir") or "")
             model_label = str(crow.get("model_used") or "")
-            pae_path = None
-            if source_dir:
-                pae_path = _find_pae_png(Path(source_dir), model_label)
+            pae_path = _find_pae_png(Path(source_dir), model_label) if source_dir else None
             _complex_evidence_page(
                 pdf,
-                title=_REPORT_TITLE,
                 entry_id=_truncate(cname, 40),
                 section_no=f"{ev_rank}",
                 row=crow,
                 pae_path=pae_path,
                 model_label=model_label,
-                page_no=ev_page,
-                total=total,
-                last=(ev_rank == len(complex_evidence)),
+                page_no=1 + len(ranked_per_page) + ev_rank,
                 complex_label=cname,
             )
 
