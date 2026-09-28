@@ -141,9 +141,9 @@ class AF3Parser(BaseParser):
                 return float("nan")
 
         def rank(row: dict) -> float:
-            # A missing score ranks last; a NaN sort key would scramble the order.
+            # Missing and non-finite scores rank last, matching the scores below.
             value = score(row)
-            return -np.inf if np.isnan(value) else value
+            return value if np.isfinite(value) else -np.inf
 
         order: list[str] = []
         scores: dict[str, float] = {}

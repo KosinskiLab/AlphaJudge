@@ -1273,16 +1273,17 @@ def test_confident_contacts_boundary_convention_is_selectable():
 # AF3 model discovery and ranking
 # -------------------------
 
-def test_af3_ranking_order_puts_missing_scores_last(tmp_path):
+@pytest.mark.parametrize("invalid_score", ["", "nan", "invalid", "inf", "-inf", "1e309", "-1e309"])
+def test_af3_ranking_order_puts_invalid_scores_last(tmp_path, invalid_score):
     ranking = tmp_path / "ranking_scores.csv"
     ranking.write_text(
         "seed,sample,ranking_score\n"
-        "1,0,\n1,1,0.4\n1,2,nan\n1,3,0.9\n1,4,0.6\n"
+        f"1,0,{invalid_score}\n1,1,-0.4\n1,2,nan\n1,3,0.9\n1,4,0.6\n"
     )
     order, scores = AF3Parser._read_csv_order(ranking)
     assert order[:3] == ["seed-1_sample-3", "seed-1_sample-4", "seed-1_sample-1"]
-    assert set(order[3:]) == {"seed-1_sample-0", "seed-1_sample-2"}
-    assert scores == {"seed-1_sample-3": 0.9, "seed-1_sample-4": 0.6, "seed-1_sample-1": 0.4}
+    assert order[3:] == ["seed-1_sample-0", "seed-1_sample-2"]
+    assert scores == {"seed-1_sample-3": 0.9, "seed-1_sample-4": 0.6, "seed-1_sample-1": -0.4}
 
 
 def test_af3_flat_layout_does_not_confuse_sample_1_with_sample_10(tmp_path):
