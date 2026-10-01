@@ -1,7 +1,7 @@
 """Preserve the pairwise pDockQ2 variant used by AlphaJudge and IPSAE."""
 import numpy as np
 import pytest
-from Bio.PDB import Atom, Chain, Model, Residue, Structure
+from structure_helpers import make_structure
 
 from alphajudge.complex import Complex
 from alphajudge.confidence import Confidence
@@ -14,22 +14,7 @@ def test_pdockq2_matches_pinned_ipsae_asymmetric_trimer():
     # Expected values were captured by running that script on this structure
     # and PAE, with shared pLDDT inputs. They are the maximum of its two
     # directional scores for each pair, not a chain-versus-rest score.
-    structure = Structure.Structure("trimer")
-    model = Model.Model(0)
-    structure.add(model)
-    serial = 1
-    for chain_no, (chain_id, plddt) in enumerate((("A", 95.), ("B", 30.), ("C", 80.))):
-        chain = Chain.Chain(chain_id)
-        model.add(chain)
-        for res_no in range(1, 4):
-            residue = Residue.Residue((" ", res_no, " "), "ALA", " ")
-            chain.add(residue)
-            for name, dx in (("CA", 0.), ("CB", .5)):
-                residue.add(Atom.Atom(
-                    name, np.array([res_no * 3.8 + dx, chain_no * 5., 0.]),
-                    plddt, 1., " ", name, serial, element="C",
-                ))
-                serial += 1
+    structure = make_structure(chains="ABC", residues=3, plddt={"A": 95., "B": 30., "C": 80.})
     pae = np.full((9, 9), 2.)
     pae[3:6, :3] = 18.
     pae[6:, 3:6] = 12.

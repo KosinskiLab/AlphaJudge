@@ -15,6 +15,22 @@
 - Report imports preserve the caller's Matplotlib backend and figures; rendering restores plotting settings even on errors. Invalid `--aggregate_report` usage is rejected before scoring starts.
 - CSVs record scoring cutoffs, a content-derived calibration ID, and the contributing metascore features/count. Reports disclose recalculation versus stored scores and flag custom or unknown cutoffs; custom settings retain the existing formulas and reference distributions, with percentiles labelled exploratory. The unsupported interface-area entry was removed from the percentile registry; raw area remains available.
 
+### CSV additions
+
+| Column | Meaning |
+| --- | --- |
+| `backend` | Prediction source: `af2`, `af3`, or `boltz2`. |
+| `structure_file` | Selected structure path relative to the run directory. |
+| `contact_thresh` | Residue contact cutoff in Å. |
+| `pae_filter` | Maximum mean interface PAE accepted for a CSV row, in Å. |
+| `ipsae_pae_cutoff` | PAE cutoff used by ipSAE, in Å. |
+| `metascore_calibration` | Content-derived identifier of the frozen calibration. |
+| `metascore_calibration_status` | Whether scoring cutoffs match the calibration defaults: `default`, `custom`, or `unknown`. |
+| `metascore_features` | Semicolon-separated names of the features contributing to this row's metascore. |
+| `metascore_feature_count` | Number of contributing features. |
+
+Custom parsers can accept the optional `ParseOptions` argument to `parse_run`; `cache_options` identifies which parser options affect scores.
+
 ## 1.4.3 - 2026-09-28
 
 ### Fixed

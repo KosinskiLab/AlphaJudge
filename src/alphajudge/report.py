@@ -52,6 +52,9 @@ from .meta_score import (
 logger = logging.getLogger(__name__)
 
 _A4 = (8.27, 11.69)
+_INTERFACE_ROWS_PER_PAGE = 28
+_AGGREGATE_COVER_ROWS = 10
+_AGGREGATE_ROWS_PER_PAGE = 30
 
 # Percentile graphic: red -> pale centre -> blue.
 _SLIDER_CMAP = LinearSegmentedColormap.from_list(
@@ -92,6 +95,8 @@ _BENCHMARK_TAG = (
 _GRADIENT = np.tile(np.linspace(0.0, 1.0, 1024), (2, 1))
 
 _FEATURE_DISPLAY = {
+    "interface_LIS": "LIS",
+    "interface_pDockQ2": "pDockQ2",
     "interface_contact_prob_top10_mean": "Contact probability",
     "interface_ccc": "Confident contacts",
     "interface_ipSAE": "Interface ipSAE",
@@ -730,11 +735,7 @@ def _draw_score_provenance(fig: Figure, row: Mapping[str, Any], *, y: float) -> 
     backend = infer_backend(row) or "pooled"
     lines.append(f"Report calibration: {CALIBRATION_ID} ({backend}); "
                  f"CSV calibration: {row.get('metascore_calibration') or 'unknown'}.")
-    short_names = {"interface_LIS": "LIS", "interface_ipSAE": "ipSAE", "interface_pDockQ2": "pDockQ2",
-                   "iptm": "ipTM", "confidence_score": "confidence", "average_interface_pae": "PAE",
-                   "pDockQ/mpDockQ": "pDockQ/mpDockQ", "interface_sc": "Sc", "interface_hb": "H-bonds",
-                   "interface_solv_en": "solvation", "interface_contact_prob_top10_mean": "contact probability"}
-    lines.append("Contributing features: " + (", ".join(short_names[f] for f in components) or "none"))
+    lines.append("Contributing features: " + (", ".join(_FEATURE_DISPLAY[f] for f in components) or "none"))
     status = calibration_parameter_status(row)
     if status == "unknown":
         lines.append("Scoring cutoffs unknown in this CSV; calibration applicability is unknown.")
@@ -776,9 +777,9 @@ def _per_interface_page(
         ]
         for r in sorted(rows, key=_meta_sort_key, reverse=True)
     ]
-    for start in range(0, len(body), 28):
+    for start in range(0, len(body), _INTERFACE_ROWS_PER_PAGE):
         fig = _new_figure()
-        current_page = page_no + start // 28
+        current_page = page_no + start // _INTERFACE_ROWS_PER_PAGE
         _add_page_header(fig, page_no=current_page, entry=entry_id)
         title = "Per-interface raw scores" + (" (continued)" if start else "")
         _draw_section_heading(fig, x=0.07, y=0.91, w=0.86, h=0.03,
@@ -791,11 +792,11 @@ def _per_interface_page(
         ):
             intro_ax.text(0.0, y, line, fontsize=9, ha="left", va="top", transform=intro_ax.transAxes)
         _draw_fixed_table(
-            fig, x=0.07, y_top=0.78, w=0.86, headers=headers, rows=body[start:start + 28],
+            fig, x=0.07, y_top=0.78, w=0.86, headers=headers, rows=body[start:start + _INTERFACE_ROWS_PER_PAGE],
             col_fracs=[.17, .09, .09, .08, .06, .08, .09, .10, .08, .08, .08], row_height=.024,
         )
         _save_page(pdf, fig)
-    return page_no + max(0, (len(body) - 1) // 28)
+    return page_no + max(0, (len(body) - 1) // _INTERFACE_ROWS_PER_PAGE)
 
 
 def _format_residue_tick(value: float, _pos: int | None = None) -> str:
@@ -1057,19 +1058,19 @@ def _aggregate_cover_page(
     ]
     col_fracs = [0.07, 0.34, 0.09, 0.09, 0.10, 0.09, 0.10, 0.12]
     _draw_fixed_table(
-        fig, x=0.07, y_top=0.285, w=0.86, headers=headers, rows=body[:10],
+        fig, x=0.07, y_top=0.285, w=0.86, headers=headers, rows=body[:_AGGREGATE_COVER_ROWS],
         col_fracs=col_fracs,
         row_height=0.020,
     )
     _save_page(pdf, fig)
     page_no = 1
-    for start in range(10, len(body), 30):
+    for start in range(_AGGREGATE_COVER_ROWS, len(body), _AGGREGATE_ROWS_PER_PAGE):
         page_no += 1
         fig = _new_figure()
         _add_page_header(fig, page_no=page_no, entry="Aggregate ranking")
         _label_axes(fig, (0.07, 0.90, 0.86, 0.03),
                     f"Top {len(top_rows)} interfaces by meta score (continued)", fontsize=13, fontweight="bold")
-        _draw_fixed_table(fig, x=.07, y_top=.85, w=.86, headers=headers, rows=body[start:start + 30],
+        _draw_fixed_table(fig, x=.07, y_top=.85, w=.86, headers=headers, rows=body[start:start + _AGGREGATE_ROWS_PER_PAGE],
                           col_fracs=col_fracs, row_height=.024)
         _save_page(pdf, fig)
     return page_no

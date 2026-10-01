@@ -12,7 +12,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from Bio.PDB import Atom, Chain, MMCIFIO, Model, PDBIO, Residue, Structure
+from Bio.PDB import MMCIFIO, PDBIO
+from structure_helpers import make_structure
 
 from alphajudge import cache, meta_score, report, runner
 from alphajudge.complex import Complex
@@ -23,25 +24,23 @@ from alphajudge.parsers.boltz import Boltz2Parser
 
 
 def write_structure(path: Path, separation: float = 5., plddt: float = 90., chains: str = "AB") -> None:
-    structure = Structure.Structure("test")
-    model = Model.Model(0)
-    structure.add(model)
-    serial = 1
-    for chain_no, chain_id in enumerate(chains):
-        chain = Chain.Chain(chain_id)
-        model.add(chain)
-        for res_no in (1, 2):
-            residue = Residue.Residue((" ", res_no, " "), "ALA", " ")
-            chain.add(residue)
-            for name, dx in (("CA", 0.), ("CB", .5)):
-                residue.add(Atom.Atom(
-                    name, np.array([res_no * 3.8 + dx, chain_no * separation, 0.]),
-                    plddt, 1., " ", name, serial, element="C",
-                ))
-                serial += 1
+    structure = make_structure(chains=chains, separation=separation, plddt=plddt)
     writer = PDBIO()
     writer.set_structure(structure)
     writer.save(str(path))
+
+
+@pytest.fixture
+def record_process(monkeypatch):
+    def start():
+        calls = []
+        original = runner.process
+        def record(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+        monkeypatch.setattr(runner, "process", record)
+        return calls
+    return start
 
 
 @pytest.fixture
@@ -135,15 +134,10 @@ def test_invalid_cache_or_parser_option_is_rejected(af2_run):
     {"pae_filter": 1.}, {"ipsae_pae_cutoff": 1.},
     {"skip_biophysical_scores": False},
 ])
-def test_cache_invalidates_scoring_options(af2_run, monkeypatch, change):
+def test_cache_invalidates_scoring_options(af2_run, record_process, change):
     directory, _ = af2_run
     score(directory)
-    calls = []
-    original = runner.process
-    def recording_process(*args, **kwargs):
-        calls.append(1)
-        return original(*args, **kwargs)
-    monkeypatch.setattr(runner, "process", recording_process)
+    calls = record_process()
     score(directory)
     assert calls == []
     score(directory, **change)
@@ -211,15 +205,10 @@ def test_content_validation_detects_edits_hidden_from_metadata(af2_run, monkeypa
     assert cache.request_identity(directory, csv_path, cache_validation="content") != content_request
 
 
-def test_changing_validation_mode_revalidates_scores(af2_run, monkeypatch):
+def test_changing_validation_mode_revalidates_scores(af2_run, record_process):
     directory, _ = af2_run
     score(directory)
-    calls = []
-    original = runner.process
-    def record(*args, **kwargs):
-        calls.append(1)
-        return original(*args, **kwargs)
-    monkeypatch.setattr(runner, "process", record)
+    calls = record_process()
     score(directory, cache_validation="content")
     score(directory, cache_validation="content")
     assert calls == [1]
@@ -326,7 +315,7 @@ def test_copied_cache_does_not_keep_the_old_job_name(af2_run):
 
 
 @pytest.mark.parametrize("invalidate", ["software", "missing_manifest", "corrupt_manifest", "force"])
-def test_cache_recomputes_without_current_provenance(af2_run, monkeypatch, invalidate):
+def test_cache_recomputes_without_current_provenance(af2_run, monkeypatch, record_process, invalidate):
     directory, _ = af2_run
     filename = "scores/custom.csv"
     score(directory, per_run_csv_name=filename)
@@ -337,12 +326,7 @@ def test_cache_recomputes_without_current_provenance(af2_run, monkeypatch, inval
         manifest.unlink()
     elif invalidate == "corrupt_manifest":
         manifest.write_text("{BROKEN")
-    calls = []
-    original = runner.process
-    def recording_process(*args, **kwargs):
-        calls.append(1)
-        return original(*args, **kwargs)
-    monkeypatch.setattr(runner, "process", recording_process)
+    calls = record_process()
     score(directory, per_run_csv_name=filename, force_recompute=invalidate == "force")
     assert calls == [1]
     score(directory, per_run_csv_name=filename)
@@ -471,14 +455,12 @@ def test_boltz_corrupt_pae_is_distinct_from_missing_optional_pae(tmp_path):
     assert np.all(matrix == 100.)
 
 
-def test_af2_structure_choice_and_provenance(af2_run, monkeypatch):
+def test_af2_structure_choice_and_provenance(af2_run):
     directory, models = af2_run
     model = models[0]
     score(directory)
     relaxed = directory / f"relaxed_{model}.pdb"
     write_structure(relaxed, plddt=40.)
-    glob = Path.glob
-    monkeypatch.setattr(Path, "glob", lambda self, pattern, **kwargs: iter(reversed(list(glob(self, pattern, **kwargs)))))
     assert Path(BaseParser._guess_struct(directory, model)) == relaxed
     row = score(directory)[0]
     assert float(row["interface_average_plddt"]) == 40.
@@ -517,7 +499,7 @@ def test_legacy_backend_inference_still_works():
     assert report._detect_backend([{"model_used": "model_1_multimer_v3_pred_0"}]) == "AlphaFold 2"
 
 
-def test_failed_model_is_retried_and_logs_traceback(af2_run, caplog, monkeypatch):
+def test_failed_model_is_retried_and_logs_traceback(af2_run, caplog, record_process):
     directory, models = af2_run
     broken = directory / f"pae_{models[1]}.json"
     broken.write_text("{BROKEN")
@@ -525,12 +507,7 @@ def test_failed_model_is_retried_and_logs_traceback(af2_run, caplog, monkeypatch
     assert {r["model_used"] for r in rows} == {models[0]}
     assert any(r.exc_info for r in caplog.records)
     assert str(broken) in caplog.text
-    calls = []
-    original = runner.process
-    def recording_process(*args, **kwargs):
-        calls.append(1)
-        return original(*args, **kwargs)
-    monkeypatch.setattr(runner, "process", recording_process)
+    calls = record_process()
     score(directory, models_to_analyse="all")
     assert calls == [1]
 
