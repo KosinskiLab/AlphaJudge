@@ -29,7 +29,7 @@
 | `metascore_features` | Semicolon-separated names of the features contributing to this row's metascore. |
 | `metascore_feature_count` | Number of contributing features. |
 
-Custom parsers can accept the optional `ParseOptions` argument to `parse_run`; `cache_options` identifies which parser options affect scores.
+Custom parsers should accept `parse_run(directory, *, options=ParseOptions())`, ignoring unused options; `cache_options` identifies which parser options affect scores.
 
 ## 1.4.3 - 2026-09-28
 
