@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 from Bio.PDB.Polypeptide import is_aa
 
-from . import BaseParser, Run
+from . import BaseParser, ParseOptions, Run
 from ..confidence import Confidence, validate_pae
 from ..geometry import is_pae_token_residue
 
@@ -37,7 +37,7 @@ class Boltz2Parser(BaseParser):
     def detect(d: Path) -> bool:
         return bool(Boltz2Parser._model_entries(d))
 
-    def parse_run(self, d: Path) -> Run:
+    def parse_run(self, d: Path, *, options: ParseOptions = ParseOptions()) -> Run:
         entries = self._model_entries(d)
         if not entries:
             raise ValueError(f"Boltz-2 prediction files not found in {d}")

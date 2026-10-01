@@ -13,6 +13,15 @@ from ..confidence import Confidence
 from ..geometry import is_pae_token_residue, representative_atom
 
 
+@dataclass(frozen=True)
+class ParseOptions:
+    structure_preference: str = "relaxed"
+
+    def __post_init__(self):
+        if self.structure_preference not in {"relaxed", "unrelaxed"}:
+            raise ValueError("Structure preference must be 'relaxed' or 'unrelaxed'")
+
+
 @dataclass
 class Run:
     order: list[str]
@@ -28,7 +37,11 @@ class BaseParser(ABC):
     @abstractmethod
     def detect(d: Path) -> bool: ...
     @abstractmethod
-    def parse_run(self, d: Path) -> Run: ...
+    def parse_run(self, d: Path, *, options: ParseOptions = ParseOptions()) -> Run: ...
+
+    def cache_options(self, options: ParseOptions) -> ParseOptions | None:
+        """Only options used by this parser belong in the scoring cache."""
+        return None
 
     # Compression magic numbers (file header bytes).
     _MAGIC = ((b"\xfd7zXZ\x00", lzma.open), (b"\x1f\x8b", gzip.open))
@@ -82,15 +95,14 @@ class BaseParser(ABC):
         return parser.get_structure("complex", str(p))
 
     @staticmethod
-    def _guess_struct(d: Path, model: str, rank: int | None = None, *, preference: str = "relaxed") -> str:
+    def _guess_struct(d: Path, model: str, rank: int | None = None, *, options: ParseOptions = ParseOptions()) -> str:
         """AF2 precedence: preferred state, other state, exact model, directory, rank.
 
         Prefer CIF to PDB *within* each category. The preferred state's PDB
         wins over the other state's CIF. Decorated names are a sorted fallback.
         """
-        if preference not in {"relaxed", "unrelaxed"}:
-            raise ValueError("AF2 structure preference must be 'relaxed' or 'unrelaxed'")
-        states = ("relaxed_", "unrelaxed_") if preference == "relaxed" else ("unrelaxed_", "relaxed_")
+        states = (("relaxed_", "unrelaxed_") if options.structure_preference == "relaxed"
+                  else ("unrelaxed_", "relaxed_"))
         candidates = [d / f"{prefix}{model}.{ext}"
                       for prefix in (*states, "")
                       for ext in ("cif", "pdb")]

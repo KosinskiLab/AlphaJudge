@@ -7,6 +7,7 @@ always hashed. Missing/old manifests are cache misses.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import json
@@ -14,9 +15,21 @@ from pathlib import Path
 import platform
 import tempfile
 
+from .parsers import ParseOptions
+
 SCHEMA_VERSION = 2
 _INPUT_SUFFIXES = (".json", ".json.gz", ".json.xz", ".pkl", ".pkl.gz", ".pkl.xz",
                    ".npz", ".cif", ".pdb")
+
+
+@dataclass(frozen=True)
+class ScoringSettings:
+    contact_thresh: float = 8.0
+    pae_filter: float = 100.0
+    models_to_analyse: str = "best"
+    ipsae_pae_cutoff: float = 10.0
+    skip_biophysical_scores: bool = False
+    parser_options: ParseOptions | None = None
 
 
 def file_digest(path: Path) -> str:
@@ -56,7 +69,9 @@ def software_identity() -> dict:
     }
 
 
-def request_identity(directory: Path, csv_path: Path, *, cache_validation: str = "stat", **settings) -> dict:
+def request_identity(directory: Path, csv_path: Path, *,
+                     settings: ScoringSettings = ScoringSettings(),
+                     cache_validation: str = "stat") -> dict:
     if cache_validation not in {"stat", "content"}:
         raise ValueError("cache_validation must be 'stat' or 'content'")
     inputs = {}
@@ -69,7 +84,7 @@ def request_identity(directory: Path, csv_path: Path, *, cache_validation: str =
             )
     return {"schema": SCHEMA_VERSION, "directory": str(directory.resolve()),
             "cache_validation": cache_validation,
-            "settings": settings, "inputs": inputs,
+            "settings": asdict(settings), "inputs": inputs,
             "software": software_identity()}
 
 

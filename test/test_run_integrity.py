@@ -16,7 +16,7 @@ from Bio.PDB import Atom, Chain, MMCIFIO, Model, PDBIO, Residue, Structure
 
 from alphajudge import cache, meta_score, report, runner
 from alphajudge.complex import Complex
-from alphajudge.parsers import BaseParser
+from alphajudge.parsers import BaseParser, ParseOptions
 from alphajudge.parsers.af2 import AF2Parser
 from alphajudge.parsers.af3 import AF3Parser
 from alphajudge.parsers.boltz import Boltz2Parser
@@ -107,6 +107,28 @@ def test_cache_changed_selection_and_threshold(af2_run):
     directory, models = af2_run
     assert {r["model_used"] for r in score(directory)} == {models[0]}
     assert {r["model_used"] for r in score(directory, contact_thresh=6., models_to_analyse="all")} == {models[1]}
+
+
+def test_parser_options_select_structure_and_only_affect_relevant_caches(af2_run):
+    directory, models = af2_run
+    write_structure(directory / f"relaxed_{models[0]}.pdb", plddt=40.)
+    options = ParseOptions(structure_preference="unrelaxed")
+    run = AF2Parser().parse_run(directory, options=options)
+    _, confidence = run.load_model(models[0])
+    assert confidence.plddt_residue == [90.] * 4
+    assert AF2Parser().cache_options(options) == options
+    assert AF3Parser().cache_options(options) is None
+    assert Boltz2Parser().cache_options(options) is None
+
+
+def test_invalid_cache_or_parser_option_is_rejected(af2_run):
+    directory, _ = af2_run
+    with pytest.raises(TypeError, match="pae_filtter"):
+        cache.request_identity(directory, directory / "interfaces.csv", pae_filtter=10.)
+    with pytest.raises(TypeError, match="pae_filtter"):
+        cache.ScoringSettings(pae_filtter=10.)
+    with pytest.raises(ValueError, match="Structure preference"):
+        ParseOptions(structure_preference="arbitrary")
 
 
 @pytest.mark.parametrize("change", [

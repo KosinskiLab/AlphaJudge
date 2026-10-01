@@ -4,7 +4,7 @@ import pickle
 import re
 from pathlib import Path
 import numpy as np
-from . import BaseParser, Run
+from . import BaseParser, ParseOptions, Run
 from ..confidence import Confidence, validate_pae
 from ..contact_probs import (
     AF2_DISTOGRAM_CONTACT_CUTOFF,
@@ -20,15 +20,16 @@ class AF2Parser(BaseParser):
     def detect(self, d: Path) -> bool:
         return any((d / f"ranking_debug.json{suffix}").exists() for suffix in ("", ".xz", ".gz"))
 
-    def parse_run(self, d: Path, *, structure_preference: str = "relaxed") -> Run:
-        if structure_preference not in {"relaxed", "unrelaxed"}:
-            raise ValueError("AF2 structure preference must be 'relaxed' or 'unrelaxed'")
+    def cache_options(self, options: ParseOptions) -> ParseOptions:
+        return options
+
+    def parse_run(self, d: Path, *, options: ParseOptions = ParseOptions()) -> Run:
         rj = self._read_json(d / "ranking_debug.json", required=True)
         order = rj["order"]
         structure_files = {}
 
         def load_model(model: str):
-            structure_path = Path(self._guess_struct(d, model, order.index(model), preference=structure_preference))
+            structure_path = Path(self._guess_struct(d, model, order.index(model), options=options))
             struct = self._load_structure(structure_path)
             structure_files[model] = str(structure_path.relative_to(d))
             chains, rim, _ = self._maps(struct)

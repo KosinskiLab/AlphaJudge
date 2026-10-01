@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 
 from . import cache
-from .parsers import AF2Parser, BaseParser, pick_parser
+from .parsers import BaseParser, ParseOptions, pick_parser
 from .complex import Complex
 from .confidence import IPTM_SCOPE_CHAIN_PAIR, IPTM_SCOPE_GLOBAL
 from .meta_score import (
@@ -31,12 +31,6 @@ _REQUIRED_CACHE_COLUMNS = frozenset({
 
 def _float_or_nan(value) -> float:
     return float(value) if value is not None else float("nan")
-
-
-def _parse_run(parser, directory: Path, af2_structure: str):
-    if isinstance(parser, AF2Parser):
-        return parser.parse_run(directory, structure_preference=af2_structure)
-    return parser.parse_run(directory)
 
 
 def _write_pae_png(path: Path, confidence, chain_boundaries: list[float]) -> dict | None:
@@ -73,7 +67,7 @@ def _ensure_pae_pngs(directory: Path, csv_path: Path, request: dict, *, af2_stru
             missing.append(model)
         if not missing:
             return
-        run = _parse_run(pick_parser(directory), directory, af2_structure)
+        run = pick_parser(directory).parse_run(directory, options=ParseOptions(af2_structure))
         for model in missing:
             pngs.pop(model, None)  # A failed repair must remain eligible for retry.
             try:
@@ -172,12 +166,13 @@ def process(
     out = d / per_run_csv_name
     cache.manifest_path(out).unlink(missing_ok=True)
     parser = pick_parser(d)
-    settings = dict(contact_thresh=contact_thresh, pae_filter=pae_filter,
+    options = ParseOptions(af2_structure)
+    settings = cache.ScoringSettings(contact_thresh=contact_thresh, pae_filter=pae_filter,
                     models_to_analyse=models_to_analyse, ipsae_pae_cutoff=ipsae_pae_cutoff,
                     skip_biophysical_scores=skip_biophysical_scores,
-                    af2_structure=af2_structure if isinstance(parser, AF2Parser) else None)
-    request = cache.request_identity(d, out, cache_validation=cache_validation, **settings)
-    run = _parse_run(parser, d, af2_structure)
+                    parser_options=parser.cache_options(options))
+    request = cache.request_identity(d, out, cache_validation=cache_validation, settings=settings)
+    run = parser.parse_run(d, options=options)
     models = run.order[:1] if models_to_analyse == "best" else run.order
     job = d.resolve().name
 
@@ -258,7 +253,7 @@ def process(
         csv_sha256 = cache.file_digest(Path(f.name))
     # Input files may be written by a predictor while scoring is in progress.
     # Such a run must be recomputed on the next invocation.
-    unchanged = request == cache.request_identity(d, out, cache_validation=cache_validation, **settings)
+    unchanged = request == cache.request_identity(d, out, cache_validation=cache_validation, settings=settings)
     cache.write_manifest(out, request, csv_sha256=csv_sha256, complete=complete and unchanged,
                          backend=run.source, models=list(models),
                          structure_files={m: run.structure_files[m] for m in models if m in run.structure_files},
@@ -335,12 +330,13 @@ def _process_one_run(
     rows = None
     if csv_path.exists() and not force_recompute:
         try:
-            request = cache.request_identity(
-                d, csv_path, contact_thresh=contact_thresh, pae_filter=pae_filter,
+            settings = cache.ScoringSettings(
+                contact_thresh=contact_thresh, pae_filter=pae_filter,
                 models_to_analyse=models_to_analyse, ipsae_pae_cutoff=ipsae_pae_cutoff,
-                skip_biophysical_scores=skip_biophysical_scores, cache_validation=cache_validation,
-                af2_structure=af2_structure if isinstance(pick_parser(d), AF2Parser) else None,
+                skip_biophysical_scores=skip_biophysical_scores,
+                parser_options=pick_parser(d).cache_options(ParseOptions(af2_structure)),
             )
+            request = cache.request_identity(d, csv_path, settings=settings, cache_validation=cache_validation)
             rows = _read_reusable_csv(csv_path, request)
         except Exception as e:
             logger.warning(f"could not reuse {csv_path}; recomputing: {e}")

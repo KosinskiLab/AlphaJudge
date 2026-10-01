@@ -5,7 +5,7 @@ import csv
 import logging
 import re
 import numpy as np
-from . import BaseParser, Run
+from . import BaseParser, ParseOptions, Run
 from ..confidence import SCOPE_INCLUDES_EXCLUDED_TOKENS, SCOPE_SCORED_RESIDUES, Confidence
 from ..geometry import is_pae_token_residue
 
@@ -42,7 +42,7 @@ class AF3Parser(BaseParser):
     def detect(d: Path) -> bool:
         return AF3Parser._ranking_scores_file(d) is not None
 
-    def parse_run(self, d: Path) -> Run:
+    def parse_run(self, d: Path, *, options: ParseOptions = ParseOptions()) -> Run:
         ranking_file = self._ranking_scores_file(d)
         if ranking_file is None:
             raise ValueError(f"AF3 ranking scores file not found in {d}")
