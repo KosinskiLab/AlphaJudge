@@ -306,7 +306,7 @@ def test_af2_structure_choice_and_provenance(af2_run, monkeypatch):
     relaxed = directory / f"relaxed_{model}.pdb"
     write_structure(relaxed, plddt=40.)
     glob = Path.glob
-    monkeypatch.setattr(Path, "glob", lambda self, pattern: iter(reversed(list(glob(self, pattern)))))
+    monkeypatch.setattr(Path, "glob", lambda self, pattern, **kwargs: iter(reversed(list(glob(self, pattern, **kwargs)))))
     assert Path(BaseParser._guess_struct(directory, model)) == relaxed
     row = score(directory)[0]
     assert float(row["interface_average_plddt"]) == 40.
