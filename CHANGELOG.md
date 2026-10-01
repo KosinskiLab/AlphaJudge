@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.4 - 2026-10-01
 
 ### Fixed
 - Per-run CSV reuse now requires `interfaces.csv.meta.json`, matching scoring options, inputs, software/calibration, and CSV checksum. The default checks file size, mtime, ctime and file identity without reading input payloads; `--cache_validation content` hashes every input for strict validation. Metadata can miss same-size edits on filesystems with coarse or preserved timestamps. Old caches and incomplete scoring runs are recomputed; CSVs and manifests are published with atomic file replacement.
