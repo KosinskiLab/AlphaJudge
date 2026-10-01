@@ -109,14 +109,30 @@ def write_manifest(csv_path: Path, request: dict, *, csv_sha256: str, complete: 
     manifest = {"request": request, "complete": complete,
                 "csv_sha256": csv_sha256, "backend": backend,
                 "models": models, "structure_files": structure_files, "pae_pngs": pae_pngs or {}}
+    _write_manifest_data(csv_path, manifest)
+
+
+def _write_manifest_data(csv_path: Path, manifest: dict) -> None:
     with atomic_text(manifest_path(csv_path)) as handle:
         json.dump(manifest, handle, indent=2, sort_keys=True)
         handle.write("\n")
 
 
+def read_manifest(csv_path: Path) -> dict:
+    return json.loads(manifest_path(csv_path).read_text())
+
+
+def update_pae_pngs(csv_path: Path, request: dict, pngs: dict) -> None:
+    """Update optional plots without certifying new CSV bytes or scoring options."""
+    manifest = read_manifest(csv_path)
+    if manifest.get("request") == request:
+        manifest["pae_pngs"] = pngs
+        _write_manifest_data(csv_path, manifest)
+
+
 def matches(csv_path: Path, request: dict) -> bool:
     try:
-        manifest = json.loads(manifest_path(csv_path).read_text())
+        manifest = read_manifest(csv_path)
         return (manifest.get("complete") is True and manifest.get("request") == request
                 and manifest.get("csv_sha256") == file_digest(csv_path))
     except (OSError, ValueError, AttributeError):

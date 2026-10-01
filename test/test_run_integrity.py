@@ -523,7 +523,8 @@ def test_failed_model_is_retried_and_logs_traceback(af2_run, caplog, monkeypatch
     broken.write_text("{BROKEN")
     rows = score(directory, models_to_analyse="all")
     assert {r["model_used"] for r in rows} == {models[0]}
-    assert any(r.exc_info and str(broken) in r.message for r in caplog.records)
+    assert any(r.exc_info for r in caplog.records)
+    assert str(broken) in caplog.text
     calls = []
     original = runner.process
     def recording_process(*args, **kwargs):

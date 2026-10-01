@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 import csv
-import json
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
+from dataclasses import dataclass
 
 from . import cache
-from .parsers import BaseParser, ParseOptions, pick_parser
+from .parsers import BaseParser, ParseOptions, Run, pick_parser
 from .complex import Complex
+from .geometry import chain_boundaries
 from .confidence import IPTM_SCOPE_CHAIN_PAIR, IPTM_SCOPE_GLOBAL
 from .meta_score import (
     CALIBRATION_ID, calibration_parameter_status, interface_meta_score, meta_score_components,
@@ -49,42 +50,41 @@ def _write_pae_png(path: Path, confidence, chain_boundaries: list[float]) -> dic
         return None
 
 
-def _ensure_pae_pngs(directory: Path, csv_path: Path, request: dict, *, af2_structure: str) -> None:
-    """Repair missing/stale plots on a cache hit, without constructing scores."""
+def _png_is_current(path: Path, fingerprint: dict | None) -> bool:
     try:
-        manifest_path = cache.manifest_path(csv_path)
-        manifest = json.loads(manifest_path.read_text())
+        return fingerprint == cache.file_fingerprint(path)
+    except OSError:
+        return False
+
+
+def _render_model_pae(directory: Path, run: Run, model: str) -> dict | None:
+    try:
+        structure, confidence = run.load_model(model)
+        _, _, indices = BaseParser._maps(structure)
+        return _write_pae_png(directory / f"pae_{model}.png", confidence, chain_boundaries(indices))
+    except Exception:
+        logger.exception("Could not load PAE for %s in %s", model, directory)
+        return None
+
+
+def _ensure_pae_pngs(directory: Path, csv_path: Path, request: dict, *, af2_structure: str) -> None:
+    """Repair optional plots; every failure leaves the scoring cache usable."""
+    try:
+        manifest = cache.read_manifest(csv_path)
         if manifest.get("request") != request:
             return  # A concurrent scoring run replaced the manifest.
         pngs = manifest.get("pae_pngs", {}).copy()
-        missing = []
-        for model in manifest["models"]:
-            try:
-                if pngs.get(model) == cache.file_fingerprint(directory / f"pae_{model}.png"):
-                    continue
-            except OSError:
-                pass
-            missing.append(model)
+        missing = [model for model in manifest["models"]
+                   if not _png_is_current(directory / f"pae_{model}.png", pngs.get(model))]
         if not missing:
             return
         run = pick_parser(directory).parse_run(directory, options=ParseOptions(af2_structure))
         for model in missing:
             pngs.pop(model, None)  # A failed repair must remain eligible for retry.
-            try:
-                structure, confidence = run.load_model(model)
-                _, _, indices = BaseParser._maps(structure)
-                boundaries = sorted(max(i) + .5 for i in indices.values() if i)[:-1]
-                fingerprint = _write_pae_png(directory / f"pae_{model}.png", confidence, boundaries)
-                if fingerprint is not None:
-                    pngs[model] = fingerprint
-            except Exception:
-                logger.exception("Could not load PAE for %s in %s", model, directory)
-        # Retain the original CSV checksum and completion state. Even if a
-        # concurrent writer publishes another CSV, this cannot certify its bytes.
-        manifest["pae_pngs"] = pngs
-        with cache.atomic_text(manifest_path) as handle:
-            json.dump(manifest, handle, indent=2, sort_keys=True)
-            handle.write("\n")
+            fingerprint = _render_model_pae(directory, run, model)
+            if fingerprint is not None:
+                pngs[model] = fingerprint
+        cache.update_pae_pngs(csv_path, request, pngs)
     except Exception:
         logger.exception("Could not refresh PAE heatmaps in %s; cached scores remain usable", directory)
 
@@ -149,30 +149,19 @@ def _interface_row(
     return row
 
 
-def process(
-    directory: str,
-    contact_thresh: float,
-    pae_filter: float,
-    models_to_analyse: str,
-    ipsae_pae_cutoff: float = 10.0,
-    *,
-    per_run_csv_name: str = "interfaces.csv",
-    skip_pae_png: bool = False,
-    skip_biophysical_scores: bool = False,
-    cache_validation: str = "stat",
-    af2_structure: str = "relaxed",
-) -> Path:
-    d = Path(directory)
-    out = d / per_run_csv_name
-    cache.manifest_path(out).unlink(missing_ok=True)
-    parser = pick_parser(d)
-    options = ParseOptions(af2_structure)
-    settings = cache.ScoringSettings(contact_thresh=contact_thresh, pae_filter=pae_filter,
-                    models_to_analyse=models_to_analyse, ipsae_pae_cutoff=ipsae_pae_cutoff,
-                    skip_biophysical_scores=skip_biophysical_scores,
-                    parser_options=parser.cache_options(options))
-    request = cache.request_identity(d, out, cache_validation=cache_validation, settings=settings)
-    run = parser.parse_run(d, options=options)
+@dataclass
+class _ScoredRun:
+    rows: list[dict]
+    models: list[str]
+    complete: bool
+    pae_pngs: dict
+
+
+def _score_run(d: Path, run: Run, settings: cache.ScoringSettings, *, skip_pae_png: bool) -> _ScoredRun:
+    contact_thresh, pae_filter = settings.contact_thresh, settings.pae_filter
+    models_to_analyse = settings.models_to_analyse
+    ipsae_pae_cutoff = settings.ipsae_pae_cutoff
+    skip_biophysical_scores = settings.skip_biophysical_scores
     models = run.order[:1] if models_to_analyse == "best" else run.order
     job = d.resolve().name
 
@@ -214,12 +203,11 @@ def process(
 
             rows.extend(model_rows)
             models_processed += 1
-            logger.info(f"processed model: {m} via {parser.name}")
-        except Exception as e:
+            logger.info("processed model: %s via %s", m, run.source)
+        except Exception:
             complete = False
-            logger.exception(f"error processing model {m} in {d}: {e}")
+            logger.exception("error processing model %s in %s", m, d)
 
-    out.parent.mkdir(parents=True, exist_ok=True)  # per_run_csv_name may hold a subdir
     if not rows:
         # Explain *why* the CSV is empty instead of writing a silent zero-byte file
         # (see https://github.com/KosinskiLab/AlphaJudge/issues/17). The common case
@@ -240,13 +228,19 @@ def process(
             )
         else:
             reason = "all detected interfaces had zero interface residues"
-        logger.warning(f"no interface rows for {job}: {reason}; writing empty {out}")
+        logger.warning("no interface rows for %s: %s", job, reason)
 
+    return _ScoredRun(rows, list(models), complete, pae_pngs)
+
+
+def _publish_scores(d: Path, out: Path, run: Run, result: _ScoredRun,
+                    request: dict, settings: cache.ScoringSettings, cache_validation: str) -> None:
+    """Publish rows and provenance without certifying another writer's CSV."""
     with cache.atomic_text(out) as f:
-        if rows:
-            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        if result.rows:
+            w = csv.DictWriter(f, fieldnames=list(result.rows[0]))
             w.writeheader()
-            w.writerows(rows)
+            w.writerows(result.rows)
         f.flush()
         # Hash our own temporary file, before publishing it. A concurrent writer
         # must not get its CSV certified with this run's settings.
@@ -254,11 +248,39 @@ def process(
     # Input files may be written by a predictor while scoring is in progress.
     # Such a run must be recomputed on the next invocation.
     unchanged = request == cache.request_identity(d, out, cache_validation=cache_validation, settings=settings)
-    cache.write_manifest(out, request, csv_sha256=csv_sha256, complete=complete and unchanged,
-                         backend=run.source, models=list(models),
-                         structure_files={m: run.structure_files[m] for m in models if m in run.structure_files},
-                         pae_pngs=pae_pngs)
-    logger.info(f"wrote {out}")
+    cache.write_manifest(out, request, csv_sha256=csv_sha256, complete=result.complete and unchanged,
+                         backend=run.source, models=result.models,
+                         structure_files={m: run.structure_files[m] for m in result.models if m in run.structure_files},
+                         pae_pngs=result.pae_pngs)
+    logger.info("wrote %s", out)
+
+
+def process(
+    directory: str,
+    contact_thresh: float,
+    pae_filter: float,
+    models_to_analyse: str,
+    ipsae_pae_cutoff: float = 10.0,
+    *,
+    per_run_csv_name: str = "interfaces.csv",
+    skip_pae_png: bool = False,
+    skip_biophysical_scores: bool = False,
+    cache_validation: str = "stat",
+    af2_structure: str = "relaxed",
+) -> Path:
+    d = Path(directory)
+    out = d / per_run_csv_name
+    cache.manifest_path(out).unlink(missing_ok=True)
+    parser = pick_parser(d)
+    options = ParseOptions(af2_structure)
+    settings = cache.ScoringSettings(contact_thresh=contact_thresh, pae_filter=pae_filter,
+                    models_to_analyse=models_to_analyse, ipsae_pae_cutoff=ipsae_pae_cutoff,
+                    skip_biophysical_scores=skip_biophysical_scores,
+                    parser_options=parser.cache_options(options))
+    request = cache.request_identity(d, out, cache_validation=cache_validation, settings=settings)
+    run = parser.parse_run(d, options=options)
+    result = _score_run(d, run, settings, skip_pae_png=skip_pae_png)
+    _publish_scores(d, out, run, result, request, settings, cache_validation)
     return out
 
 
@@ -288,18 +310,17 @@ def _read_csv_rows(path: Path) -> list[dict]:
 def _read_reusable_csv(path: Path, request: dict) -> list[dict] | None:
     """Return cached rows only when schema, inputs, options and software match."""
     if not cache.matches(path, request):
-        logger.info(f"existing {path} has absent or stale provenance; recomputing")
+        logger.info("existing %s has absent or stale provenance; recomputing", path)
         return None
     rows = _read_csv_rows(path)
     if not rows:
-        logger.info(f"existing {path} is empty; recomputing")
+        logger.info("existing %s is empty; recomputing", path)
         return None
 
     missing = sorted(_REQUIRED_CACHE_COLUMNS - set(rows[0]))
     if missing:
         logger.info(
-            f"existing {path} is missing required column(s) "
-            f"{', '.join(missing)}; recomputing"
+            "existing %s is missing required column(s) %s; recomputing", path, ", ".join(missing)
         )
         return None
     return rows
@@ -339,11 +360,11 @@ def _process_one_run(
             request = cache.request_identity(d, csv_path, settings=settings, cache_validation=cache_validation)
             rows = _read_reusable_csv(csv_path, request)
         except Exception as e:
-            logger.warning(f"could not reuse {csv_path}; recomputing: {e}")
+            logger.warning("could not reuse %s; recomputing: %s", csv_path, e)
         if rows is not None and summary_csv is not None:
-            logger.info(f"reused existing {csv_path} for aggregation")
+            logger.info("reused existing %s for aggregation", csv_path)
         elif rows is not None:
-            logger.info(f"reused existing {csv_path}; skipping recompute")
+            logger.info("reused existing %s; skipping recompute", csv_path)
 
     if rows is None:
         csv_path = process(
@@ -365,7 +386,7 @@ def _process_one_run(
         try:
             generate_per_run_report(d, csv_name=per_run_csv_name)
         except Exception as e:  # pragma: no cover - defensive
-            logger.warning(f"per-run report failed for {d}: {e}")
+            logger.warning("per-run report failed for %s: %s", d, e)
 
     if summary_csv is None:
         return d_str, []
@@ -373,7 +394,7 @@ def _process_one_run(
         try:
             rows = _read_csv_rows(csv_path)
         except Exception as e:
-            logger.error(f"failed reading {csv_path} for aggregation: {e}")
+            logger.error("failed reading %s for aggregation: %s", csv_path, e)
             return d_str, []
     # Absolute source_dir lets the aggregate report locate per-run side files
     # (PAE PNGs, etc.) from the summary CSV.
@@ -427,14 +448,14 @@ def process_many(
     for p in paths:
         rp = Path(p).resolve()
         if not rp.exists():
-            logger.warning(f"path does not exist: {rp}")
+            logger.warning("path does not exist: %s", rp)
         elif recursive and rp.is_dir():
             run_dirs.update(dict.fromkeys(_discover_run_dirs(rp)))
         elif _is_run_dir(rp):
             run_dirs[rp] = None
         else:
             logger.warning(
-                f"no supported run detected at {rp} (use --recursive to search within)"
+                "no supported run detected at %s (use --recursive to search within)", rp
             )
 
     if not run_dirs:
@@ -461,21 +482,21 @@ def process_many(
         af2_structure=af2_structure,
     )
     aggregated_rows: list[dict] = []
-    logger.info(f"Processing {len(run_dirs)} runs with {cores} cores")
+    logger.info("Processing %s runs with %s cores", len(run_dirs), cores)
     if cores == 1:
         for d in run_dirs:
             try:
                 aggregated_rows.extend(worker(str(d))[1])
-            except Exception as e:
-                logger.exception(f"failed processing {d}: {e}")
+            except Exception:
+                logger.exception("failed processing %s", d)
     else:
         # Important: logging from multiple processes can interleave; acceptable.
         with ProcessPoolExecutor(max_workers=cores) as ex:
             for fut in as_completed([ex.submit(worker, str(d)) for d in run_dirs]):
                 try:
                     aggregated_rows.extend(fut.result()[1])
-                except Exception as e:
-                    logger.exception(f"worker failed: {e}")
+                except Exception:
+                    logger.exception("worker failed")
 
     if not summary_csv:
         return None
@@ -495,6 +516,6 @@ def process_many(
         w.writerows(aggregated_rows)
 
     logger.info(
-        f"wrote summary {summary_path} ({len(aggregated_rows)} rows from {len(run_dirs)} runs)"
+        "wrote summary %s (%s rows from %s runs)", summary_path, len(aggregated_rows), len(run_dirs)
     )
     return summary_path
