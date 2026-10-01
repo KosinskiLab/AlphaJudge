@@ -67,6 +67,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
     if not args.paths:
         p.error("Provide PATHS")
+    if args.aggregate_report and not args.summary:
+        p.error("--aggregate_report requires --summary")
 
     write_per_run_report = args.report
     if write_per_run_report is None:
@@ -89,8 +91,6 @@ def main() -> None:
     )
 
     if args.aggregate_report:
-        if not args.summary:
-            p.error("--aggregate_report requires --summary")
         if summary_path is None:
             p.error(
                 f"--aggregate_report requested but no summary was written to "

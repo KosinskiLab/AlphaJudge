@@ -261,27 +261,26 @@ def test_plain_af3_global_confidence_still_contributes_to_metascore():
 
 def test_cached_scores_without_scope_metadata_are_recomputed(tmp_path, monkeypatch):
     from alphajudge import runner
-    stale = tmp_path / "interfaces.csv"
+    run_dir, _, _ = _write_run(tmp_path)
+    stale = run_dir / "interfaces.csv"
     stale.write_text("jobs,interface_ccc,interface_expected_contacts\nold,1,2\n")
     calls = []
+    original_process = runner.process
 
     def recompute(directory, *args, **kwargs):
         calls.append(directory)
-        stale.write_text(
-            "jobs,interface_ccc,interface_expected_contacts,global_confidence_scope,iptm_scope\n"
-            "new,1,2,includes_excluded_tokens,chain_pair\n"
-        )
-        return stale
+        return original_process(directory, *args, **kwargs)
 
     monkeypatch.setattr(runner, "process", recompute)
     for _ in range(2):
         _, rows = runner._process_one_run(
-            str(tmp_path), contact_thresh=8., pae_filter=100., models_to_analyse="best",
+            str(run_dir), contact_thresh=8., pae_filter=100., models_to_analyse="best",
             summary_csv="summary.csv", ipsae_pae_cutoff=10., force_recompute=False,
             per_run_csv_name="interfaces.csv", skip_pae_png=True, skip_biophysical_scores=True,
         )
-        assert rows[0]["jobs"] == "new"
-    assert calls == [str(tmp_path)]
+        assert rows[0]["jobs"] == "mixed"
+        assert rows[0]["global_confidence_scope"] == "includes_excluded_tokens"
+    assert calls == [str(run_dir)]
 
 
 @pytest.mark.parametrize("ligand_first", [False, True])

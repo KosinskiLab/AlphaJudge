@@ -7,19 +7,24 @@ import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 
+from . import cache
 from .parsers import pick_parser
 from .complex import Complex
 from .confidence import IPTM_SCOPE_CHAIN_PAIR, IPTM_SCOPE_GLOBAL
-from .meta_score import interface_meta_score
+from .meta_score import (
+    CALIBRATION_ID, calibration_parameter_status, interface_meta_score, meta_score_components,
+)
 from .report import generate_per_run_report, render_pae_png
 
 logger = logging.getLogger(__name__)
 
 
-# Cached per-run CSVs from older releases are safe to reuse only when they
-# contain every field introduced by the current output contract.
+# Schema validation supplements the provenance manifest.
 _REQUIRED_CACHE_COLUMNS = frozenset({
     "interface_ccc", "interface_expected_contacts", "global_confidence_scope", "iptm_scope",
+    "backend", "structure_file",
+    "contact_thresh", "pae_filter", "ipsae_pae_cutoff", "metascore_calibration",
+    "metascore_calibration_status", "metascore_features", "metascore_feature_count",
 })
 
 
@@ -28,7 +33,8 @@ def _float_or_nan(value) -> float:
 
 
 def _interface_row(
-    job: str, model: str, iface, confidence, global_score: float, skip_biophysical_scores: bool
+    job: str, model: str, iface, confidence, global_score: float, skip_biophysical_scores: bool,
+    *, backend: str = "", structure_file: str = "",
 ) -> dict:
     """One output CSV row for a scored interface."""
     pd2, _ = iface.pDockQ2()
@@ -36,6 +42,11 @@ def _interface_row(
     row = {
         "jobs": job,
         "model_used": model,
+        "backend": backend,
+        "structure_file": structure_file,
+        "contact_thresh": iface.c.contact_thresh,
+        "pae_filter": iface.c.pae_filter,
+        "ipsae_pae_cutoff": iface.c.ipsae_pae_cutoff,
         "interface": iface.label,
         "global_confidence_scope": confidence.global_confidence_scope,
         "iptm_scope": IPTM_SCOPE_CHAIN_PAIR if pair_iptm is not None else IPTM_SCOPE_GLOBAL,
@@ -73,6 +84,11 @@ def _interface_row(
             "interface_solv_en": iface.int_solv_en,
         })
     row["interface_meta_score"] = interface_meta_score(row)
+    components = meta_score_components(row)
+    row["metascore_calibration"] = CALIBRATION_ID
+    row["metascore_calibration_status"] = calibration_parameter_status(row)
+    row["metascore_features"] = ";".join(components)
+    row["metascore_feature_count"] = len(components)
     return row
 
 
@@ -88,6 +104,12 @@ def process(
     skip_biophysical_scores: bool = False,
 ) -> Path:
     d = Path(directory)
+    out = d / per_run_csv_name
+    cache.manifest_path(out).unlink(missing_ok=True)
+    settings = dict(contact_thresh=contact_thresh, pae_filter=pae_filter,
+                    models_to_analyse=models_to_analyse, ipsae_pae_cutoff=ipsae_pae_cutoff,
+                    skip_pae_png=skip_pae_png, skip_biophysical_scores=skip_biophysical_scores)
+    request = cache.request_identity(d, out, **settings)
     parser = pick_parser(d)
     run = parser.parse_run(d)
     models = run.order[:1] if models_to_analyse == "best" else run.order
@@ -98,11 +120,11 @@ def process(
     models_processed = 0
     total_interfaces = 0
     dropped_by_pae = 0
+    complete = True
     for m in models:
         try:
             structure, confidence = run.load_model(m)
             comp = Complex(structure, confidence, contact_thresh, pae_filter, ipsae_pae_cutoff)
-            models_processed += 1
             total_interfaces += len(comp.interfaces)
 
             global_score = (
@@ -111,14 +133,16 @@ def process(
                 else (comp.interfaces[0].pDockQ if comp.interfaces else float("nan"))
             )
 
+            model_rows = []
             for iface in comp.interfaces:
                 if iface.num_intf_residues == 0:
                     continue
                 if iface.average_interface_pae > pae_filter:
                     dropped_by_pae += 1
                     continue
-                rows.append(
-                    _interface_row(job, m, iface, confidence, global_score, skip_biophysical_scores)
+                model_rows.append(
+                    _interface_row(job, m, iface, confidence, global_score, skip_biophysical_scores,
+                                   backend=run.source, structure_file=run.structure_files.get(m, ""))
                 )
 
             if not skip_pae_png:
@@ -131,14 +155,17 @@ def process(
                         figsize=(8, 8),
                     )
                     logger.info(f"wrote {pae_png}")
-                except Exception as e:
-                    logger.error(f"Could not create PAE heatmap {pae_png}: {e}")
+                except Exception:
+                    complete = False
+                    logger.exception(f"Could not create PAE heatmap {pae_png}")
 
+            rows.extend(model_rows)
+            models_processed += 1
             logger.info(f"processed model: {m} via {parser.name}")
         except Exception as e:
-            logger.error(f"error processing model {m}: {e}")
+            complete = False
+            logger.exception(f"error processing model {m} in {d}: {e}")
 
-    out = d / per_run_csv_name
     out.parent.mkdir(parents=True, exist_ok=True)  # per_run_csv_name may hold a subdir
     if not rows:
         # Explain *why* the CSV is empty instead of writing a silent zero-byte file
@@ -162,11 +189,21 @@ def process(
             reason = "all detected interfaces had zero interface residues"
         logger.warning(f"no interface rows for {job}: {reason}; writing empty {out}")
 
-    with out.open("w", newline="") as f:
+    with cache.atomic_text(out) as f:
         if rows:
             w = csv.DictWriter(f, fieldnames=list(rows[0]))
             w.writeheader()
             w.writerows(rows)
+        f.flush()
+        # Hash our own temporary file, before publishing it. A concurrent writer
+        # must not get its CSV certified with this run's settings.
+        csv_sha256 = cache.file_digest(Path(f.name))
+    # Input files may be written by a predictor while scoring is in progress.
+    # Such a run must be recomputed on the next invocation.
+    unchanged = request == cache.request_identity(d, out, **settings)
+    cache.write_manifest(out, request, csv_sha256=csv_sha256, complete=complete and unchanged,
+                         backend=run.source, models=list(models),
+                         structure_files={m: run.structure_files[m] for m in models if m in run.structure_files})
     logger.info(f"wrote {out}")
     return out
 
@@ -194,8 +231,11 @@ def _read_csv_rows(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def _read_reusable_csv(path: Path) -> list[dict] | None:
-    """Return cached rows only when the file satisfies the current schema."""
+def _read_reusable_csv(path: Path, request: dict) -> list[dict] | None:
+    """Return cached rows only when schema, inputs, options and software match."""
+    if not cache.matches(path, request):
+        logger.info(f"existing {path} has absent or stale provenance; recomputing")
+        return None
     rows = _read_csv_rows(path)
     if not rows:
         logger.info(f"existing {path} is empty; recomputing")
@@ -231,12 +271,15 @@ def _process_one_run(
     d = Path(d_str)
     csv_path = d / per_run_csv_name
 
-    # Reuse a precomputed CSV only if its header satisfies the current output
-    # contract. This prevents an upgrade from silently aggregating stale rows.
     rows = None
     if csv_path.exists() and not force_recompute:
         try:
-            rows = _read_reusable_csv(csv_path)
+            request = cache.request_identity(
+                d, csv_path, contact_thresh=contact_thresh, pae_filter=pae_filter,
+                models_to_analyse=models_to_analyse, ipsae_pae_cutoff=ipsae_pae_cutoff,
+                skip_pae_png=skip_pae_png, skip_biophysical_scores=skip_biophysical_scores,
+            )
+            rows = _read_reusable_csv(csv_path, request)
         except Exception as e:
             logger.warning(f"could not reuse {csv_path}; recomputing: {e}")
         if rows is not None and summary_csv is not None:
@@ -358,7 +401,7 @@ def process_many(
             try:
                 aggregated_rows.extend(worker(str(d))[1])
             except Exception as e:
-                logger.error(f"failed processing {d}: {e}")
+                logger.exception(f"failed processing {d}: {e}")
     else:
         # Important: logging from multiple processes can interleave; acceptable.
         with ProcessPoolExecutor(max_workers=cores) as ex:
@@ -366,7 +409,7 @@ def process_many(
                 try:
                     aggregated_rows.extend(fut.result()[1])
                 except Exception as e:
-                    logger.error(f"worker failed: {e}")
+                    logger.exception(f"worker failed: {e}")
 
     if not summary_csv:
         return None

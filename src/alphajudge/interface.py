@@ -345,10 +345,7 @@ class Interface:
     def _avg_pae_over_pairs(self) -> float:
         vals = []
         for i, j in self._pair_indices():
-            try:
-                vals.extend((float(self._pae[i, j]), float(self._pae[j, i])))
-            except IndexError:  # PAE smaller than the scored residues
-                continue
+            vals.extend((float(self._pae[i, j]), float(self._pae[j, i])))
         return sum(vals) / len(vals) if vals else float("nan")
 
     def _frac(self, names: set[str]) -> float:

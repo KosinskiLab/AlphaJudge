@@ -5,9 +5,9 @@ import math
 from functools import cached_property
 from typing import Any
 
-from Bio.PDB import Chain
+from Bio.PDB import Chain, Model, Structure
 
-from .confidence import Confidence
+from .confidence import Confidence, validate_pae
 from .docking_scores import MPDOCKQ
 from .geometry import is_pae_token_residue
 from .interface import Interface
@@ -47,6 +47,11 @@ class Complex:
     def _build_maps(self) -> tuple[dict[tuple[str, Any], int], dict[str, list[int]], list[Chain.Chain]]:
         model = next(self.structure.get_models())
         chains = list(model.get_chains())
+        # Bio.PDB compares residues by their full hierarchy (excluding only
+        # the structure ID). Detached chains make A:1 compare equal to B:1.
+        self._scored_structure = Structure.Structure(self.structure.id)
+        scored_model = Model.Model(model.id)
+        self._scored_structure.add(scored_model)
 
         res_index_map: dict[tuple[str, Any], int] = {}
         chain_indices_by_id: dict[str, list[int]] = {}
@@ -59,6 +64,7 @@ class Complex:
                 continue
 
             new_chain = Chain.Chain(chain.id)
+            scored_model.add(new_chain)
             for residue in kept:
                 new_chain.add(residue.copy())
             filtered_chains.append(new_chain)
@@ -70,12 +76,7 @@ class Complex:
                 idx += 1
             chain_indices_by_id[new_chain.id] = idxs
 
-        pae_n = len(self.conf.pae_matrix)
-        if idx != pae_n:
-            logger.warning(
-                f"token residues counted = {idx}, but PAE is {pae_n}x{pae_n}. "
-                f"Indexing may be misaligned for this structure."
-            )
+        validate_pae(self.conf.pae_matrix, idx)
 
         return res_index_map, chain_indices_by_id, filtered_chains
 

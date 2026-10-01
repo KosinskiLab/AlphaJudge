@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from bisect import bisect_right
 from collections.abc import Mapping
@@ -31,7 +33,6 @@ FEATURE_DIRECTIONS = {
     "pDockQ/mpDockQ": 1.0,
     "interface_sc": 1.0,
     "interface_hb": 1.0,
-    "interface_area": 1.0,
     "interface_solv_en": -1.0,
     "interface_contact_prob_top10_mean": 1.0,
     "interface_ccc": 1.0,
@@ -52,8 +53,8 @@ CALIBRATION_LEVELS = (
 )
 
 # Frozen deciles from the AlphaJudge interacting reference set. Calibrated on
-# POSITIVE (interacting) pairs ONLY: 3,878 AF2/AF3 positive rows out of the
-# 7,756-row balanced table. The database-negative re-pairings are deliberately
+# POSITIVE (interacting) pairs ONLY: 12,163 AF2/AF3 positive rows from the full
+# non-downsampled v3 table. The database-negative re-pairings are deliberately
 # excluded so a new prediction is ranked against the distribution of real
 # interfaces, not against a 50% non-interacting decoy population. Regenerate
 # manually with
@@ -548,12 +549,41 @@ BENCHMARK_QUANTILES_BY_BACKEND = {
 }
 
 
+# Content-addressed identity travels with standalone CSVs, independently of
+# the run cache. Include the feature/scope policy as well as the frozen data.
+CALIBRATION_ID = "aj-positive-v3-" + hashlib.sha256(json.dumps({
+    "policy": "available-mean_scope-v1_explicit-backend-v1",
+    "features": META_SCORE_FEATURES,
+    "directions": FEATURE_DIRECTIONS,
+    "levels": CALIBRATION_LEVELS,
+    "pooled": BENCHMARK_QUANTILES,
+    "backends": BENCHMARK_QUANTILES_BY_BACKEND,
+}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+
+_REFERENCE_PARAMETERS = {"contact_thresh": 8., "pae_filter": 100., "ipsae_pae_cutoff": 10.}
+
+
 def _safe_float(value: Any) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         return float("nan")
     return parsed if math.isfinite(parsed) else float("nan")
+
+
+def calibration_parameter_status(row: Mapping[str, Any]) -> str:
+    """Flag custom or unknown settings; this does not refit the calibration.
+
+    A custom PAE row filter changes selection rather than the per-row scores,
+    but still changes the population being compared with the reference set.
+    """
+    values = {key: _safe_float(row.get(key)) for key in _REFERENCE_PARAMETERS}
+    if any(math.isfinite(value) and value != _REFERENCE_PARAMETERS[key]
+           for key, value in values.items()):
+        return "custom"
+    if any(not math.isfinite(value) for value in values.values()):
+        return "unknown"
+    return "default"
 
 
 def calibrated_feature_percentile(
@@ -593,6 +623,10 @@ def calibrated_feature_percentile(
 
 def infer_backend(row: Mapping[str, Any]) -> str | None:
     """Best-effort backend tag for a scored row ("af2"/"af3", else None)."""
+    backend = str(row.get("backend") or "").strip().lower()
+    if backend:
+        # An explicit uncalibrated backend (e.g. Boltz) uses the pooled ladder.
+        return backend if backend in {"af2", "af3"} else None
     src = str(row.get("interface_contact_prob_source") or "")
     if src.startswith("af2"):
         return "af2"
@@ -620,6 +654,19 @@ def feature_is_comparable(row: Mapping[str, Any], feature: str) -> bool:
     return feature != "iptm" or row.get("iptm_scope") == IPTM_SCOPE_CHAIN_PAIR
 
 
+def meta_score_components(row: Mapping[str, Any]) -> dict[str, float]:
+    """The available, scope-compatible percentile contributions for this row."""
+    backend = infer_backend(row)
+    percentiles = {}
+    for feature in META_SCORE_FEATURES:
+        if not feature_is_comparable(row, feature):
+            continue
+        percentile = calibrated_feature_percentile(feature, row.get(feature), backend)
+        if percentile is not None:
+            percentiles[feature] = percentile
+    return percentiles
+
+
 def interface_meta_score(row: Mapping[str, Any]) -> float:
     """
     Transparent rank-style interface metascore.
@@ -629,14 +676,7 @@ def interface_meta_score(row: Mapping[str, Any]) -> float:
     non-finite and scope-incompatible inputs are ignored. The final score is
     the mean of the remaining percentiles; no AF3x-specific calibration is implied.
     """
-    backend = infer_backend(row)
-    percentiles = []
-    for feature in META_SCORE_FEATURES:
-        if not feature_is_comparable(row, feature):
-            continue
-        percentile = calibrated_feature_percentile(feature, row.get(feature), backend)
-        if percentile is not None:
-            percentiles.append(percentile)
+    percentiles = meta_score_components(row)
     if not percentiles:
         return float("nan")
-    return float(sum(percentiles) / len(percentiles))
+    return float(sum(percentiles.values()) / len(percentiles))

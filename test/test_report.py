@@ -199,7 +199,7 @@ def test_per_run_report_text_counts_features_and_numbers_appendices(
     _write_csv(tmp_path / "interfaces.csv", rows)
     assert generate_per_run_report(tmp_path) is not None
 
-    assert any(f"across the {len(META_SCORE_FEATURES)} metascore features" in t for t in drawn_text)
+    assert any(f"up to {len(META_SCORE_FEATURES)} available feature percentiles" in t for t in drawn_text)
     assert "A.1" in drawn_text
     assert "Appendix – model model_2_multimer_v3_pred_0" in drawn_text
 
@@ -218,3 +218,123 @@ def test_aggregate_cover_median_averages_the_middle_pair(tmp_path: Path, drawn_t
     scores = sorted(rep._row_meta_score(r) for r in rows)
     median = (scores[1] + scores[2]) / 2
     assert f"median   = {median:.3f}" in drawn_text
+
+
+@pytest.fixture
+def captured_pages(monkeypatch):
+    """Capture actual PDF page artists and their physical positions before saving."""
+    from matplotlib.backends.backend_pdf import PdfPages
+    from matplotlib.text import Text
+
+    pages = []
+    original = PdfPages.savefig
+
+    def record(pdf, figure, **kwargs):
+        texts = []
+        for artist in figure.findobj(Text):
+            point = artist.get_transform().transform(artist.get_position())
+            x, y = figure.transFigure.inverted().transform(point)
+            texts.append((artist.get_text(), x, y))
+        pages.append(texts)
+        return original(pdf, figure, **kwargs)
+
+    monkeypatch.setattr(PdfPages, "savefig", record)
+    return pages
+
+
+def test_interface_table_paginates_without_losing_rows(tmp_path, captured_pages):
+    from alphajudge import report as rep
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    rows = [{**_BASE_ROW, "model_used": f"R{i:02}"} for i in range(36)]
+    with PdfPages(tmp_path / "table.pdf") as pdf:
+        rep._per_interface_page(pdf, entry_id="test", section_no="1", rows=rows, page_no=2)
+    assert len(captured_pages) == 2
+    assert all(any(text == "Model" for text, _, _ in page) for page in captured_pages)
+    table_rows = [(text, y) for page in captured_pages for text, _, y in page if text.startswith("R") and text[1:].isdigit()]
+    assert sorted(text for text, _ in table_rows) == [f"R{i:02}" for i in range(36)]
+    assert all(.05 < y < .85 for _, y in table_rows)
+    assert [text for page in captured_pages for text, _, _ in page if text.startswith("Page ")] == ["Page 2", "Page 3"]
+
+
+def test_large_aggregate_ranking_paginates(tmp_path, captured_pages):
+    rows = [{**_BASE_ROW, "jobs": f"JOB_{i:02}"} for i in range(42)]
+    summary = tmp_path / "summary.csv"
+    _write_csv(summary, rows)
+    generate_aggregate_report(summary, out_pdf=tmp_path / "aggregate.pdf", top_n=42, max_complexes=1)
+    # Cover with ten entries, two continuation tables, one interface, one complex.
+    assert len(captured_pages) == 5
+    table_entries = [(text, y) for page in captured_pages[:3] for text, _, y in page if text.startswith("JOB_")]
+    assert len(table_entries) == 42
+    assert all(.05 < y < .9 for _, y in table_entries)
+    assert [text for page in captured_pages for text, _, _ in page if text.startswith("Page ")] == [f"Page {i}" for i in range(2, 6)]
+
+
+def test_import_preserves_matplotlib_backend_and_figures():
+    import subprocess
+    import sys
+
+    code = """
+import matplotlib
+matplotlib.use('svg')
+import matplotlib.pyplot as plt
+fig = plt.figure()
+import alphajudge.report
+assert matplotlib.get_backend().lower() == 'svg'
+assert plt.fignum_exists(fig.number)
+"""
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("operation", ["png", "per_run", "aggregate", "error"])
+def test_render_restores_matplotlib_settings(tmp_path, operation, monkeypatch):
+    import matplotlib
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    from alphajudge import report as rep
+
+    _write_csv(tmp_path / "interfaces.csv", [dict(_BASE_ROW)])
+    with matplotlib.rc_context({"font.family": ["sans-serif"], "font.size": 17, "pdf.fonttype": 3}):
+        figure = plt.figure()
+        before = dict(matplotlib.rcParams)
+        try:
+            if operation == "png":
+                rep.render_pae_png(tmp_path / "pae.png", [[1., 2.], [3., 4.]])
+            elif operation == "per_run":
+                rep.generate_per_run_report(tmp_path)
+            elif operation == "aggregate":
+                rep.generate_aggregate_report(tmp_path / "interfaces.csv", out_pdf=tmp_path / "a.pdf")
+            else:
+                def fail(*args, **kwargs):
+                    raise OSError("write failed")
+                monkeypatch.setattr(Figure, "savefig", fail)
+                with pytest.raises(OSError, match="write failed"):
+                    rep.render_pae_png(tmp_path / "pae.png", [[1.]])
+            assert dict(matplotlib.rcParams) == before
+            assert plt.get_fignums() == [figure.number]
+        finally:
+            plt.close(figure)
+
+
+def test_report_explains_recalibration_and_custom_cutoffs(tmp_path, drawn_text):
+    row = {**_BASE_ROW, "contact_thresh": "12", "pae_filter": "100", "ipsae_pae_cutoff": "10",
+           "metascore_calibration": "historical-fit", "interface_meta_score": "0.99"}
+    _write_csv(tmp_path / "interfaces.csv", [row])
+    generate_per_run_report(tmp_path)
+    from alphajudge.meta_score import CALIBRATION_ID
+    text = "\n".join(drawn_text)
+    assert CALIBRATION_ID in text
+    assert "recomputed" in text
+    assert "10/11" in text
+    assert "CSV score: 0.99" in text
+    assert "historical-fit" in text
+    assert "Custom cutoffs" in text
+    assert "exploratory" in text
+
+
+def test_legacy_report_marks_unknown_parameters_and_stored_score(tmp_path, drawn_text):
+    _write_csv(tmp_path / "interfaces.csv", [{"jobs": "old", "interface": "A_B", "interface_meta_score": "0.6"}])
+    generate_per_run_report(tmp_path)
+    text = "\n".join(drawn_text)
+    assert "Stored CSV score" in text
+    assert "cutoffs unknown" in text

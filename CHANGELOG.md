@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Per-run CSV reuse now requires a versioned provenance manifest matching scoring options, input content, software/calibration, and CSV checksum. Old caches and incomplete runs are recomputed; CSVs and manifests are published with atomic file replacement.
+- Native AlphaFold-Multimer rankings with only `order` and `iptm+ptm` are accepted. Individual confidences and missing PAE JSON are recovered from result pickles, including gzip/xz; unavailable individual scores remain missing.
+- Parser backend and selected structure are written to `backend` and `structure_file`. Calibration and report labels use the explicit backend, preventing Boltz filenames from selecting an AF2 ladder. Legacy CSV inference is retained.
+- Corrupt JSON reports the actual file, PAE dimensions and values are checked before scoring, and unmappable Boltz PAE is rejected instead of trimmed. Failed models log tracebacks and cannot leave partially scored model rows or a reusable completed cache.
+- AF2 structure choice is deterministic: exact relaxed, unrelaxed, model name, model directory, then ranked output; CIF precedes PDB within each category. Legacy fallback matching respects model-name boundaries and sorts candidates.
+- Filtered residues retain a full Bio.PDB hierarchy, so equal residue numbers on different chains have distinct identities. The existing pairwise pDockQ2 formula and coefficients are unchanged, with an IPSAE compatibility regression.
+- Per-interface and aggregate ranking tables paginate without dropping rows, with repeated headers and sequential page numbers. Reports show the actual metascore feature count instead of implying that every row has all eleven features.
+- Report imports preserve the caller's Matplotlib backend and figures; rendering restores plotting settings even on errors. Invalid `--aggregate_report` usage is rejected before scoring starts.
+- CSVs record scoring cutoffs, a content-derived calibration ID, and the contributing metascore features/count. Reports disclose recalculation versus stored scores and flag custom or unknown cutoffs; custom settings retain the existing formulas and reference distributions, with percentiles labelled exploratory. The unsupported interface-area entry was removed from the percentile registry; raw area remains available.
+
 ## 1.4.3 - 2026-09-28
 
 ### Fixed

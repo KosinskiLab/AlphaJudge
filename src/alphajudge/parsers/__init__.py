@@ -1,12 +1,13 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import gzip
 import json
 import lzma
+import re
 from Bio.PDB import PDBParser, MMCIFParser
 from ..confidence import Confidence
 from ..geometry import is_pae_token_residue, representative_atom
@@ -17,6 +18,7 @@ class Run:
     order: list[str]
     source: str
     load_model: Callable[[str], tuple[Any, Confidence]]
+    structure_files: dict[str, str] = field(default_factory=dict)
 
 
 class BaseParser(ABC):
@@ -47,7 +49,7 @@ class BaseParser(ABC):
         return p.open(mode)
 
     @classmethod
-    def _read_json(cls, p: Path) -> dict:
+    def _read_json(cls, p: Path, *, required: bool = False) -> Any:
         """Read a JSON file, transparently handling xz/gz compression.
 
         AlphaPulldown's ``--storage_mode slim/minimal`` may store large JSON
@@ -56,17 +58,18 @@ class BaseParser(ABC):
         scoring is unaffected by the storage mode. Compression is detected from
         the file's magic bytes, not its extension.
         """
+        target = cls._first_existing(
+            [p, p.with_name(p.name + ".xz"), p.with_name(p.name + ".gz")]
+        )
+        if target is None:
+            if required:
+                raise FileNotFoundError(f"Required JSON file not found: {p} (or .xz/.gz sibling)")
+            return {}
         try:
-            # Plain path absent: try a compressed sibling from slim/minimal.
-            target = cls._first_existing(
-                [p, p.with_name(p.name + ".xz"), p.with_name(p.name + ".gz")]
-            )
-            if target is None:
-                return {}
             with cls._open_maybe_compressed(target) as fh:
                 return json.load(fh)
-        except Exception:
-            return {}
+        except (OSError, EOFError, ValueError, lzma.LZMAError) as exc:
+            raise ValueError(f"Could not read JSON {target}: {exc}") from exc
 
     @staticmethod
     def _first_existing(paths) -> Path | None:
@@ -79,14 +82,30 @@ class BaseParser(ABC):
         return parser.get_structure("complex", str(p))
 
     @staticmethod
-    def _guess_struct(d: Path, model: str) -> str:
-        if (d / model / "model.cif").exists():
-            return str(d / model / "model.cif")
-        for ext in ("cif", "pdb"):
-            hits = list(d.glob(f"*{model}*.{ext}"))
-            if hits:
-                return str(hits[0])
-        raise ValueError(f"struct for model {model} not found")
+    def _guess_struct(d: Path, model: str, rank: int | None = None) -> str:
+        """AF2 precedence: relaxed, unrelaxed, exact model, model directory, rank.
+
+        Prefer CIF to PDB *within* each category. A relaxed PDB therefore wins
+        over an unrelaxed CIF. Legacy decorated names are a sorted fallback.
+        """
+        candidates = [d / f"{prefix}{model}.{ext}"
+                      for prefix in ("relaxed_", "unrelaxed_", "")
+                      for ext in ("cif", "pdb")]
+        candidates.extend(d / model / f"model.{ext}" for ext in ("cif", "pdb"))
+        if rank is not None:
+            candidates.extend(d / f"ranked_{rank}.{ext}" for ext in ("cif", "pdb"))
+        exact = BaseParser._first_existing(candidates)
+        if exact is not None:
+            return str(exact)
+        pattern = re.compile(r"(?:^|[_\-.])" + re.escape(model) + r"(?:$|[_\-.])")
+        hits = [p for p in d.iterdir() if p.suffix in (".cif", ".pdb")
+                and pattern.search(p.stem)]
+        if hits:
+            def priority(p):
+                kind = 0 if p.name.startswith("relaxed_") else 1 if p.name.startswith("unrelaxed_") else 2
+                return kind, p.suffix != ".cif", p.name
+            return str(sorted(hits, key=priority)[0])
+        raise ValueError(f"structure for model {model} not found in {d}")
 
     @staticmethod
     def _maps(struct):

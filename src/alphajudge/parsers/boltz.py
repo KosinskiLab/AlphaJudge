@@ -10,7 +10,7 @@ import numpy as np
 from Bio.PDB.Polypeptide import is_aa
 
 from . import BaseParser, Run
-from ..confidence import Confidence
+from ..confidence import Confidence, validate_pae
 from ..geometry import is_pae_token_residue
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class Boltz2Parser(BaseParser):
             struct = self._load_structure(str(entry.structure_file))
             chains, rim, cid = self._maps(struct)
 
-            summary = self._read_json(entry.confidence_file)
+            summary = self._read_json(entry.confidence_file, required=True)
             token_count, token_index = self._residue_tokens(chains, cid)
             pae, max_pae = self._load_pae(entry.pae_file, len(rim), token_count, token_index)
             plddt = (
@@ -87,7 +87,8 @@ class Boltz2Parser(BaseParser):
                 chain_pair_iptm_chain_ids=chain_ids,
             )
 
-        return Run(order=order, source="boltz2", load_model=load_model)
+        return Run(order=order, source="boltz2", load_model=load_model,
+                   structure_files={e.name: str(e.structure_file.relative_to(d)) for e in entries})
 
     @staticmethod
     def _model_entries(d: Path) -> list[_BoltzModel]:
@@ -124,12 +125,14 @@ class Boltz2Parser(BaseParser):
         return int(match.group(1))
 
     @staticmethod
-    def _load_npz_array(path: Path, preferred_key: str) -> np.ndarray | None:
+    def _load_npz_array(path: Path, preferred_key: str, *, required: bool = False) -> np.ndarray | None:
         try:
             with np.load(path) as payload:
                 key = preferred_key if preferred_key in payload else payload.files[0]
                 return np.array(payload[key], dtype=float)
         except Exception as exc:
+            if required:
+                raise ValueError(f"Could not read {preferred_key} array {path}: {exc}") from exc
             logger.warning(f"could not read {path}: {exc}")
             return None
 
@@ -167,28 +170,19 @@ class Boltz2Parser(BaseParser):
         if pae_file is None:
             return pae, 100.0
 
-        matrix = cls._load_npz_array(pae_file, "pae")
-        if matrix is None or not matrix.size:
-            return pae, 100.0
+        matrix = cls._load_npz_array(pae_file, "pae", required=True)
 
         if token_index is not None and matrix.shape == (token_count, token_count):
             selected = matrix[np.ix_(token_index, token_index)]
+            validate_pae(selected, total, source=str(pae_file))
             return selected, float(np.nanmax(selected)) if selected.size else 100.0
         if matrix.shape == pae.shape:
+            validate_pae(matrix, total, source=str(pae_file))
             return matrix, float(np.nanmax(matrix))
-        if matrix.ndim == 2 and matrix.shape[0] >= total and matrix.shape[1] >= total:
-            logger.warning(
-                f"Cannot map Boltz-2 PAE shape {matrix.shape} to the structure's tokens; "
-                f"using its leading {total}x{total} block."
-            )
-            trimmed = matrix[:total, :total]
-            return trimmed, float(np.nanmax(trimmed)) if trimmed.size else 100.0
-
-        logger.warning(
-            f"Boltz-2 PAE shape {matrix.shape} != expected {pae.shape}; "
-            "using default PAE=100 for all residue pairs."
+        raise ValueError(
+            f"{pae_file}: Cannot align Boltz-2 PAE shape {matrix.shape} with "
+            f"{total} scored residues / {token_count} structure tokens"
         )
-        return pae, float(np.nanmax(matrix))
 
     @classmethod
     def _load_plddt(
