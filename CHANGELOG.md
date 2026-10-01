@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.4.4 - 2026-10-01
+
+### Fixed
+- Per-run CSV reuse now requires `interfaces.csv.meta.json`, matching scoring options, inputs, software/calibration, and CSV checksum. The default checks file size, mtime, ctime and file identity without reading input payloads; `--cache_validation content` hashes every input for strict validation. Metadata can miss same-size edits on filesystems with coarse or preserved timestamps. Old caches and incomplete scoring runs are recomputed; CSVs and manifests are published with atomic file replacement.
+- Native AlphaFold-Multimer rankings with only `order` and `iptm+ptm` are accepted. Individual confidences and missing PAE JSON are recovered from result pickles, including gzip/xz; unavailable individual scores remain missing.
+- Parser backend and selected structure are written to `backend` and `structure_file`. Calibration and report labels use the explicit backend, preventing Boltz filenames from selecting an AF2 ladder. Legacy CSV inference is retained.
+- Corrupt JSON reports the actual file, PAE dimensions and values are checked before scoring, and unmappable Boltz PAE is rejected instead of trimmed. Failed models log tracebacks and cannot leave partially scored model rows or a reusable completed cache.
+- AF2 structure choice is deterministic: exact preferred state, other state, model name, model directory, then ranked output; CIF precedes PDB within each category. `--af2_structure relaxed` is the default; `unrelaxed` reverses the first two choices. Legacy fallback matching respects model-name boundaries and sorts candidates. This can change scores when both coordinate sets exist: the old glob order was unspecified, and the frozen calibration predates per-row structure provenance, so its relaxed/unrelaxed selection cannot be reconstructed reliably. The existing calibration is retained, not represented as a uniformly relaxed or unrelaxed reference.
+- PAE PNG requests and rendering failures no longer invalidate CSV scores. Missing, stale or failed plots can be regenerated on a cache hit without rerunning interface scoring or biophysical calculations.
+- A missing AF3 full-confidence file now raises a file-not-found error even when the summary contains chain-pair minima. Existing minima-only files retain a distinct insufficient-PAE error; combined exports with actual full PAE remain supported.
+- Filtered residues retain a full Bio.PDB hierarchy, so equal residue numbers on different chains have distinct identities. The existing pairwise pDockQ2 formula and coefficients are unchanged, with an IPSAE compatibility regression.
+- Per-interface and aggregate ranking tables paginate without dropping rows, with repeated headers and sequential page numbers. Reports show the actual metascore feature count instead of implying that every row has all eleven features.
+- Report imports preserve the caller's Matplotlib backend and figures; rendering restores plotting settings even on errors. Invalid `--aggregate_report` usage is rejected before scoring starts.
+- CSVs record scoring cutoffs, a content-derived calibration ID, and the contributing metascore features/count. Reports disclose recalculation versus stored scores and flag custom or unknown cutoffs; custom settings retain the existing formulas and reference distributions, with percentiles labelled exploratory. The unsupported interface-area entry was removed from the percentile registry; raw area remains available.
+
+### CSV additions
+
+| Column | Meaning |
+| --- | --- |
+| `backend` | Prediction source: `af2`, `af3`, or `boltz2`. |
+| `structure_file` | Selected structure path relative to the run directory. |
+| `contact_thresh` | Residue contact cutoff in Å. |
+| `pae_filter` | Maximum mean interface PAE accepted for a CSV row, in Å. |
+| `ipsae_pae_cutoff` | PAE cutoff used by ipSAE, in Å. |
+| `metascore_calibration` | Content-derived identifier of the frozen calibration. |
+| `metascore_calibration_status` | Whether scoring cutoffs match the calibration defaults: `default`, `custom`, or `unknown`. |
+| `metascore_features` | Semicolon-separated names of the features contributing to this row's metascore. |
+| `metascore_feature_count` | Number of contributing features. |
+
+Custom parsers should accept `parse_run(directory, *, options=ParseOptions())`, ignoring unused options; `cache_options` identifies which parser options affect scores.
+
 ## 1.4.3 - 2026-09-28
 
 ### Fixed

@@ -5,7 +5,7 @@ import csv
 import logging
 import re
 import numpy as np
-from . import BaseParser, Run
+from . import BaseParser, ParseOptions, Run
 from ..confidence import SCOPE_INCLUDES_EXCLUDED_TOKENS, SCOPE_SCORED_RESIDUES, Confidence
 from ..geometry import is_pae_token_residue
 
@@ -42,28 +42,34 @@ class AF3Parser(BaseParser):
     def detect(d: Path) -> bool:
         return AF3Parser._ranking_scores_file(d) is not None
 
-    def parse_run(self, d: Path) -> Run:
+    def parse_run(self, d: Path, *, options: ParseOptions = ParseOptions()) -> Run:
         ranking_file = self._ranking_scores_file(d)
         if ranking_file is None:
             raise ValueError(f"AF3 ranking scores file not found in {d}")
         order, ranking_scores = self._read_csv_order(ranking_file)
         job_prefix = self._job_prefix_from_ranking_file(ranking_file)
+        structure_files = {}
 
         def load_model(model: str):
             is_best_model = bool(order and model == order[0])
-            struct = self._load_structure(
-                self._guess_af3_struct(d, model, job_prefix, is_best_model)
-            )
+            structure_path = Path(self._guess_af3_struct(d, model, job_prefix, is_best_model))
+            struct = self._load_structure(structure_path)
+            structure_files[model] = str(structure_path.relative_to(d))
             chains, rim, cid = self._maps(struct)
 
-            summary = self._read_json(
-                self._find_af3_json(
-                    d, model, "summary_confidences", job_prefix, is_best_model
-                )
-            )
-            matrix = self._read_json(
-                self._find_af3_json(d, model, "confidences", job_prefix, is_best_model)
-            ) or summary
+            summary_path = self._find_af3_json(d, model, "summary_confidences", job_prefix, is_best_model)
+            summary = self._read_json(summary_path)
+            if not isinstance(summary, dict):
+                raise ValueError(f"{summary_path}: expected a JSON object")
+            matrix_path = self._find_af3_json(d, model, "confidences", job_prefix, is_best_model)
+            if not matrix_path.exists() and any(summary.get(key) is not None for key in ("pae", "predicted_aligned_error")):
+                # Some combined exports carry the actual full matrix here.
+                # Chain-pair minima alone cannot replace a missing PAE file.
+                matrix, matrix_path = summary, summary_path
+            else:
+                matrix = self._read_json(matrix_path, required=True)
+            if not isinstance(matrix, dict):
+                raise ValueError(f"{matrix_path}: expected a JSON object carrying full PAE")
 
             iptm = self._safe_float(summary.get("iptm"))
             ptm = self._safe_float(summary.get("ptm"))
@@ -90,7 +96,10 @@ class AF3Parser(BaseParser):
                 logger.warning("chain_pair_iptm dimensions do not match the source chains; skipping pair ipTM.")
                 chain_pair_iptm = None
 
-            pae, max_pae, residue_tokens = self._normalize_pae_af3(matrix, chains, cid)
+            try:
+                pae, max_pae, residue_tokens = self._normalize_pae_af3(matrix, chains, cid)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"{matrix_path}: {exc}") from exc
             contact_probs = self._normalize_contact_probs_af3(matrix, residue_tokens)
             plddt = self._plddt(chains, rim)
             global_scope = (
@@ -108,7 +117,7 @@ class AF3Parser(BaseParser):
                 chain_pair_iptm_chain_ids=summary_chain_ids,
                 global_confidence_scope=global_scope,
             )
-        return Run(order=order, source="af3", load_model=load_model)
+        return Run(order=order, source="af3", load_model=load_model, structure_files=structure_files)
 
     # ---- AF3-specific helpers ----
     @staticmethod

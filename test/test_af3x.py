@@ -98,11 +98,32 @@ def test_af3x_summary_minima_cannot_replace_missing_full_pae(tmp_path, caplog):
     summary = json.loads((model_dir / "summary_confidences.json").read_text())
     summary["chain_pair_pae_min"] = [[1.] * 3] * 3
     (model_dir / "summary_confidences.json").write_text(json.dumps(summary))
-    with pytest.raises(ValueError, match="residue-level PAE"):
+    with pytest.raises(FileNotFoundError, match="confidences.json"):
         AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
     output = process(str(run_dir), 8., 100., "best", skip_pae_png=True, skip_biophysical_scores=True)
     assert output.read_text() == ""
-    assert "residue-level PAE" in caplog.text
+    assert "Required JSON file not found" in caplog.text
+
+
+def test_af3_combined_summary_with_full_pae_remains_supported(tmp_path):
+    run_dir, _, _ = _write_run(tmp_path)
+    model_dir = run_dir / "seed-1_sample-0"
+    matrix = json.loads((model_dir / "confidences.json").read_text())
+    summary_path = model_dir / "summary_confidences.json"
+    summary = json.loads(summary_path.read_text())
+    summary.update(matrix)
+    summary_path.write_text(json.dumps(summary))
+    (model_dir / "confidences.json").unlink()
+    _, confidence = AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
+    assert confidence.pae_matrix.shape == (4, 4)
+
+
+def test_af3_present_minima_only_file_has_distinct_error(tmp_path):
+    run_dir, _, _ = _write_run(tmp_path)
+    path = run_dir / "seed-1_sample-0/confidences.json"
+    path.write_text(json.dumps({"chain_pair_pae_min": [[1., 1.], [1., 1.]]}))
+    with pytest.raises(ValueError, match="confidences.json.*only chain-pair minima"):
+        AF3Parser().parse_run(run_dir).load_model("seed-1_sample-0")
 
 
 @pytest.mark.parametrize("field", ["pae", "predicted_aligned_error"])
@@ -261,27 +282,26 @@ def test_plain_af3_global_confidence_still_contributes_to_metascore():
 
 def test_cached_scores_without_scope_metadata_are_recomputed(tmp_path, monkeypatch):
     from alphajudge import runner
-    stale = tmp_path / "interfaces.csv"
+    run_dir, _, _ = _write_run(tmp_path)
+    stale = run_dir / "interfaces.csv"
     stale.write_text("jobs,interface_ccc,interface_expected_contacts\nold,1,2\n")
     calls = []
+    original_process = runner.process
 
     def recompute(directory, *args, **kwargs):
         calls.append(directory)
-        stale.write_text(
-            "jobs,interface_ccc,interface_expected_contacts,global_confidence_scope,iptm_scope\n"
-            "new,1,2,includes_excluded_tokens,chain_pair\n"
-        )
-        return stale
+        return original_process(directory, *args, **kwargs)
 
     monkeypatch.setattr(runner, "process", recompute)
     for _ in range(2):
         _, rows = runner._process_one_run(
-            str(tmp_path), contact_thresh=8., pae_filter=100., models_to_analyse="best",
+            str(run_dir), contact_thresh=8., pae_filter=100., models_to_analyse="best",
             summary_csv="summary.csv", ipsae_pae_cutoff=10., force_recompute=False,
             per_run_csv_name="interfaces.csv", skip_pae_png=True, skip_biophysical_scores=True,
         )
-        assert rows[0]["jobs"] == "new"
-    assert calls == [str(tmp_path)]
+        assert rows[0]["jobs"] == "mixed"
+        assert rows[0]["global_confidence_scope"] == "includes_excluded_tokens"
+    assert calls == [str(run_dir)]
 
 
 @pytest.mark.parametrize("ligand_first", [False, True])

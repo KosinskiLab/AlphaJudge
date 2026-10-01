@@ -237,9 +237,8 @@ AlphaJudge writes `interfaces.csv` with one row per interface (and includes the 
 - **interface_hb, interface_sb, interface_sc, interface_area, interface_solv_en**
 
 Exact header is asserted in tests to be consistent across AF2 and AF3 runs.
-When a normal or summary run finds a cached per-run CSV from an older release that lacks current
-required fields, AlphaJudge recomputes that run automatically; `--force_recompute` remains
-available when values, rather than the schema, must be refreshed.
+Cached results are reused when inputs and scoring settings match; use `--force_recompute` to rescore.
+See the [changelog](CHANGELOG.md) for release details.
 
 ---
 

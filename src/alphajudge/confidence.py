@@ -19,6 +19,17 @@ IPTM_SCOPE_CHAIN_PAIR = "chain_pair"
 IPTM_SCOPE_GLOBAL = "global"
 
 
+def validate_pae(pae: np.ndarray, residue_count: int, *, source: str = "PAE") -> None:
+    """Reject incomplete or invalid residue matrices before interface scoring."""
+    if pae.shape != (residue_count, residue_count):
+        raise ValueError(
+            f"{source}: PAE shape {pae.shape} does not match {residue_count} scored residues "
+            f"(expected {residue_count}x{residue_count}); cannot align PAE to structure"
+        )
+    if not np.all(np.isfinite(pae)) or np.any(pae < 0):
+        raise ValueError(f"{source}: PAE values must be finite and non-negative")
+
+
 @dataclass(frozen=True)
 class Confidence:
     pae_matrix: np.ndarray  # Keep as numpy array for memory efficiency (7-10x reduction)

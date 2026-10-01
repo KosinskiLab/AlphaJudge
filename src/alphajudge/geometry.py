@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from Bio.PDB.Polypeptide import is_aa
 
 
@@ -19,6 +21,11 @@ CHARGED_ATOMS: dict[str, set[str]] = {
     "ASP": {"CG", "OD1", "OD2"},
     "GLU": {"CD", "OE1", "OE2"},
 }
+
+
+def chain_boundaries(chain_indices: Mapping[str, Sequence[int]]) -> list[float]:
+    """PAE-matrix positions between nonempty scored chains."""
+    return sorted(max(indices) + .5 for indices in chain_indices.values() if indices)[:-1]
 
 
 def representative_atom(res):

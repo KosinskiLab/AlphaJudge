@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from alphajudge.meta_score import (
     META_SCORE_FEATURES,
     calibrated_feature_percentile,
@@ -56,3 +58,32 @@ def test_inverted_features_score_in_the_expected_direction() -> None:
 def test_feature_percentiles_clamp_to_unit_interval() -> None:
     assert calibrated_feature_percentile("interface_LIS", -1.0) == 0.0
     assert calibrated_feature_percentile("interface_LIS", 10.0) == 1.0
+
+
+def test_metascore_components_exclude_missing_and_incompatible_features():
+    from alphajudge.meta_score import meta_score_components
+
+    row = {**_complete_row(), "global_confidence_scope": "includes_excluded_tokens",
+           "iptm_scope": "global", "interface_hb": float("nan")}
+    parts = meta_score_components(row)
+    assert set(parts) == set(_complete_row()) - {"interface_area", "iptm", "confidence_score"}
+    assert interface_meta_score(row) == pytest.approx(sum(parts.values()) / len(parts))
+
+
+@pytest.mark.parametrize("parameters,status", [
+    ({}, "unknown"),
+    ({"contact_thresh": 8., "pae_filter": 100., "ipsae_pae_cutoff": 10.}, "default"),
+    ({"contact_thresh": "8", "pae_filter": "100", "ipsae_pae_cutoff": "10"}, "default"),
+    ({"contact_thresh": 8., "pae_filter": 100., "ipsae_pae_cutoff": 15.}, "custom"),
+    ({"contact_thresh": 8., "pae_filter": 100., "ipsae_pae_cutoff": "nan"}, "unknown"),
+])
+def test_calibration_parameter_status(parameters, status):
+    from alphajudge.meta_score import calibration_parameter_status
+
+    assert calibration_parameter_status(parameters) == status
+
+
+def test_percentile_registry_only_lists_supported_features():
+    from alphajudge.meta_score import BENCHMARK_QUANTILES, FEATURE_DIRECTIONS
+
+    assert set(FEATURE_DIRECTIONS) == set(BENCHMARK_QUANTILES)

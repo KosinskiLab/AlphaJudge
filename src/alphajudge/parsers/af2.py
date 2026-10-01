@@ -1,10 +1,11 @@
 from __future__ import annotations
 import logging
 import pickle
+import re
 from pathlib import Path
 import numpy as np
-from . import BaseParser, Run
-from ..confidence import Confidence
+from . import BaseParser, ParseOptions, Run
+from ..confidence import Confidence, validate_pae
 from ..contact_probs import (
     AF2_DISTOGRAM_CONTACT_CUTOFF,
     contact_probs_from_distogram,
@@ -17,28 +18,53 @@ class AF2Parser(BaseParser):
     _warned_missing_distogram = False
 
     def detect(self, d: Path) -> bool:
-        return (d / "ranking_debug.json").exists()
+        return any((d / f"ranking_debug.json{suffix}").exists() for suffix in ("", ".xz", ".gz"))
 
-    def parse_run(self, d: Path) -> Run:
-        rj = self._read_json(d / "ranking_debug.json")
+    def cache_options(self, options: ParseOptions) -> ParseOptions:
+        return options
+
+    def parse_run(self, d: Path, *, options: ParseOptions = ParseOptions()) -> Run:
+        rj = self._read_json(d / "ranking_debug.json", required=True)
         order = rj["order"]
+        structure_files = {}
 
         def load_model(model: str):
-            struct = self._load_structure(self._guess_struct(d, model))
+            structure_path = Path(self._guess_struct(d, model, order.index(model), options=options))
+            struct = self._load_structure(structure_path)
+            structure_files[model] = str(structure_path.relative_to(d))
             chains, rim, _ = self._maps(struct)
 
-            # AF2: full residue×residue matrix in pae_{model}.json
-            pae_payload = self._read_json(d / f"pae_{model}.json")
-            pae = np.array(pae_payload[0]["predicted_aligned_error"], dtype=float)
-            max_pae = float(np.nanmax(pae) if pae.size else np.nan)
-            contact_probs = self._load_contact_probs_from_result_pkl(d, model, pae.shape)
+            result_path, result = self._load_result(d, model)
+            pae_path = d / f"pae_{model}.json"
+            json_path = self._first_existing([pae_path.with_name(pae_path.name + s) for s in ("", ".xz", ".gz")])
+            if json_path is not None:
+                payload = self._read_json(json_path, required=True)
+                try:
+                    raw_pae = (payload[0] if isinstance(payload, list) else payload)["predicted_aligned_error"]
+                except (KeyError, IndexError, TypeError) as exc:
+                    raise ValueError(f"{json_path}: missing predicted_aligned_error matrix") from exc
+                pae_source = str(json_path)
+            elif "predicted_aligned_error" in result:
+                raw_pae = result["predicted_aligned_error"]
+                pae_source = str(result_path)
+            else:
+                raise ValueError(f"No full PAE matrix for {model}: expected {pae_path} or predicted_aligned_error in result pickle")
+            try:
+                pae = np.asarray(raw_pae, dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{pae_source}: invalid PAE matrix: {exc}") from exc
+            validate_pae(pae, len(rim), source=pae_source)
+            max_pae = float(np.max(pae)) if pae.size else float("nan")
+            contact_probs = self._contact_probs_from_result(result, result_path, pae.shape)
 
             # AF2 rankings
-            is_multimer = ("iptm+ptm" in rj) and ("iptm" in rj)
+            is_multimer = "iptm+ptm" in rj or "iptm" in rj or "iptm" in result
+            def score(name):
+                value = self._safe_float(rj.get(name, {}).get(model))
+                return value if value is not None else self._safe_float(result.get(name))
+
             if is_multimer:
-                iptm = self._safe_float(rj["iptm"].get(model))
-                ptm  = self._safe_float(rj.get("ptm", {}).get(model))
-                iptm_ptm = self._safe_float(rj["iptm+ptm"].get(model))
+                iptm, ptm, iptm_ptm = score("iptm"), score("ptm"), score("iptm+ptm")
                 # Backfill when PTM is not provided in AF2 multimer JSON
                 if ptm is None and (iptm_ptm is not None) and (iptm is not None):
                     ptm = (iptm_ptm - 0.8 * iptm) / 0.2
@@ -47,7 +73,7 @@ class AF2Parser(BaseParser):
                     iptm_ptm = 0.8 * iptm + 0.2 * ptm
                 conf = iptm_ptm
             else:
-                iptm, ptm = 0.0, self._safe_float(rj["ptm"][model])
+                iptm, ptm = 0.0, score("ptm")
                 iptm_ptm = conf = ptm
 
             plddt = self._plddt(chains, rim)
@@ -62,24 +88,38 @@ class AF2Parser(BaseParser):
                     else None
                 ),
             )
-        return Run(order=order, source="af2", load_model=load_model)
+        return Run(order=order, source="af2", load_model=load_model, structure_files=structure_files)
 
     @classmethod
     def _load_contact_probs_from_result_pkl(
         cls, d: Path, model: str, expected_shape: tuple[int, int]
     ) -> np.ndarray | None:
+        result_pkl, payload = cls._load_result(d, model)
+        return cls._contact_probs_from_result(payload, result_pkl, expected_shape)
+
+    @classmethod
+    def _load_result(cls, d: Path, model: str) -> tuple[Path | None, dict]:
         result_pkl = cls._find_result_pkl(d, model)
         if result_pkl is None:
-            return None
+            return None, {}
 
         try:
             with cls._open_maybe_compressed(result_pkl, "rb") as f:
                 payload = pickle.load(f)
         except Exception as e:
             logger.warning(f"could not read AF2 result pickle {result_pkl}: {e}")
-            return None
+            return result_pkl, {}
 
         if not isinstance(payload, dict):
+            logger.warning("AF2 result pickle %s does not contain a mapping", result_pkl)
+            return result_pkl, {}
+        return result_pkl, payload
+
+    @classmethod
+    def _contact_probs_from_result(
+        cls, payload: dict, result_pkl: Path | None, expected_shape: tuple[int, int]
+    ) -> np.ndarray | None:
+        if result_pkl is None or not payload:
             return None
         distogram = payload.get("distogram")
         if not isinstance(distogram, dict):
@@ -131,7 +171,8 @@ class AF2Parser(BaseParser):
         candidates = [
             stem.with_name(stem.name + suffix) for stem in stems for suffix in ("", ".gz", ".xz")
         ]
-        candidates.extend(sorted(d.glob(f"result*{model}*.pkl*")))
+        pattern = re.compile(r"(?:^|[_\-.])" + re.escape(model) + r"(?:$|[_\-.])")
+        candidates.extend(p for p in sorted(d.glob("result*.pkl*")) if pattern.search(p.name))
         if (d / model).is_dir():
             candidates.extend(sorted((d / model).glob("result*.pkl*")))
         return cls._first_existing(candidates)

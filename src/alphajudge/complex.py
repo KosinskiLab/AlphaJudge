@@ -5,11 +5,11 @@ import math
 from functools import cached_property
 from typing import Any
 
-from Bio.PDB import Chain
+from Bio.PDB import Chain, Model, Structure
 
-from .confidence import Confidence
+from .confidence import Confidence, validate_pae
 from .docking_scores import MPDOCKQ
-from .geometry import is_pae_token_residue
+from .geometry import chain_boundaries, is_pae_token_residue
 from .interface import Interface
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,13 @@ class Complex:
         self.pae_filter = float(pae_filter)
         self.ipsae_pae_cutoff = None if ipsae_pae_cutoff is None else float(ipsae_pae_cutoff)
 
-        self._res_index_map, self._chain_indices_by_id, self._chains = self._build_maps()
+        # Retain the Bio.PDB hierarchy so equally numbered residues on distinct
+        # chains retain distinct identities after filtering.
+        model = next(structure.get_models())
+        self._scored_structure = Structure.Structure(structure.id)
+        scored_model = Model.Model(model.id)
+        self._scored_structure.add(scored_model)
+        self._res_index_map, self._chain_indices_by_id, self._chains = self._build_maps(model, scored_model)
 
         self.interfaces: list[Interface] = []
         for i in range(len(self._chains)):
@@ -44,8 +50,7 @@ class Complex:
                 if iface.num_intf_residues > 0:
                     self.interfaces.append(iface)
 
-    def _build_maps(self) -> tuple[dict[tuple[str, Any], int], dict[str, list[int]], list[Chain.Chain]]:
-        model = next(self.structure.get_models())
+    def _build_maps(self, model, scored_model) -> tuple[dict[tuple[str, Any], int], dict[str, list[int]], list[Chain.Chain]]:
         chains = list(model.get_chains())
 
         res_index_map: dict[tuple[str, Any], int] = {}
@@ -59,6 +64,7 @@ class Complex:
                 continue
 
             new_chain = Chain.Chain(chain.id)
+            scored_model.add(new_chain)
             for residue in kept:
                 new_chain.add(residue.copy())
             filtered_chains.append(new_chain)
@@ -70,12 +76,7 @@ class Complex:
                 idx += 1
             chain_indices_by_id[new_chain.id] = idxs
 
-        pae_n = len(self.conf.pae_matrix)
-        if idx != pae_n:
-            logger.warning(
-                f"token residues counted = {idx}, but PAE is {pae_n}x{pae_n}. "
-                f"Indexing may be misaligned for this structure."
-            )
+        validate_pae(self.conf.pae_matrix, idx)
 
         return res_index_map, chain_indices_by_id, filtered_chains
 
@@ -86,8 +87,7 @@ class Complex:
     @property
     def chain_boundaries(self) -> list[float]:
         """PAE-matrix positions between consecutive chains (heatmap separators)."""
-        ends = sorted(max(idxs) + 0.5 for idxs in self._chain_indices_by_id.values() if idxs)
-        return ends[:-1]
+        return chain_boundaries(self._chain_indices_by_id)
 
     @cached_property
     def average_interface_plddt(self) -> float:
