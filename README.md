@@ -238,8 +238,9 @@ AlphaJudge writes `interfaces.csv` with one row per interface (and includes the 
 
 Exact header is asserted in tests to be consistent across AF2 and AF3 runs.
 `backend` and `structure_file` record each row's prediction source and selected structure.
-Cached CSVs refresh automatically when inputs, scoring options or software change.
-Older caches refresh once; `--force_recompute` forces recalculation.
+`interfaces.csv.meta.json` tracks input metadata, scoring options and software for fast cache reuse.
+Use `--cache_validation content` for full hashes (metadata can miss same-size edits with coarse/preserved timestamps),
+or `--force_recompute` to rescore. `--af2_structure unrelaxed` changes the default relaxed-first preference.
 
 ---
 

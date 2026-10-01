@@ -111,7 +111,7 @@ def test_cache_changed_selection_and_threshold(af2_run):
 
 @pytest.mark.parametrize("change", [
     {"pae_filter": 1.}, {"ipsae_pae_cutoff": 1.},
-    {"skip_biophysical_scores": False}, {"skip_pae_png": False},
+    {"skip_biophysical_scores": False},
 ])
 def test_cache_invalidates_scoring_options(af2_run, monkeypatch, change):
     directory, _ = af2_run
@@ -128,20 +128,170 @@ def test_cache_invalidates_scoring_options(af2_run, monkeypatch, change):
     assert calls == [1]
 
 
-def test_cache_checks_input_and_csv_contents(af2_run):
+@pytest.mark.parametrize("cache_validation", ["stat", "content"])
+def test_cache_checks_input_and_csv_contents(af2_run, cache_validation):
     directory, models = af2_run
-    first = score(directory)[0]
+    first = score(directory, cache_validation=cache_validation)[0]
     structure_path = directory / f"unrelaxed_{models[0]}.pdb"
     before = structure_path.stat()
     write_structure(structure_path, separation=7., plddt=40.)
-    os.utime(structure_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    # Content mode must detect a same-size edit even with a preserved mtime.
+    # Stat mode needs an observable metadata change; the shared filesystem can
+    # quantize both mtime and ctime to whole seconds.
+    mtime = before.st_mtime_ns if cache_validation == "content" else before.st_mtime_ns + 2_000_000_000
+    os.utime(structure_path, ns=(before.st_atime_ns, mtime))
     assert structure_path.stat().st_size == before.st_size
-    second = score(directory)[0]
+    second = score(directory, cache_validation=cache_validation)[0]
     assert float(first["interface_average_plddt"]) == 90.
     assert float(second["interface_average_plddt"]) == 40.
     path = directory / "interfaces.csv"
     path.write_text(path.read_text().replace(models[0], "edited_model"))
-    assert score(directory)[0]["model_used"] == models[0]
+    assert score(directory, cache_validation=cache_validation)[0]["model_used"] == models[0]
+
+
+def test_warm_cache_does_not_read_input_payloads(af2_run, monkeypatch):
+    directory, _ = af2_run
+    original = score(directory)
+    digest = cache.file_digest
+    def guarded_digest(path):
+        assert path.parent != directory or path.name == "interfaces.csv", f"Re-read input: {path}"
+        return digest(path)
+    monkeypatch.setattr(cache, "file_digest", guarded_digest)
+    assert score(directory) == original
+
+
+def test_content_validation_hashes_inputs_on_warm_reuse(af2_run, monkeypatch):
+    directory, _ = af2_run
+    score(directory, cache_validation="content")
+    calls = []
+    digest = cache.file_digest
+    def recording_digest(path):
+        calls.append(path)
+        return digest(path)
+    monkeypatch.setattr(cache, "file_digest", recording_digest)
+    score(directory, cache_validation="content")
+    assert directory / "ranking_debug.json" in calls
+    assert any(path.suffix == ".pdb" for path in calls)
+
+
+def test_content_validation_detects_edits_hidden_from_metadata(af2_run, monkeypatch):
+    directory, models = af2_run
+    csv_path = directory / "interfaces.csv"
+    stat_request = cache.request_identity(directory, csv_path)
+    content_request = cache.request_identity(directory, csv_path, cache_validation="content")
+    original = cache.file_fingerprint
+    def frozen_input_metadata(path):
+        key = str(path.relative_to(directory))
+        return stat_request["inputs"].get(key) or original(path)
+    monkeypatch.setattr(cache, "file_fingerprint", frozen_input_metadata)
+    write_structure(directory / f"unrelaxed_{models[0]}.pdb", plddt=40.)
+    assert cache.request_identity(directory, csv_path) == stat_request
+    assert cache.request_identity(directory, csv_path, cache_validation="content") != content_request
+
+
+def test_changing_validation_mode_revalidates_scores(af2_run, monkeypatch):
+    directory, _ = af2_run
+    score(directory)
+    calls = []
+    original = runner.process
+    def record(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(runner, "process", record)
+    score(directory, cache_validation="content")
+    score(directory, cache_validation="content")
+    assert calls == [1]
+
+
+def test_cache_detects_added_removed_and_replaced_inputs(af2_run):
+    directory, models = af2_run
+    csv_path = directory / "interfaces.csv"
+    before = cache.request_identity(directory, csv_path)
+    extra = directory / "extra.json"
+    extra.write_text("{}")
+    assert cache.request_identity(directory, csv_path) != before
+    extra.unlink()
+    assert cache.request_identity(directory, csv_path) == before
+    structure = directory / f"unrelaxed_{models[0]}.pdb"
+    stat = structure.stat()
+    replacement = structure.with_suffix(".tmp")
+    replacement.write_bytes(structure.read_bytes())
+    os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    replacement.replace(structure)
+    assert cache.request_identity(directory, csv_path) != before
+
+
+def test_png_toggle_generates_missing_plot_without_rescoring(af2_run, monkeypatch):
+    directory, models = af2_run
+    original = score(directory)
+    csv_path = directory / "interfaces.csv"
+    csv_stat = csv_path.stat()
+    def no_rescore(*args, **kwargs):
+        pytest.fail("PNG request recomputed scores")
+    monkeypatch.setattr(runner, "process", no_rescore)
+    monkeypatch.setattr(runner, "Complex", no_rescore)
+    assert score(directory, skip_pae_png=False) == original
+    assert (directory / f"pae_{models[0]}.png").is_file()
+    assert csv_path.stat().st_mtime_ns == csv_stat.st_mtime_ns
+    # A second request should not even reload the model when the plot is current.
+    monkeypatch.setattr(AF2Parser, "parse_run", no_rescore)
+    assert score(directory, skip_pae_png=False) == original
+    assert score(directory, skip_pae_png=True) == original
+
+
+@pytest.mark.parametrize("failure", ["exception", "no_output"])
+def test_failed_png_is_retried_without_invalidating_scores(af2_run, monkeypatch, failure):
+    directory, _ = af2_run
+    attempts = []
+    def broken_plot(*args, **kwargs):
+        attempts.append(1)
+        if failure == "exception":
+            raise OSError("PNG destination unavailable")
+        return None
+    monkeypatch.setattr(runner, "render_pae_png", broken_plot)
+    original = score(directory, skip_pae_png=False)
+    manifest = json.loads(cache.manifest_path(directory / "interfaces.csv").read_text())
+    assert manifest["complete"] is True
+    monkeypatch.setattr(runner, "process", lambda *a, **kw: pytest.fail("Rescored after PNG failure"))
+    assert score(directory, skip_pae_png=False) == original
+    assert attempts == [1, 1]
+
+
+def test_skipped_png_is_refreshed_after_input_change(af2_run, monkeypatch):
+    directory, models = af2_run
+    score(directory, skip_pae_png=False, cache_validation="content")
+    (directory / f"pae_{models[0]}.json").write_text(json.dumps([
+        {"predicted_aligned_error": np.full((4, 4), 7.).tolist()}
+    ]))
+    score(directory, skip_pae_png=True, cache_validation="content")
+    plotted = []
+    original = runner.render_pae_png
+    def recording_plot(path, matrix, **kwargs):
+        plotted.append(float(matrix[0, 0]))
+        return original(path, matrix, **kwargs)
+    monkeypatch.setattr(runner, "render_pae_png", recording_plot)
+    monkeypatch.setattr(runner, "process", lambda *a, **kw: pytest.fail("Rescored for stale PNG"))
+    score(directory, skip_pae_png=False, cache_validation="content")
+    assert plotted == [7.]
+
+
+def test_explicit_unrelaxed_preference_invalidates_cache(af2_run):
+    directory, models = af2_run
+    write_structure(directory / f"relaxed_{models[0]}.pdb", plddt=40.)
+    relaxed = score(directory)[0]
+    unrelaxed = score(directory, af2_structure="unrelaxed")[0]
+    assert float(relaxed["interface_average_plddt"]) == 40.
+    assert float(unrelaxed["interface_average_plddt"]) == 90.
+    assert unrelaxed["structure_file"] == f"unrelaxed_{models[0]}.pdb"
+    assert score(directory, af2_structure="unrelaxed")[0] == unrelaxed
+
+
+def test_unrelaxed_preference_falls_back_to_available_relaxed_file(af2_run):
+    directory, models = af2_run
+    model = models[0]
+    (directory / f"unrelaxed_{model}.pdb").rename(directory / f"relaxed_{model}.pdb")
+    row = score(directory, af2_structure="unrelaxed")[0]
+    assert row["structure_file"] == f"relaxed_{model}.pdb"
 
 
 def test_copied_cache_does_not_keep_the_old_job_name(af2_run):

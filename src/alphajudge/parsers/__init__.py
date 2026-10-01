@@ -82,14 +82,17 @@ class BaseParser(ABC):
         return parser.get_structure("complex", str(p))
 
     @staticmethod
-    def _guess_struct(d: Path, model: str, rank: int | None = None) -> str:
-        """AF2 precedence: relaxed, unrelaxed, exact model, model directory, rank.
+    def _guess_struct(d: Path, model: str, rank: int | None = None, *, preference: str = "relaxed") -> str:
+        """AF2 precedence: preferred state, other state, exact model, directory, rank.
 
-        Prefer CIF to PDB *within* each category. A relaxed PDB therefore wins
-        over an unrelaxed CIF. Legacy decorated names are a sorted fallback.
+        Prefer CIF to PDB *within* each category. The preferred state's PDB
+        wins over the other state's CIF. Decorated names are a sorted fallback.
         """
+        if preference not in {"relaxed", "unrelaxed"}:
+            raise ValueError("AF2 structure preference must be 'relaxed' or 'unrelaxed'")
+        states = ("relaxed_", "unrelaxed_") if preference == "relaxed" else ("unrelaxed_", "relaxed_")
         candidates = [d / f"{prefix}{model}.{ext}"
-                      for prefix in ("relaxed_", "unrelaxed_", "")
+                      for prefix in (*states, "")
                       for ext in ("cif", "pdb")]
         candidates.extend(d / model / f"model.{ext}" for ext in ("cif", "pdb"))
         if rank is not None:
@@ -102,7 +105,7 @@ class BaseParser(ABC):
                 and pattern.search(p.stem)]
         if hits:
             def priority(p):
-                kind = 0 if p.name.startswith("relaxed_") else 1 if p.name.startswith("unrelaxed_") else 2
+                kind = next((i for i, state in enumerate(states) if p.name.startswith(state)), 2)
                 return kind, p.suffix != ".cif", p.name
             return str(sorted(hits, key=priority)[0])
         raise ValueError(f"structure for model {model} not found in {d}")

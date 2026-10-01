@@ -14,6 +14,10 @@ def main() -> None:
     p.add_argument("--pae_filter", type=float, default=100.0)
     p.add_argument("--ipsae_pae_cutoff", type=float, default=10.0)
     p.add_argument("--models_to_analyse", choices=["best","all"], default="best")
+    p.add_argument("--af2_structure", choices=["relaxed", "unrelaxed"], default="relaxed",
+                   help="Preferred AF2 coordinates when both states exist (default: relaxed).")
+    p.add_argument("--cache_validation", choices=["stat", "content"], default="stat",
+                   help="Validate input metadata (fast default) or hash full input content.")
     p.add_argument("-r","--recursive", action="store_true", help="Recursively search for runs under given PATHS")
     p.add_argument("-o","--summary", help="Write aggregated CSV across runs to this path")
     p.add_argument(
@@ -88,6 +92,8 @@ def main() -> None:
         skip_pae_png=args.skip_pae_png,
         skip_biophysical_scores=args.skip_biophysical_scores,
         write_per_run_report=write_per_run_report,
+        cache_validation=args.cache_validation,
+        af2_structure=args.af2_structure,
     )
 
     if args.aggregate_report:

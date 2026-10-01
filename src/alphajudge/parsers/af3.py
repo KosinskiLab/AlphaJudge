@@ -62,12 +62,12 @@ class AF3Parser(BaseParser):
             if not isinstance(summary, dict):
                 raise ValueError(f"{summary_path}: expected a JSON object")
             matrix_path = self._find_af3_json(d, model, "confidences", job_prefix, is_best_model)
-            matrix = self._read_json(matrix_path)
-            if not matrix_path.exists():
-                if any(key in summary for key in ("pae", "predicted_aligned_error", "chain_pair_pae_min")):
-                    matrix = summary
-                else:
-                    matrix = self._read_json(matrix_path, required=True)
+            if not matrix_path.exists() and any(summary.get(key) is not None for key in ("pae", "predicted_aligned_error")):
+                # Some combined exports carry the actual full matrix here.
+                # Chain-pair minima alone cannot replace a missing PAE file.
+                matrix, matrix_path = summary, summary_path
+            else:
+                matrix = self._read_json(matrix_path, required=True)
             if not isinstance(matrix, dict):
                 raise ValueError(f"{matrix_path}: expected a JSON object carrying full PAE")
 
