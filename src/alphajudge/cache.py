@@ -49,10 +49,12 @@ def file_fingerprint(path: Path) -> dict[str, int]:
 
     ctime supplements mtime, but coarse/preserved timestamps can still hide
     same-size rewrites. Use content validation when metadata is insufficient.
+    The device number is not part of it: a shared filesystem (BeeGFS) reports
+    another st_dev for the same file on each cluster node.
     """
     stat = path.stat()
     return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "ctime_ns": stat.st_ctime_ns,
-            "device": stat.st_dev, "inode": stat.st_ino}
+            "inode": stat.st_ino}
 
 
 def software_identity() -> dict:
