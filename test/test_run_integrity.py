@@ -9,6 +9,7 @@ import pickle
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -230,6 +231,24 @@ def test_cache_detects_added_removed_and_replaced_inputs(af2_run):
     os.utime(replacement, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     replacement.replace(structure)
     assert cache.request_identity(directory, csv_path) != before
+
+
+def test_cache_and_plots_are_reused_on_a_node_with_another_device_number(af2_run, record_process, monkeypatch):
+    directory, _ = af2_run
+    score(directory, skip_pae_png=False)
+    calls = record_process()
+    stat = Path.stat
+    def on_another_node(self, **kwargs):
+        fields = {name: getattr(stat(self, **kwargs), name)
+                  for name in dir(os.stat_result) if name.startswith("st_")}
+        fields["st_dev"] += 1
+        return SimpleNamespace(**fields)
+    def redraw(*args, **kwargs):
+        pytest.fail("A current PAE plot was redrawn")
+    monkeypatch.setattr(Path, "stat", on_another_node)
+    monkeypatch.setattr(AF2Parser, "parse_run", redraw)
+    score(directory, skip_pae_png=False)
+    assert calls == []
 
 
 def test_png_toggle_generates_missing_plot_without_rescoring(af2_run, monkeypatch):
