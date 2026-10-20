@@ -233,9 +233,9 @@ def test_cache_detects_added_removed_and_replaced_inputs(af2_run):
     assert cache.request_identity(directory, csv_path) != before
 
 
-def test_cache_is_reused_on_a_node_with_another_device_number(af2_run, record_process, monkeypatch):
+def test_cache_and_plots_are_reused_on_a_node_with_another_device_number(af2_run, record_process, monkeypatch):
     directory, _ = af2_run
-    score(directory)
+    score(directory, skip_pae_png=False)
     calls = record_process()
     stat = Path.stat
     def on_another_node(self, **kwargs):
@@ -243,8 +243,11 @@ def test_cache_is_reused_on_a_node_with_another_device_number(af2_run, record_pr
                   for name in dir(os.stat_result) if name.startswith("st_")}
         fields["st_dev"] += 1
         return SimpleNamespace(**fields)
+    def redraw(*args, **kwargs):
+        pytest.fail("A current PAE plot was redrawn")
     monkeypatch.setattr(Path, "stat", on_another_node)
-    score(directory)
+    monkeypatch.setattr(AF2Parser, "parse_run", redraw)
+    score(directory, skip_pae_png=False)
     assert calls == []
 
 

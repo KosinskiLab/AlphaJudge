@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Fixed
-- Per-run CSV reuse no longer depends on the device number of the input files. A shared filesystem such as BeeGFS reports another `st_dev` for the same file on each cluster node, so a recursive run on one node recomputed every table certified on another. Size, mtime, ctime and inode still detect edits and replaced files. Manifests written by 1.4.4 are recomputed once, as after any software change.
+- Per-run CSV and PAE plot reuse no longer depend on the device number of the files. A shared filesystem such as BeeGFS reports another `st_dev` for the same file on each cluster node, so a recursive run on one node recomputed every table and redrew every plot certified on another. Size, mtime, ctime and inode still detect edits and replaced files. Manifests written by 1.4.4 are recomputed once, as after any software change.
 
 ## 1.4.4 - 2026-10-01
 
