@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -14,7 +14,9 @@ dependencies = [
     "scipy<2",
     "matplotlib<4",
 ]
-license = { text = "MIT" }
+# Original AlphaJudge code is MIT. A distribution-wide license expression
+# awaits review of the CCP4-derived material in THIRD_PARTY_LICENSES.md.
+license-files = ["LICENSE", "THIRD_PARTY_LICENSES.md", "licenses/*"]
 
 authors = [
     { name = "Dima Molodenskiy" }
@@ -31,7 +33,6 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

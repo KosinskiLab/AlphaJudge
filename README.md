@@ -5,7 +5,7 @@ AlphaJudge evaluates AlphaFold-predicted protein complexes by merging AI-derived
 
 ![AlphaJudge icon](images/icon.png)
 
-[![license: MIT](https://img.shields.io/badge/license-MIT-informational.svg)](#citation-and-license)
+[![original code: MIT](https://img.shields.io/badge/original_code-MIT-informational.svg)](#citation-and-license)
 [![python](https://img.shields.io/badge/python-3.10+-blue.svg)]()
 [![platform](https://img.shields.io/badge/platform-Linux%20%7C%20HPC-lightgrey.svg)]()
 
@@ -279,6 +279,12 @@ Please cite:
 > AlphaJudge: we will come up with a better name. (xxxx).
 > `https://github.com/KosinskiLab/AlphaJudge`
 
-License: MIT for this repository. AlphaFold2/AlphaFold3, and other tools remain under their own licenses.
+Original AlphaJudge code is available under the [MIT License](LICENSE).
+Third-party code and data retain their own terms. In particular, the code and
+tables attributed to CCP4 require a provenance and permissions review before
+the complete distribution can be represented as MIT-only. See
+[third-party licensing](THIRD_PARTY_LICENSES.md) for the affected files and the
+separate AlphaFold fixture terms. AlphaFold2/AlphaFold3 and other tools remain
+under their own licenses.
 
 ---

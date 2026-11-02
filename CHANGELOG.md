@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Replace the top-level GPLv3 text with MIT for original AlphaJudge code and
+  scope the README accordingly. Preserve third-party attributions and fixture
+  terms in the package. Remove the blanket MIT package declaration pending
+  review of the CCP4-derived code and tables listed in `THIRD_PARTY_LICENSES.md`.
+
 ## 1.4.4 - 2026-10-01
 
 ### Fixed
