@@ -281,6 +281,5 @@ Please cite:
 
 Original AlphaJudge code is available under the [MIT License](LICENSE).
 Third-party code, tools and data remain subject to their own licenses and terms.
-Licensing of the CCP4-derived code and tables still needs clarification.
 
 ---
