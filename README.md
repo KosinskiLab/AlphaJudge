@@ -280,11 +280,7 @@ Please cite:
 > `https://github.com/KosinskiLab/AlphaJudge`
 
 Original AlphaJudge code is available under the [MIT License](LICENSE).
-Third-party code and data retain their own terms. In particular, the code and
-tables attributed to CCP4 require a provenance and permissions review before
-the complete distribution can be represented as MIT-only. See
-[third-party licensing](THIRD_PARTY_LICENSES.md) for the affected files and the
-separate AlphaFold fixture terms. AlphaFold2/AlphaFold3 and other tools remain
-under their own licenses.
+Third-party code, tools and data remain subject to their own licenses and terms.
+Licensing of the CCP4-derived code and tables still needs clarification.
 
 ---

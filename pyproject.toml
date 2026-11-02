@@ -14,9 +14,8 @@ dependencies = [
     "scipy<2",
     "matplotlib<4",
 ]
-# Original AlphaJudge code is MIT. A distribution-wide license expression
-# awaits review of the CCP4-derived material in THIRD_PARTY_LICENSES.md.
-license-files = ["LICENSE", "THIRD_PARTY_LICENSES.md", "licenses/*"]
+# Original code is MIT; CCP4-derived material requires separate licensing review.
+license-files = ["LICENSE"]
 
 authors = [
     { name = "Dima Molodenskiy" }
