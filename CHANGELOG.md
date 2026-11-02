@@ -5,6 +5,10 @@
 ### Fixed
 - Per-run CSV and PAE plot reuse no longer depend on the device number of the files. A shared filesystem such as BeeGFS reports another `st_dev` for the same file on each cluster node, so a recursive run on one node recomputed every table and redrew every plot certified on another. Size, mtime, ctime and inode still detect edits and replaced files. Manifests written by 1.4.4 are recomputed once, as after any software change.
 
+### Changed
+- Use MIT for original AlphaJudge code; third-party terms remain separate.
+  Omit the package-wide license declaration pending review of CCP4-derived material.
+
 ## 1.4.4 - 2026-10-01
 
 ### Fixed
