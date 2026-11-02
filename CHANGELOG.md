@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Use MIT for original AlphaJudge code; third-party terms remain separate.
+  Omit the package-wide license declaration pending review of CCP4-derived material.
+
 ## 1.4.4 - 2026-10-01
 
 ### Fixed
