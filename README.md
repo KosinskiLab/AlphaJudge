@@ -23,6 +23,8 @@ AlphaJudge parses AF2, AF3, and Boltz-2 outputs and summarizes per-model / per-i
 
 Use cases: rank poses, sanity-check AF confidences, or export features for ML.
 
+**What the scores mean:** [score definitions](https://github.com/KosinskiLab/AlphaJudge/blob/main/SCORES.md) gives the definition, CSV column, direction (higher or lower is better) and reference for every score AlphaJudge reports.
+
 ---
 
 ## Pipeline overview
@@ -219,7 +221,7 @@ existing calibration; this is not an AF3x-specific calibration.
 
 ## Output schema (CSV)
 
-AlphaJudge writes `interfaces.csv` with one row per interface (and includes the selected model). Core fields include:
+AlphaJudge writes `interfaces.csv` with one row per interface (and includes the selected model). Each score column is defined, with references, in [score definitions](https://github.com/KosinskiLab/AlphaJudge/blob/main/SCORES.md). Core fields include:
 
 - **jobs**: run directory name
 - **model_used**: selected model identifier
