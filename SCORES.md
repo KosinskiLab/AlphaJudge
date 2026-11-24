@@ -9,8 +9,7 @@ and were checked against CCP4 7.1 and PISA reference values on AF2 and AF3 model
 **metascore** combines eleven of them.
 
 The table below gives the definition AlphaJudge uses for every score, the CSV column that holds
-it, and whether higher or lower values support an interaction. The definitions follow
-Supplementary Table 1 of the AlphaJudge benchmark manuscript (in preparation).
+it, and whether higher or lower values support an interaction. 
 
 ## Conventions
 
